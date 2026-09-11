@@ -69,18 +69,21 @@ C:\temp\beamng_autoroad\
 
 ---
 
-## Annotationen (wenn nötig)
+## Annotationen (GIS)
 
-Später als Dateien unter `data/annotations/` (GeoJSON oder GeoPackage):
+Verbindliches Schema: [`ANNOTATIONS.md`](ANNOTATIONS.md)
 
-| Inhalt | Felder (Beispiel) |
-|--------|-------------------|
-| Centerline-Korrektur | LineString, optional `width`, `surface` |
-| Tunnel/Galerie | Portale + XY-Innenpfad, `profile=hermite` |
-| exclude | Polygone (Seilbahn-Artefakte) |
-| wall/guardrail | Linien entlang Rand |
+Kurz:
 
-Google-Earth-Screenshots helfen zur Orientierung; Geometrie bitte als Vektor, nicht nur Bild.
+| Layer | Geometrie | Rolle |
+|-------|-----------|--------|
+| `road_edge` | LineString | genauer Fahrbahnrand (`side`: left/right) |
+| `guardrail` | LineString | Planken-Achse; **Lücken = Öffnungen** (Einmündung, …) |
+| `centerline` | LineString | optional Achskorrektur |
+
+Datei: `data/annotations/<site>.gpkg` (CRS = Site-CRS). Vorlagen: `data/annotations/*.geojson`.
+
+Google-Earth-Screenshots nur zur Orientierung; Geometrie als Vektor, nicht nur Bild.
 
 ---
 

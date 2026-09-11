@@ -1,0 +1,9 @@
+{
+  "type": "FeatureCollection",
+  "name": "road_edge",
+  "crs": {
+    "type": "name",
+    "properties": { "name": "urn:ogc:def:crs:EPSG::31254" }
+  },
+  "features": []
+}

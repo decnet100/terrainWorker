@@ -1,8 +1,12 @@
 """Place BeamNG guardrail TSStatics along roads_beamng.json centerlines.
 
-Spacing always matches the *scaled* mesh length so segments abut (no gaps).
+Segments span consecutive roadside joints (not centerline spacing), so outer
+curves get longer chords and abut. Optional abut_overlap_m closes tiny seams.
 Austrian 4.2 m look = scale the ~3.1 m Italy mesh on X. Tight bends use shorter
-chords with matching X-scale (stock BeamNG has no R10/R15 bent meshes).
+chords (stock BeamNG has no R10/R15 bent meshes).
+
+Does NOT write or overwrite data/annotations/*.gpkg — use tools/seed_annotations.py
+(--force) for heuristic drafts into GIS.
 """
 from __future__ import annotations
 
@@ -33,7 +37,11 @@ CURVE_R15_M = float(GR.get("curve_r15_m", 15.0))
 CURVE_R10_M = float(GR.get("curve_r10_m", 10.0))
 CURVE_STEP_R15 = float(GR.get("curve_step_r15_m", 2.8))
 CURVE_STEP_R10 = float(GR.get("curve_step_r10_m", 2.2))
+# Extra length so abutting ends visually close (mesh ends / pitch error).
+ABUT_OVERLAP = float(GR.get("abut_overlap_m", 0.08))
 LATERAL_EXTRA = float(GR.get("lateral_extra_m", 1.0))
+# Sample Z this many metres inward toward asphalt (less ditch noise; XY unchanged).
+Z_SAMPLE_INWARD = float(GR.get("z_sample_inward_m", 0.35))
 SIDES = GR.get("sides", "both")
 HIGHWAYS = set(
     GR.get(
@@ -190,28 +198,60 @@ def _heightmap_z(hm: np.ndarray, max_h: float, bx: float, by: float) -> float:
     return (v / 65535.0) * max_h
 
 
-def _resample_adaptive(
-    nodes: list[list[float]],
-) -> list[tuple[float, float, float, float, float, float, float]]:
-    """(x,y,z, tx,ty,tz, step) — step is chord length; mesh scaled to match."""
+def _joint_dists(nodes: list[list[float]]) -> list[float]:
+    """Centerline distances of rail joints (segment ends), adaptive to curvature."""
     total = _polyline_length_xy(nodes)
     if total < 1.0:
         return []
-    samples = []
-    first_r = _local_radius_xy(nodes, min(CURVATURE_WINDOW_M, total * 0.5), CURVATURE_WINDOW_M)
-    dist = min(_step_for_radius(first_r) * 0.5, total * 0.5)
+    dists = [0.0]
+    dist = 0.0
     while dist < total - 0.05:
-        r = _local_radius_xy(nodes, dist, CURVATURE_WINDOW_M)
+        # Step from near the upcoming segment mid for curvature.
+        probe = min(dist + 0.5, total)
+        r = _local_radius_xy(nodes, probe, CURVATURE_WINDOW_M)
         step = _step_for_radius(r)
-        half = step * 0.5
-        p = _sample_at(nodes, dist)
-        if p:
-            d0 = max(0.0, dist - half)
-            d1 = min(total, dist + half)
-            tx, ty, tz = _tangent_between(nodes, d0, d1)
-            samples.append((p[0], p[1], p[2], tx, ty, tz, step))
+        if dist + step >= total - 0.05:
+            if total - dist >= 0.4:
+                dists.append(total)
+            elif len(dists) >= 2:
+                dists[-1] = total
+            break
         dist += step
-    return samples
+        dists.append(dist)
+    return dists
+
+
+def _offset_joint(
+    nodes: list[list[float]],
+    dist: float,
+    sign: float,
+    offset: float,
+    hm_pack: tuple[np.ndarray, float] | None,
+) -> tuple[float, float, float] | None:
+    total = _polyline_length_xy(nodes)
+    p = _sample_at(nodes, dist)
+    if not p:
+        return None
+    d0 = max(0.0, dist - 0.5)
+    d1 = min(total, dist + 0.5)
+    tx, ty, _tz = _tangent_between(nodes, d0, d1)
+    txy = math.hypot(tx, ty)
+    if txy < 1e-9:
+        lnx, lny = -1.0, 0.0
+    else:
+        lnx, lny = -ty / txy, tx / txy
+    px = p[0] + lnx * sign * offset
+    py = p[1] + lny * sign * offset
+    # Height slightly toward asphalt; pitch still follows joint→joint 3D chord.
+    z_off = max(0.0, offset - Z_SAMPLE_INWARD)
+    zx = p[0] + lnx * sign * z_off
+    zy = p[1] + lny * sign * z_off
+    if hm_pack is not None:
+        hm, max_h = hm_pack
+        pz = _heightmap_z(hm, max_h, zx, zy) + Z_LIFT + PIVOT_GROUND_OFFSET
+    else:
+        pz = p[2] + Z_LIFT + PIVOT_GROUND_OFFSET
+    return (px, py, pz)
 
 
 def _side_signs() -> list[tuple[str, float]]:
@@ -226,6 +266,7 @@ def build_entries(roads: dict) -> list[dict]:
     hm_pack = _load_heightmap_z() if SNAP_TO_HEIGHTMAP else None
     entries: list[dict] = []
     curve_stats = {"straight": 0, "r15": 0, "r10": 0}
+    gap_warn = 0
 
     for road in roads.values():
         hw = road.get("highway", "")
@@ -236,52 +277,63 @@ def build_entries(roads: dict) -> list[dict]:
             continue
         width = float(nodes[0][3]) if len(nodes[0]) > 3 else 6.0
         offset = width * ROAD_WIDTH_SCALE * 0.5 + LATERAL_EXTRA
-        samples = _resample_adaptive(nodes)
+        dists = _joint_dists(nodes)
+        if len(dists) < 2:
+            continue
 
         for side_name, sign in _side_signs():
-            for x, y, z, tx, ty, tz, step in samples:
-                if step <= CURVE_STEP_R10 + 1e-6:
+            joints: list[tuple[float, float, float]] = []
+            for d in dists:
+                j = _offset_joint(nodes, d, sign, offset, hm_pack)
+                if j:
+                    joints.append(j)
+            if len(joints) < 2:
+                continue
+
+            for i in range(len(joints) - 1):
+                x0, y0, z0 = joints[i]
+                x1, y1, z1 = joints[i + 1]
+                dx, dy, dz = x1 - x0, y1 - y0, z1 - z0
+                chord = math.sqrt(dx * dx + dy * dy + dz * dz)
+                if chord < 0.35:
+                    continue
+
+                # Exact joint→joint span so ends meet; slight overlap for visual close.
+                length = chord + ABUT_OVERLAP
+                if length <= CURVE_STEP_R10 + ABUT_OVERLAP + 1e-6:
                     curve_stats["r10"] += 1
-                elif step <= CURVE_STEP_R15 + 1e-6:
+                elif length <= CURVE_STEP_R15 + ABUT_OVERLAP + 1e-6:
                     curve_stats["r15"] += 1
                 else:
                     curve_stats["straight"] += 1
 
-                txy = math.hypot(tx, ty)
-                if txy < 1e-9:
-                    lnx, lny = -1.0, 0.0
+                px = (x0 + x1) * 0.5
+                py = (y0 + y1) * 0.5
+                pz = (z0 + z1) * 0.5
+                if ALIGN_PITCH:
+                    tx, ty, tz = dx, dy, dz
                 else:
-                    lnx, lny = -ty / txy, tx / txy
-                px = x + lnx * sign * offset
-                py = y + lny * sign * offset
-                if hm_pack is not None:
-                    hm, max_h = hm_pack
-                    pz = _heightmap_z(hm, max_h, px, py) + Z_LIFT + PIVOT_GROUND_OFFSET
-                else:
-                    pz = z + Z_LIFT + PIVOT_GROUND_OFFSET
+                    tx, ty, tz = dx, dy, 0.0
 
-                # Y along left-normal * side: outward if FACE_Y_OUTWARD (beam on -Y).
                 if FACE_Y_OUTWARD:
-                    y_sign = sign  # +left on left side, -left on right → both outward
+                    y_sign = sign
                 else:
                     y_sign = -sign
-                if ALIGN_PITCH:
-                    rot = _rot_matrix_pitched(tx, ty, tz, y_sign)
-                else:
-                    rot = _rot_matrix_pitched(tx, ty, 0.0, y_sign)
+                rot = _rot_matrix_pitched(tx, ty, tz, y_sign)
                 if side_name == "right" and YAW_FLIP_RIGHT:
                     rot = _yaw180(rot)
 
-                # Length match so segments abut (positive scales only).
-                scale_x = step / MESH_LENGTH if MESH_LENGTH > 1e-6 else 1.0
-                sx, sy, sz = scale_x, 1.0, 1.0
+                scale_x = length / MESH_LENGTH if MESH_LENGTH > 1e-6 else 1.0
+                cl_step = dists[i + 1] - dists[i]
+                if abs(math.hypot(dx, dy) - cl_step) > 1.5:
+                    gap_warn += 1
 
                 entries.append({
                     "class": "TSStatic",
                     "__parent": "guardrails",
                     "position": [round(px, 3), round(py, 3), round(pz, 3)],
                     "rotationMatrix": [round(v, 6) for v in rot],
-                    "scale": [round(sx, 4), round(sy, 4), round(sz, 4)],
+                    "scale": [round(scale_x, 4), 1.0, 1.0],
                     "shapeName": SHAPE,
                     "collisionType": "Collision Mesh",
                     "decalType": "Collision Mesh",
@@ -290,8 +342,11 @@ def build_entries(roads: dict) -> list[dict]:
                 })
     print(
         f"Placement mix: straightish={curve_stats['straight']} "
-        f"~R15_chords={curve_stats['r15']} ~R10_chords={curve_stats['r10']}"
+        f"~R15_chords={curve_stats['r15']} ~R10_chords={curve_stats['r10']} "
+        f"abut_overlap_m={ABUT_OVERLAP} lateral_extra_m={LATERAL_EXTRA}"
     )
+    if gap_warn:
+        print(f"Note: {gap_warn} segments with large roadside vs centerline chord delta")
     return entries
 
 
@@ -360,10 +415,12 @@ def main() -> None:
         "shape": SHAPE,
         "mesh_length_m": MESH_LENGTH,
         "section_length_m": SECTION_LEN,
+        "abut_overlap_m": ABUT_OVERLAP,
+        "lateral_extra_m": LATERAL_EXTRA,
+        "z_sample_inward_m": Z_SAMPLE_INWARD,
         "face_y_outward": FACE_Y_OUTWARD,
         "yaw_flip_right": YAW_FLIP_RIGHT,
-        "note": "Z stays upright when facing; no scale axis mirrors",
-        "lateral_extra_m": LATERAL_EXTRA,
+        "note": "3D joint→joint span (no pitch clamp); Z upright",
         "sample_scale": entries[0]["scale"] if entries else None,
         "sample_rot_Z": entries[0]["rotationMatrix"][6:9] if entries else None,
     }

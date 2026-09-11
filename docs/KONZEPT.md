@@ -108,6 +108,9 @@ Arbeitsverzeichnis: `C:\temp\beamng_autoroad`
 
 ## Nächste Schritte
 
-1. Testausschnitt wählen → `bbox` in `config/site.yaml`
-2. WCS-/Layer-URLs eintragen (siehe DATENUEBERGABE.md)
-3. Fetch-Skript implementieren und ersten Heightmap+Road-Export erzeugen
+Siehe [STATUS.md](STATUS.md) (Stand + priorisierte Roadmap).
+
+Kurz:
+1. Annotations-GPKG in den Guardrail-/Masken-Build einlesen
+2. Soft-Cover Richtung Moos/Alm (TerrainMaterial + ggf. Layer-Split); Geologie/LISA später
+3. QGIS: Ränder und Öffnungen feinjustieren

@@ -71,13 +71,15 @@ beamng:
     enabled: true
     shape: "/art/shapes/objects/italy_guardrails_common_section.dae"
     mesh_length_m: 3.1
-    section_length_m: 4.2        # AT look via scale.x = section/mesh
+    section_length_m: 4.2        # AT look via joint spacing / scale.x
     curve_r15_m: 15.0
     curve_r10_m: 10.0
     curve_step_r15_m: 2.8
     curve_step_r10_m: 2.2
+    abut_overlap_m: 0.08         # close seams between segments
     curvature_window_m: 8.0
-    lateral_extra_m: 1.0
+    lateral_extra_m: 0.55
+    z_sample_inward_m: 0.35
     sides: both
     highways: [secondary, primary, tertiary, trunk, motorway]
     z_lift_m: 0.05
@@ -86,6 +88,13 @@ beamng:
     snap_to_heightmap: true
     face_y_outward: true
     yaw_flip_right: false
+
+# Hand-editierte Ränder / Leitplanken (siehe docs/ANNOTATIONS.md).
+# Schema: python tools/init_annotations_gpkg.py
+# Heuristik-Entwurf: python tools/seed_annotations.py [--force]
+# Normale Builds überschreiben die GPKG nie.
+annotations:
+  gpkg: data/annotations/tirol-test-ausschnitt.gpkg
 
 notes: |
   WCS-Links + bbox + coverage-Namen reichen.

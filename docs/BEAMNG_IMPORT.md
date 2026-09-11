@@ -64,16 +64,17 @@ python tools\build_guardrails.py
 
 Schreibt TSStatics nach  
 `...\levels\autoroad_m28_test\main\MissionGroup\level_objects\guardrails\items.level.json`  
-Mesh: `italy_guardrails_common_section` (Italy-Kit), Abstand ~3,1 m, links+rechts der OSM-Breite.
+Mesh: `italy_guardrails_common_section` (Italy-Kit), Segmente Stoß-an-Stoß entlang dem Straßenrand.
 
 Level **neu laden** (kein Terrain-Import nötig). Config: `beamng.guardrails` in `site.yaml`  
-(`sides`, `lateral_extra_m`, `section_length_m`, `align_pitch`, `snap_to_heightmap`, `pivot_ground_offset_m`, `enabled`).
+(`sides`, `lateral_extra_m`, `section_length_m`, `abut_overlap_m`, `align_pitch`, `snap_to_heightmap`, `pivot_ground_offset_m`, `enabled`).
 
 - `align_pitch: true` — Segmente folgen der Steigung (Pitch über die Sektionslänge)
 - `snap_to_heightmap: true` — Z am Gelände unter der Schiene
-- `section_length_m: 4.2` — AT-übliche Gerade
-- Enge Kurven (R≤15 / R≤10): **kurze Sehnen** statt echter gebogener Profile (gibt es im Stock-BeamNG nicht)
-- `mirror_right: true` — rechte Seite gespiegelt, damit das W-Profil zur Fahrbahn zeigt
+- `section_length_m: 4.2` — AT-übliche Gerade (Joint-Abstand)
+- `abut_overlap_m: 0.08` — leichte Überlappung, damit Enden optisch schließen
+- Enge Kurven (R≤15 / R≤10): **kurze Sehnen** statt echter gebogener Profile (gibt es im Stock-BeamNG nicht); Länge folgt der **Rand**-Sehne (außen länger)
+- `yaw_flip_right` / `face_y_outward` — Orientierung W-Profil zur Fahrbahn
 - Zu hoch/tief: `pivot_ground_offset_m` (±0.1…0.5) oder `z_lift_m`
 - Weiter in die Straße: `lateral_extra_m` erhöhen
 
