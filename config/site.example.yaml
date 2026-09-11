@@ -1,0 +1,92 @@
+# site.example.yaml — Vorlage für einen Testausschnitt
+# Kopieren nach site.yaml und Werte eintragen.
+# site.yaml sollte lokal bleiben (kann in .gitignore).
+
+name: tirol-test-ausschnitt
+# Arbeits-CRS für BBOX und Verarbeitung (an DGM-Kachel anpassen):
+#   EPSG:31254 = MGI / Austria GK West
+#   EPSG:31255 = MGI / Austria GK Central
+crs: EPSG:31254
+
+# xmin, ymin, xmax, ymax im obigen CRS (Meter)
+# Beispiel-Platzhalter — durch echten Pass-Ausschnitt ersetzen
+bbox:
+  - 0.0
+  - 0.0
+  - 1000.0
+  - 1000.0
+
+# Optional: ungefähre Straßenmitte als Hinweis (gleiche CRS)
+# centerline_hint_gpx: data/annotations/centerline.gpx
+
+sources:
+  dgm:
+    type: wcs
+    # Konkrete URL aus tiris-Katalog / QGIS Layer-Quelle eintragen
+    url: "https://REPLACE/ogd/wcs/gelaende"
+    coverage: "DGM_50cm"          # aus GetCapabilities
+    resolution_m: 0.5
+    # Alternativ lokal:
+    # type: local
+    # path: data/raw/dgm.tif
+
+  dom:
+    type: wcs
+    url: "https://REPLACE/ogd/wcs/gelaende"
+    coverage: "DOM_50cm"
+    resolution_m: 0.5
+    optional: true
+
+  ortho:
+    type: wcs
+    url: "https://REPLACE/ogd/wcs/orthofoto"
+    coverage: "Orthofoto_RGB"
+    # Erstversuch oft 1.0–2.0 m; 0.2 m nur wenn nötig
+    resolution_m: 1.0
+
+  landuse:
+    type: osm                    # natural/landuse via Overpass (LISA WFS später)
+    # type: wfs
+    # url: "https://REPLACE/ogd/wfs"
+    # type_name: "Landnutzung"
+
+  roads:
+    type: osm
+    # nutzt site.bbox (nach WGS84 transformiert) für Overpass
+    # Alternativen:
+    # type: gip
+    # path: data/raw/gip_roads.gpkg
+    # type: local
+    # path: data/annotations/centerline.gpkg
+
+beamng:
+  meters_per_pixel: 1.0          # Heightmap-Auflösung im Level (Startwert)
+  # max_height wird aus DGM abgeleitet
+  level_name: autoroad_test
+  mask_size: 512
+  slope_rock_deg: 38             # Hangneigung → rock layer
+  road_width_scale: 1.0          # OSM-Breite → Asphalt-Maske
+  shoulder_m: 0.2                # Dirt-Bankett je Seite (m)
+  guardrails:
+    enabled: true
+    shape: "/art/shapes/objects/italy_guardrails_common_section.dae"
+    mesh_length_m: 3.1
+    section_length_m: 4.2        # AT look via scale.x = section/mesh
+    curve_r15_m: 15.0
+    curve_r10_m: 10.0
+    curve_step_r15_m: 2.8
+    curve_step_r10_m: 2.2
+    curvature_window_m: 8.0
+    lateral_extra_m: 1.0
+    sides: both
+    highways: [secondary, primary, tertiary, trunk, motorway]
+    z_lift_m: 0.05
+    pivot_ground_offset_m: 0.0
+    align_pitch: true
+    snap_to_heightmap: true
+    face_y_outward: true
+    yaw_flip_right: false
+
+notes: |
+  WCS-Links + bbox + coverage-Namen reichen.
+  Keine großen GeoTIFFs in den Chat legen.

@@ -1,0 +1,15 @@
+# Downloads und Zwischenprodukte — nicht versionieren
+data/raw/
+data/processed/
+config/site.yaml
+
+# Python
+__pycache__/
+.venv/
+*.pyc
+
+# OS / Editor
+Thumbs.db
+.DS_Store
+.idea/
+.vscode/
