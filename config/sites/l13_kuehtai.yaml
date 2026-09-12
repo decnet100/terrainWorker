@@ -50,7 +50,7 @@ beamng:
   slope_rock_deg: 43
   slope_rock_open_px: 1       # entfernt dünne Konturstreifen; 0 = roh (Zebra)
   road_width_scale: 1.0
-  shoulder_m: 0.2
+  shoulder_m: 0.1
   bridges:
     # Defaults for all bridges; override per structure in items[]
     defaults:
@@ -78,8 +78,9 @@ beamng:
         side: Concrete
         # MeshRoad: textureLength = m along road per UV repeat (V only).
         # Across width UV is always 0..1 — use detail_scale for finer grain.
-        texture_length: 1.0
-        detail_scale: 6.0
+        # Keep in sync with decal_roads.texture_length for a uniform asphalt look.
+        texture_length: 6.0
+        detail_scale: 4.0
     items:
       # Klammbach: oblique ditch — longer after-side on road centerline
       - match: { objectid: 7233, name: Klammbach }
@@ -150,6 +151,12 @@ beamng:
       portal_depth_m: 1.0
       portal_overhang_m: 0.8
       portal_clear_extra_m: 0.25  # Pfeiler außen an der Fahrbahn, nicht durchschneiden
+      # Fels-Kragen: vorige Dach-Form (Portal → DGM)
+      portal_collar: false
+      portal_collar_out_m: 5.0
+      portal_collar_side_m: 7.0
+      portal_collar_sink_m: 0.1
+      portal_collar_rings: 4
       debug_centerline: false    # MeshRoad hat immer Collision — nur bei Bedarf + hoch gehoben
       blend_open_dgm: true
       style:
@@ -161,7 +168,9 @@ beamng:
         top: Asphalt
         bottom: Concrete
         side: Concrete
-        texture_length: 4.0
+        collar: GalleryRock
+        # Same asphalt UV scale as decal_roads / bridges
+        texture_length: 6.0
         detail_scale: 4.0
     items:
       # Mugkögele = GIP 7236+10099 (merged to one span; primary oid = longest)
@@ -214,7 +223,7 @@ beamng:
     curve_step_r10_m: 2.2
     abut_overlap_m: 0.08
     curvature_window_m: 8.0
-    lateral_extra_m: 0.55
+    lateral_extra_m: 0.15
     z_sample_inward_m: 0.35
     sides: both
     highways: [secondary, primary, tertiary, trunk, motorway]
@@ -254,9 +263,10 @@ beamng:
   # OSM centerlines → BeamNG DecalRoad (asphalt + optional centerline paint)
   decal_roads:
     enabled: true
-    width_scale: 1.0
+    width_scale: 0.9
     material: Asphalt
-    texture_length: 8.0
+    texture_length: 6.0          # match MeshRoad asphalt tiling
+    detail_scale: 4.0            # written into shared Asphalt Material
     render_priority: 10
     drivability: 1.0
     improved_spline: true

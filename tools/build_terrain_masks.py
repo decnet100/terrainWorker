@@ -452,6 +452,52 @@ def bridge_under_mask(size: int, margin_m: float = 0.5) -> np.ndarray:
     return mask
 
 
+def gallery_roof_mask(size: int, margin_m: float = 1.5) -> np.ndarray:
+    """Gallery roof footprint → rock (OSM asphalt must not paint the roof).
+
+    Road centerlines still run through galleries, so without this carve the
+    terrain *above* the structure stays Asphalt. Carriageway is MeshRoad.
+    Uses portal-span nodes from galleries_centerlines.json when present.
+    """
+    path = PROC / "galleries_centerlines.json"
+    img = Image.new("L", (size, size), 0)
+    if not path.exists():
+        return np.zeros((size, size), dtype=bool)
+
+    m_per_px = TERRAIN_EXTENT / max(size - 1, 1)
+    draw = ImageDraw.Draw(img)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    n_gals = 0
+    for gal in data.get("galleries") or []:
+        nodes = gal.get("nodes") or []
+        if len(nodes) < 2:
+            continue
+        portal = gal.get("portal_s")
+        if portal is not None and len(portal) >= 2:
+            s0, s1 = float(portal[0]), float(portal[1])
+            if s1 < s0:
+                s0, s1 = s1, s0
+            span = [n for n in nodes if s0 - 1e-6 <= float(n.get("s") or 0.0) <= s1 + 1e-6]
+            if len(span) >= 2:
+                nodes = span
+        widths = [float(n.get("width") or 7.0) for n in nodes]
+        width_m = max(widths) if widths else 7.0
+        # Cover roof + closed-side overhang a bit past the road ribbon.
+        stroke = max(2, int(round((width_m + 2.0 * margin_m) / m_per_px)))
+        pts = [_to_px_beamng(float(n["x"]), float(n["y"]), size) for n in nodes]
+        draw.line(pts, fill=255, width=stroke, joint="curve")
+        r = max(1, stroke // 2)
+        for px, py in (pts[0], pts[-1]):
+            draw.ellipse((px - r, py - r, px + r, py + r), fill=255)
+        n_gals += 1
+    mask = np.array(img, dtype=np.uint8) > 0
+    print(
+        f"Gallery roof-mask: galleries={n_gals} "
+        f"coverage={(mask.mean() * 100):.3f}% (margin={margin_m}m → rock)"
+    )
+    return mask
+
+
 def slope_rock_mask(slope: np.ndarray, threshold_deg: float, open_px: int) -> np.ndarray:
     """Steep cells, then binary opening to drop thin contour stripes.
 
@@ -477,11 +523,13 @@ def classify(
     asphalt: np.ndarray,
     shoulder: np.ndarray,
     bridge_under: np.ndarray | None = None,
+    gallery_roof: np.ndarray | None = None,
 ) -> np.ndarray:
     """Exclusive material class per pixel.
 
     Priority: Asphalt > Water > Rock > Forest > Grass > Dirt.
-    Terrain under bridge decks is forced to rock (carriageway is MeshRoad).
+    Terrain under bridge decks / on gallery roofs is forced to rock
+    (carriageway is MeshRoad).
     """
     out = np.full(landuse.shape, CLASS_DIRT, dtype=np.uint8)
     out[landuse == CLASS_GRASS] = CLASS_GRASS
@@ -494,6 +542,8 @@ def classify(
     out[asphalt] = CLASS_ASPHALT
     if bridge_under is not None and bridge_under.any():
         out[bridge_under] = CLASS_ROCK
+    if gallery_roof is not None and gallery_roof.any():
+        out[gallery_roof] = CLASS_ROCK
     return out
 
 
@@ -570,15 +620,19 @@ def main() -> None:
 
     asphalt, shoulder = road_masks(OUT_SIZE)
     bridge_under = bridge_under_mask(OUT_SIZE)
-    asphalt_vis = asphalt & ~bridge_under
-    shoulder_vis = shoulder & ~bridge_under
+    gallery_roof = gallery_roof_mask(OUT_SIZE)
+    structure_rock = bridge_under | gallery_roof
+    asphalt_vis = asphalt & ~structure_rock
+    shoulder_vis = shoulder & ~structure_rock
     print(
         f"Road masks: asphalt={(asphalt_vis.mean()*100):.2f}% "
         f"shoulder={(shoulder_vis.mean()*100):.2f}% "
         f"(width_scale={ROAD_WIDTH_SCALE}, shoulder_m={SHOULDER_M}; "
-        f"bridge_under carved to rock)"
+        f"bridge/gallery roof carved to rock)"
     )
-    classes = classify(landuse, slope, asphalt_vis, shoulder_vis, bridge_under)
+    classes = classify(
+        landuse, slope, asphalt_vis, shoulder_vis, bridge_under, gallery_roof
+    )
 
     mask_dir = PROC / "terrain_masks"
     entries = write_layer_maps(classes, mask_dir)
@@ -611,6 +665,7 @@ def main() -> None:
     Image.fromarray(asphalt_vis.astype(np.uint8) * 255, mode="L").save(PROC / "mask_asphalt.png")
     Image.fromarray(shoulder_vis.astype(np.uint8) * 255, mode="L").save(PROC / "mask_shoulder.png")
     Image.fromarray(bridge_under.astype(np.uint8) * 255, mode="L").save(PROC / "mask_bridge_under.png")
+    Image.fromarray(gallery_roof.astype(np.uint8) * 255, mode="L").save(PROC / "mask_gallery_roof.png")
 
     meta = {
         "size_px": OUT_SIZE,
@@ -630,12 +685,14 @@ def main() -> None:
             "water_pct": round(float((classes == CLASS_WATER).mean() * 100), 2),
             "forest_high_pct": round(float(forest_high.mean() * 100), 2),
             "forest_scrub_pct": round(float(forest_scrub.mean() * 100), 2),
+            "gallery_roof_pct": round(float(gallery_roof.mean() * 100), 2),
         },
         "sources": [
             source_note,
             "dgm_slope",
             "osm_roads_asphalt_shoulder",
             "bridges_decks_under_rock",
+            "galleries_roof_rock",
         ],
         "import_notes": [
             "Terrain Tools → Import Terrain → Load terrainPreset.json (recommended)",
@@ -645,6 +702,7 @@ def main() -> None:
             "Tirol: Almen→Grass; Wald→Grass2+forest scatter; Gewässer→Mud+WaterBlock/River",
             "Asphalt = OSM width; dirt = shoulder bankett",
             "Under bridge decks: rock (MeshRoad carries the asphalt)",
+            "Gallery roofs: rock (OSM asphalt carved; MeshRoad is the carriageway)",
             "Keep Flip Y Axis consistent with heightmap import",
         ],
     }

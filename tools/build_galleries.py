@@ -94,6 +94,11 @@ GALLERY_SCALAR_KEYS = (
     "portal_depth_m",  # how far portal extends along road
     "portal_overhang_m",  # lateral oversize past road edge (mask hole cells)
     "portal_clear_extra_m",  # pier inset from road half-width (avoid cutting deck)
+    "portal_collar",  # bool — terrain-oriented rock apron around portal
+    "portal_collar_out_m",  # meters out of gallery along approach
+    "portal_collar_side_m",  # meters into hillside from pier outer face
+    "portal_collar_sink_m",  # bury outer verts into DGM (anti z-fight)
+    "portal_collar_rings",  # radial samples from portal → terrain
     "debug_centerline",
     "enabled",
     "blend_open_dgm",
@@ -180,6 +185,11 @@ def default_gallery_cfg(bng: dict) -> tuple[dict, list]:
         "portal_depth_m": float(raw.get("portal_depth_m") or 1.2),
         "portal_overhang_m": float(raw.get("portal_overhang_m") or 0.8),
         "portal_clear_extra_m": float(raw.get("portal_clear_extra_m") or 0.2),
+        "portal_collar": bool(raw.get("portal_collar", True)),
+        "portal_collar_out_m": float(raw.get("portal_collar_out_m") or 5.0),
+        "portal_collar_side_m": float(raw.get("portal_collar_side_m") or 7.0),
+        "portal_collar_sink_m": float(raw.get("portal_collar_sink_m") or 0.1),
+        "portal_collar_rings": int(raw.get("portal_collar_rings") or 4),
         "debug_centerline": bool(raw.get("debug_centerline", False)),
         "enabled": True,
         "blend_open_dgm": bool(raw.get("blend_open_dgm", True)),
@@ -195,6 +205,7 @@ def default_gallery_cfg(bng: dict) -> tuple[dict, list]:
             "top": "Asphalt",
             "bottom": "Concrete",
             "side": "Concrete",
+            "collar": "GalleryRock",
             "texture_length": 4.0,
             "detail_scale": 4.0,
             **(raw.get("materials") or {}),
@@ -1629,6 +1640,251 @@ def loft_portal_frame(
     return verts, faces, origin
 
 
+def loft_portal_collar(
+    node: dict,
+    *,
+    into_sign: float,
+    z_at,
+    clear_h: float,
+    roof_t: float,
+    block_m: float,
+    depth_m: float,
+    overhang_m: float,
+    open_side: str = "left",
+    clear_extra_m: float = 0.2,
+    out_lip_m: float = 0.25,
+    collar_out_m: float = 5.0,
+    collar_side_m: float = 7.0,
+    collar_sink_m: float = 0.1,
+    n_rings: int = 4,
+    n_lat: int = 8,
+) -> tuple[list[tuple[float, float, float]], list[tuple[int, int, int]], tuple[float, float, float]]:
+    """Rock fill for sky-gaps ABOVE the portal roof (never into the clear opening).
+
+    Typical alpine case: holemap punched terrain that sat above the gallery, so
+    the DGM at the roof footprint is still higher than ``z_roof``. We build an
+    upstand from the lintel/roof top up to that DGM, plus a short apron into the
+    mountain side. Vertices are clamped to ``>= z_roof`` so nothing drops into
+    the carriageway.
+    """
+    ox = float(node["x"])
+    oy = float(node["y"])
+    oz = float(node.get("z_hermite") if node.get("z_hermite") is not None else node["z_road"])
+    origin = (ox, oy, oz)
+    tx = float(node.get("tx") or 1.0)
+    ty = float(node.get("ty") or 0.0)
+    fwd, left = _basis_road(tx, ty, into_sign)
+    out_xy = (-fwd[0], -fwd[1])
+    half = 0.5 * float(node.get("width") or 7.0)
+    block = max(0.4, float(block_m))
+    depth = max(0.6, float(depth_m))
+    over = max(0.0, float(overhang_m))
+    clear_x = max(0.0, float(clear_extra_m))
+    out_lip = max(0.0, min(float(out_lip_m), depth * 0.35))
+    along_center = 0.5 * depth - out_lip
+    half_along = 0.5 * depth
+    pier_outer = half + clear_x + max(over, block)
+    z_road = oz
+    z_roof = z_road + float(clear_h) + max(float(roof_t), block * 0.6)
+    side = (open_side or "left").lower().strip()
+    if side in ("left", "both"):
+        mtn = -1.0
+    elif side == "right":
+        mtn = +1.0
+    else:
+        mtn = 0.0
+    rings = max(2, int(n_rings))
+    n_l = max(4, int(n_lat))
+    side_m = max(1.0, float(collar_side_m))
+    out_m = max(1.0, float(collar_out_m))
+    sink = max(0.0, float(collar_sink_m))
+    z_floor = z_roof + 0.02
+
+    verts: list[tuple[float, float, float]] = []
+    faces: list[tuple[int, int, int]] = []
+
+    def _w(x: float, y: float, z: float) -> tuple[float, float, float]:
+        return (x - ox, y - oy, z - oz)
+
+    def _dgm(x: float, y: float) -> float:
+        try:
+            return float(z_at(x, y)) - sink
+        except Exception:  # noqa: BLE001
+            return z_roof
+
+    def _facing_quad(
+        a: tuple[float, float, float],
+        b: tuple[float, float, float],
+        c: tuple[float, float, float],
+        d: tuple[float, float, float],
+        prefer: tuple[float, float, float],
+    ) -> None:
+        ax, ay, az = a
+        bx, by, bz = b
+        cx, cy, cz = c
+        ux, uy, uz = bx - ax, by - ay, bz - az
+        vx, vy, vz = cx - ax, cy - ay, cz - az
+        nx = uy * vz - uz * vy
+        ny = uz * vx - ux * vz
+        nz = ux * vy - uy * vx
+        if nx * prefer[0] + ny * prefer[1] + nz * prefer[2] < 0:
+            a, b, c, d = a, d, c, b
+        _quad(
+            faces,
+            _add_vert(verts, a),
+            _add_vert(verts, b),
+            _add_vert(verts, c),
+            _add_vert(verts, d),
+        )
+
+    def _grid(
+        xy_at,
+        *,
+        prefer: tuple[float, float, float],
+        min_rise: float = 0.2,
+    ) -> int:
+        """Build rings: ring0 = roof, outer rings = max(DGM, roof). Skip flat pads."""
+        rows: list[list[tuple[float, float, float]]] = []
+        max_rise = 0.0
+        for ri in range(rings):
+            t = ri / (rings - 1)
+            col: list[tuple[float, float, float]] = []
+            for li in range(n_l):
+                s = li / (n_l - 1)
+                x, y = xy_at(t, s)
+                if ri == 0:
+                    z = z_floor
+                else:
+                    z = max(_dgm(x, y), z_floor)
+                    max_rise = max(max_rise, z - z_floor)
+                col.append(_w(x, y, z))
+            rows.append(col)
+        if max_rise < min_rise:
+            return 0
+        n0 = len(faces)
+        for ri in range(rings - 1):
+            for li in range(n_l - 1):
+                _facing_quad(
+                    rows[ri][li],
+                    rows[ri][li + 1],
+                    rows[ri + 1][li + 1],
+                    rows[ri + 1][li],
+                    prefer,
+                )
+        return len(faces) - n0
+
+    along_face = along_center - half_along
+
+    # --- A) Upstand over the opening (tympanum): roof → DGM above lintel ---
+    # Sample slightly out + toward mountain so we hit the punched hillside mass,
+    # not the approach road grade.
+    def _xy_tympanum(t: float, s: float) -> tuple[float, float]:
+        lat = (-pier_outer) * (1.0 - s) + pier_outer * s
+        # stay over/near structure: mostly up via DGM at near-roof XY, nudge out+mtn
+        along = along_face - (out_m * 0.4) * t
+        lat += (mtn * side_m * 0.5 if mtn else 0.0) * t
+        x = ox + along * fwd[0] + lat * left[0]
+        y = oy + along * fwd[1] + lat * left[1]
+        return x, y
+
+    _grid(
+        _xy_tympanum,
+        prefer=(out_xy[0] * 0.3, out_xy[1] * 0.3, 0.9),
+        min_rise=0.15,
+    )
+
+    # --- B) Mountain-side roof → hillside (modest lateral reach) ---
+    def _xy_mountain(t: float, s: float, msign: float) -> tuple[float, float]:
+        if msign < 0:
+            lat0, lat1 = -pier_outer, -half * 0.1
+        else:
+            lat0, lat1 = half * 0.1, pier_outer
+        lat = lat0 * (1.0 - s) + lat1 * s + msign * side_m * t
+        along = along_center + (out_m * 0.35) * t  # into gallery along roof
+        x = ox + along * fwd[0] + lat * left[0]
+        y = oy + along * fwd[1] + lat * left[1]
+        return x, y
+
+    if mtn != 0.0:
+        _grid(
+            lambda t, s: _xy_mountain(t, s, mtn),
+            prefer=(-mtn * left[0] * 0.4, -mtn * left[1] * 0.4, 0.85),
+            min_rise=0.15,
+        )
+    else:
+        for msign in (+1.0, -1.0):
+            _grid(
+                lambda t, s, m=msign: _xy_mountain(t, s, m),
+                prefer=(-msign * left[0] * 0.4, -msign * left[1] * 0.4, 0.85),
+                min_rise=0.15,
+            )
+
+    # --- C) Upstand: roof edge → highest nearby DGM (closes punched sky-hole) ---
+    prefer_up = (out_xy[0] * 0.15, out_xy[1] * 0.15, 1.0)
+    n_u = max(6, n_l)
+    search_dirs: list[tuple[float, float]] = []
+    for k in range(12):
+        ang = (2.0 * math.pi * k) / 12.0
+        search_dirs.append((math.cos(ang), math.sin(ang)))
+    # bias mountain + uphill-out
+    if mtn != 0.0:
+        search_dirs.insert(0, (mtn * left[0], mtn * left[1]))
+        search_dirs.insert(
+            1,
+            (mtn * left[0] * 0.7 + out_xy[0] * 0.3, mtn * left[1] * 0.7 + out_xy[1] * 0.3),
+        )
+    search_dirs.insert(0, out_xy)
+
+    def _highest_near(x0: float, y0: float) -> tuple[float, float, float]:
+        best_x, best_y, best_z = x0, y0, _dgm(x0, y0)
+        for radius in (0.5, 1.0, 1.5, 2.5, 3.5, 5.0, 6.5, 8.0):
+            for dx, dy in search_dirs:
+                x = x0 + dx * radius
+                y = y0 + dy * radius
+                z = _dgm(x, y)
+                if z > best_z:
+                    best_x, best_y, best_z = x, y, z
+        return best_x, best_y, best_z
+
+    bottom: list[tuple[float, float, float]] = []
+    top: list[tuple[float, float, float]] = []
+    for i in range(n_u):
+        s = i / (n_u - 1)
+        lat = (-pier_outer) * (1.0 - s) + pier_outer * s
+        along = along_face + 0.4 * depth  # on roof slab, not over approach
+        x0 = ox + along * fwd[0] + lat * left[0]
+        y0 = oy + along * fwd[1] + lat * left[1]
+        hx, hy, hz = _highest_near(x0, y0)
+        bottom.append(_w(x0, y0, z_floor))
+        top.append(_w(hx, hy, max(hz, z_floor)))
+    rise = max(top[i][2] - bottom[i][2] for i in range(n_u))
+    if rise >= 0.15:
+        for i in range(n_u - 1):
+            _facing_quad(bottom[i], bottom[i + 1], top[i + 1], top[i], prefer_up)
+
+    # Extra mountain wing if we still have little geometry
+    if len(faces) < 4 and mtn != 0.0:
+        for i in range(n_u):
+            s = i / (n_u - 1)
+            lat = (-half if mtn < 0 else half) * 0.2 + mtn * pier_outer * s
+            along = along_center
+            x0 = ox + along * fwd[0] + lat * left[0]
+            y0 = oy + along * fwd[1] + lat * left[1]
+            hx, hy, hz = _highest_near(x0, y0)
+            if hz >= z_floor + 0.15:
+                b = _w(x0, y0, z_floor)
+                tpt = _w(hx, hy, hz)
+                bottom[i] = b
+                top[i] = tpt
+        rise = max(top[i][2] - bottom[i][2] for i in range(n_u))
+        if rise >= 0.15:
+            for i in range(n_u - 1):
+                _facing_quad(bottom[i], bottom[i + 1], top[i + 1], top[i], prefer_up)
+
+    return verts, faces, origin
+
+
+
 def make_gallery_deck_meshroad(
     name: str,
     nodes: list[dict],
@@ -1763,6 +2019,7 @@ def write_collada(
     *,
     material_name: str = "Concrete",
     mesh_stem: str | None = None,
+    uv_scale_m: float = 4.0,
 ) -> None:
     """Z-up Collada with BeamNG static hierarchy + Colmesh-1 collision.
 
@@ -1774,6 +2031,9 @@ def write_collada(
           Colmesh-1           — physics mesh (same tris for now; simplify later)
     """
     pos_vals = " ".join(f"{x:.4f} {y:.4f} {z:.4f}" for x, y, z in verts)
+    # Planar UV from local XY so rock/concrete maps tile like terrain (~uv_scale_m).
+    scale = max(0.5, float(uv_scale_m))
+    uv_vals = " ".join(f"{x / scale:.5f} {y / scale:.5f}" for x, y, _z in verts)
     p_vals = " ".join(f"{a} {b} {c}" for a, b, c in faces)
     n_tri = len(faces)
     n_vert = len(verts)
@@ -1817,11 +2077,21 @@ def write_collada(
             </accessor>
           </technique_common>
         </source>
+        <source id="{lod_name}-mesh-map-0">
+          <float_array id="{lod_name}-mesh-map-0-array" count="{n_vert * 2}">{uv_vals}</float_array>
+          <technique_common>
+            <accessor source="#{lod_name}-mesh-map-0-array" count="{n_vert}" stride="2">
+              <param name="S" type="float"/>
+              <param name="T" type="float"/>
+            </accessor>
+          </technique_common>
+        </source>
         <vertices id="{lod_name}-mesh-vertices">
           <input semantic="POSITION" source="#{lod_name}-mesh-positions"/>
         </vertices>
         <triangles material="{mat}" count="{n_tri}">
           <input semantic="VERTEX" source="#{lod_name}-mesh-vertices" offset="0"/>
+          <input semantic="TEXCOORD" source="#{lod_name}-mesh-map-0" offset="0" set="0"/>
           <p>{p_vals}</p>
         </triangles>
       </mesh>
@@ -1856,7 +2126,9 @@ def write_collada(
             <instance_geometry url="#{lod_name}-mesh">
               <bind_material>
                 <technique_common>
-                  <instance_material symbol="{mat}" target="#{mat}-material"/>
+                  <instance_material symbol="{mat}" target="#{mat}-material">
+                    <bind_vertex_input semantic="UVSET0" input_semantic="TEXCOORD" input_set="0"/>
+                  </instance_material>
                 </technique_common>
               </bind_material>
             </instance_geometry>
@@ -1890,27 +2162,57 @@ def ensure_gallery_material(user_level: Path, level_name: str, mat_name: str = "
         except json.JSONDecodeError:
             data = {}
     terr = f"/levels/{level_name}/art/terrains"
-    data[mat_name] = {
-        "name": mat_name,
-        "mapTo": mat_name,
-        "class": "Material",
-        "persistentId": "ga11e7c0-c0ac-4e1e-9c11-0000ga11e701",
-        "Stages": [
-            {
-                "baseColorMap": f"{terr}/t_terrain_base_concrete_b.png",
-                "normalMap": f"{terr}/t_terrain_base_concrete_nm.png",
-                "roughnessFactor": 0.85,
-                "baseColorFactor": [0.7, 0.7, 0.68, 1.0],
-            },
-            {},
-            {},
-            {},
-        ],
-        "annotation": "CONCRETE",
-        "materialTag0": "RoadAndPath",
-        "materialTag1": "beamng",
-        "version": 1.5,
-    }
+    if mat_name in ("GalleryRock", "rock", "Rock"):
+        # Match terrain layer "rock": pac detail maps (what you see on steep faces)
+        # plus a soft base tint; UVs on collar DAEs tile at ~4 m.
+        data[mat_name] = {
+            "name": mat_name,
+            "mapTo": mat_name,
+            "class": "Material",
+            "persistentId": "ga11e7c0-c0ac-4e1e-9c11-0000ga11e702",
+            "Stages": [
+                {
+                    "baseColorMap": f"{terr}/t_rocks_pac_b.png",
+                    "normalMap": f"{terr}/t_rocks_pac_nm.png",
+                    "roughnessMap": f"{terr}/t_rocks_pac_r.png",
+                    "ambientOcclusionMap": f"{terr}/t_rocks_pac_ao.png",
+                    "detailMap": f"{terr}/t_terrain_base_rock_b.png",
+                    "detailScale": [0.35, 0.35],
+                    "detailNormalMap": f"{terr}/t_terrain_base_rock_nm.png",
+                    "roughnessFactor": 0.96,
+                    "baseColorFactor": [0.72, 0.70, 0.66, 1.0],
+                },
+                {},
+                {},
+                {},
+            ],
+            "annotation": "ROCK",
+            "materialTag0": "Natural",
+            "materialTag1": "beamng",
+            "version": 1.5,
+        }
+    else:
+        data[mat_name] = {
+            "name": mat_name,
+            "mapTo": mat_name,
+            "class": "Material",
+            "persistentId": "ga11e7c0-c0ac-4e1e-9c11-0000ga11e701",
+            "Stages": [
+                {
+                    "baseColorMap": f"{terr}/t_terrain_base_concrete_b.png",
+                    "normalMap": f"{terr}/t_terrain_base_concrete_nm.png",
+                    "roughnessFactor": 0.85,
+                    "baseColorFactor": [0.7, 0.7, 0.68, 1.0],
+                },
+                {},
+                {},
+                {},
+            ],
+            "annotation": "CONCRETE",
+            "materialTag0": "RoadAndPath",
+            "materialTag1": "beamng",
+            "version": 1.5,
+        }
     mats_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 
 
@@ -2766,6 +3068,11 @@ def main() -> None:
             level_name,
             str((defaults.get("materials") or {}).get("side") or "Concrete"),
         )
+        ensure_gallery_material(
+            user_level,
+            level_name,
+            str((defaults.get("materials") or {}).get("collar") or "GalleryRock"),
+        )
         # MeshRoad asphalt/concrete (same as bridges)
         bb.ensure_meshroad_materials(user_level, level_name, defaults.get("materials") or {})
         (user_level / "art" / "shapes" / "galleries").mkdir(parents=True, exist_ok=True)
@@ -2972,6 +3279,72 @@ def main() -> None:
                             "isRenderEnabled": True,
                         }
                     )
+                    if cfg.get("portal_collar", True):
+                        cv, cf, corig = loft_portal_collar(
+                            node,
+                            into_sign=into_sign,
+                            z_at=z_terrain,
+                            clear_h=clear_h,
+                            roof_t=roof_t,
+                            block_m=block_m,
+                            depth_m=depth_m,
+                            overhang_m=over_m,
+                            open_side=open_side,
+                            clear_extra_m=clear_x,
+                            collar_out_m=float(cfg.get("portal_collar_out_m") or 5.0),
+                            collar_side_m=float(cfg.get("portal_collar_side_m") or 7.0),
+                            collar_sink_m=float(cfg.get("portal_collar_sink_m") or 0.1),
+                            n_rings=int(cfg.get("portal_collar_rings") or 4),
+                        )
+                        if cf:
+                            n_tris += len(cf)
+                            collar_mat = str(
+                                (cfg.get("materials") or {}).get("collar") or "GalleryRock"
+                            )
+                            tex_len = float(
+                                (cfg.get("materials") or {}).get("texture_length") or 4.0
+                            )
+                            if user_level.is_dir():
+                                ensure_gallery_material(user_level, level_name, collar_mat)
+                            cdae = f"gallery_portal_collar_{slug}_{oid}_{end_name}.dae"
+                            write_collada(
+                                shapes_dir_proc / cdae,
+                                cv,
+                                cf,
+                                material_name=collar_mat,
+                                mesh_stem=Path(cdae).stem,
+                                uv_scale_m=tex_len,
+                            )
+                            if user_level.is_dir():
+                                write_collada(
+                                    user_level / "art" / "shapes" / "galleries" / cdae,
+                                    cv,
+                                    cf,
+                                    material_name=collar_mat,
+                                    mesh_stem=Path(cdae).stem,
+                                    uv_scale_m=tex_len,
+                                )
+                            ts_entries.append(
+                                {
+                                    "name": f"gallery_portal_collar_{slug}_{oid}_{end_name}",
+                                    "class": "TSStatic",
+                                    "__parent": "galleries",
+                                    "position": [
+                                        round(corig[0], 3),
+                                        round(corig[1], 3),
+                                        round(corig[2], 3),
+                                    ],
+                                    "scale": [1.0, 1.0, 1.0],
+                                    "shapeName": (
+                                        f"/levels/{level_name}/art/shapes/galleries/{cdae}"
+                                    ),
+                                    # Decorative rock fill only — never block the carriageway.
+                                    "collisionType": "None",
+                                    "decalType": "None",
+                                    "useInstanceRenderData": True,
+                                    "isRenderEnabled": True,
+                                }
+                            )
 
         centerlines.append(
             {

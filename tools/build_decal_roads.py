@@ -34,7 +34,8 @@ def _cfg(bng: dict) -> dict:
         "enabled": bool(defaults.get("enabled", True)),
         "width_scale": float(defaults.get("width_scale") or 1.0),
         "material": str(defaults.get("material") or "Asphalt"),
-        "texture_length": float(defaults.get("texture_length") or 8.0),
+        "texture_length": float(defaults.get("texture_length") or 6.0),
+        "detail_scale": float(defaults.get("detail_scale") or 4.0),
         "render_priority": int(defaults.get("render_priority") or 10),
         "drivability": float(defaults.get("drivability") if defaults.get("drivability") is not None else 1.0),
         "improved_spline": bool(defaults.get("improved_spline", True)),
@@ -398,7 +399,13 @@ def write_level(level_name: str, entries: list[dict], cfg: dict) -> Path | None:
     _ensure_line_material(user_level, level_name, cfg["centerline"]["material"])
     # Ensure asphalt exists (bridges may already have written it)
     bb.ensure_meshroad_materials(
-        user_level, level_name, {"top": cfg["material"], "texture_length": cfg["texture_length"]}
+        user_level,
+        level_name,
+        {
+            "top": cfg["material"],
+            "texture_length": cfg["texture_length"],
+            "detail_scale": cfg.get("detail_scale") or 4.0,
+        },
     )
 
     group_dir = user_level / "main" / "MissionGroup" / "level_objects" / "roads"

@@ -663,7 +663,12 @@ def _mesh_material(
 
 
 def ensure_meshroad_materials(user_level: Path, level_name: str, materials: dict) -> None:
-    """Register MeshRoad materials in art/road, reusing this level's terrain asphalt/concrete maps."""
+    """Register MeshRoad/DecalRoad materials; Asphalt matched to terrain paint.
+
+    Terrain ``Asphalt`` blends ``t_terrain_base_asphalt`` + detail ``t_asphalt_02``
+    (+ macro). Mesh/Decal cannot use TerrainMaterial, so we approximate the same
+    stack on a regular Material and keep one shared ``Asphalt`` name.
+    """
     mats_path = user_level / "art" / "road" / "main.materials.json"
     mats_path.parent.mkdir(parents=True, exist_ok=True)
     data: dict = {}
@@ -674,21 +679,24 @@ def ensure_meshroad_materials(user_level: Path, level_name: str, materials: dict
             data = {}
 
     terr = f"/levels/{level_name}/art/terrains"
-    detail_scale = float(materials.get("detail_scale") or 6.0)
-    # Use terrain asphalt *detail* maps (same set the TerrainMaterial blends in close-up).
+    # Detail grain vs base: terrain detailStrength≈0.3; keep a mild overlay.
+    detail_scale = float(materials.get("detail_scale") or 4.0)
+    asphalt_name = materials.get("top") or "Asphalt"
     wanted = {
-        materials.get("top") or "Asphalt": _mesh_material(
-            materials.get("top") or "Asphalt",
-            base_color=f"{terr}/t_asphalt_02_b.png",
-            normal=f"{terr}/t_asphalt_02_nm.png",
-            roughness=f"{terr}/t_asphalt_02_r.png",
-            ao=f"{terr}/t_asphalt_02_ao.png",
+        asphalt_name: _mesh_material(
+            asphalt_name,
+            # Same maps the TerrainMaterial uses for base + close-up detail.
+            base_color=f"{terr}/t_terrain_base_asphalt_b.png",
+            normal=f"{terr}/t_terrain_base_asphalt_nm.png",
+            roughness=f"{terr}/t_terrain_base_asphalt_r.png",
+            ao=f"{terr}/t_terrain_base_asphalt_ao.png",
             annotation="ASPHALT",
             persistent_id="a070a5a1-b71d-4e1e-9c11-0000a5fa1701",
-            base_color_factor=[0.62, 0.62, 0.62, 1.0],
+            # No heavy darkening — terrain base is already the right value.
+            base_color_factor=[0.92, 0.92, 0.90, 1.0],
             detail_scale=detail_scale,
-            detail_map=f"{terr}/t_asphalt_03_b.png",
-            detail_normal=f"{terr}/t_asphalt_03_nm.png",
+            detail_map=f"{terr}/t_asphalt_02_b.png",
+            detail_normal=f"{terr}/t_asphalt_02_nm.png",
         ),
         materials.get("bottom") or "Concrete": _mesh_material(
             materials.get("bottom") or "Concrete",
@@ -705,12 +713,16 @@ def ensure_meshroad_materials(user_level: Path, level_name: str, materials: dict
             persistent_id="c0ac7e7e-b71d-4e1e-9c11-0000c0ac7e7e",
         ),
     }
+    # Mild detail normals (terrain normalDetailStrength≈0.6/0.2).
+    asp_stage = wanted[asphalt_name]["Stages"][0]
+    if "detailNormalMap" in asp_stage:
+        asp_stage["detailNormalMapStrength"] = 0.45
     for name, mat in wanted.items():
         data[name] = mat
     mats_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     print(
         f"MeshRoad materials in {mats_path.name}: {', '.join(sorted(set(wanted)))} "
-        f"(detail_scale={detail_scale})"
+        f"(detail_scale={detail_scale}, asphalt≈terrain base+02)"
     )
 
 
@@ -775,8 +787,8 @@ def default_bridge_cfg(bng: dict) -> tuple[dict, list]:
             "top": "Asphalt",
             "bottom": "Concrete",
             "side": "Concrete",
-            "texture_length": 2.5,
-            "detail_scale": 6.0,
+            "texture_length": 6.0,
+            "detail_scale": 4.0,
             **(raw.get("materials") or {}),
         },
     }
