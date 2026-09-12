@@ -226,11 +226,20 @@ def strip_template_props(dst: Path) -> None:
     ):
         path = dst / rel
         if path.is_file():
-            # Keep ForestWindEmitter only
+            # Keep Forest + ForestWindEmitter; drop template GroundCover
             rows = _read_ndjson(path)
-            keep = [r for r in rows if r.get("class") == "ForestWindEmitter"]
+            keep = [r for r in rows if r.get("class") in {"Forest", "ForestWindEmitter"}]
+            if not any(r.get("class") == "Forest" for r in keep):
+                keep.append(
+                    {
+                        "name": "theForest",
+                        "class": "Forest",
+                        "__parent": "vegetation",
+                        "persistentId": "564dc79c-697c-4544-838c-ca62b097e065",
+                    }
+                )
             _write_ndjson(path, keep)
-            print(f"  cleared groundcover in {rel} (kept {len(keep)} wind emitters)")
+            print(f"  cleared groundcover in {rel} (kept {len(keep)} forest/wind)")
 
 
 def patch_terrain_block(dst: Path, level: str, max_height: float | None) -> None:

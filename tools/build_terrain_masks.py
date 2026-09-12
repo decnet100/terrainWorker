@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 import requests
 import tifffile as tiff
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFilter
 from pyproj import Transformer
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -27,6 +27,8 @@ CRS = SITE.get("crs", "EPSG:31254")
 OUT_SIZE = int(SITE.get("beamng", {}).get("mask_size", 512))
 MPP = float(SITE.get("beamng", {}).get("meters_per_pixel", 1.0))
 SLOPE_ROCK_DEG = float(SITE.get("beamng", {}).get("slope_rock_deg", 38.0))
+# Morphological opening (px) on slope-rock before paint — kills thin contour zebra.
+SLOPE_ROCK_OPEN_PX = int(SITE.get("beamng", {}).get("slope_rock_open_px", 2))
 ROAD_WIDTH_SCALE = float(SITE.get("beamng", {}).get("road_width_scale", 1.0))
 SHOULDER_M = float(SITE.get("beamng", {}).get("shoulder_m", 1.5))
 BW = XMAX - XMIN
@@ -35,22 +37,28 @@ TERRAIN_EXTENT = OUT_SIZE * MPP
 
 # Layer order must match import material list (template-compatible names).
 MATERIALS = [
-    "Grass",              # 0 forest / meadow / soft cover
+    "Grass",              # 0 meadow / Alm
     "dirt_rocky_large",   # 1 alpine default + road shoulder
     "rock",               # 2 bare rock / scree / steep slopes
     "Asphalt",            # 3 carriageway
+    "Grass2",             # 4 forest floor (Hochwald / Strauch)
+    "Mud",                # 5 water footprint (under WaterBlock/River)
 ]
 
 CLASS_GRASS = 0
 CLASS_DIRT = 1
 CLASS_ROCK = 2
 CLASS_ASPHALT = 3
+CLASS_FOREST = 4
+CLASS_WATER = 5
 
 GROUNDMODELS = {
     "Grass": "GRASS",
     "dirt_rocky_large": "DIRT_ROCKY_LARGE",
     "rock": "ROCK",
     "Asphalt": "ASPHALT",
+    "Grass2": "GRASS",
+    "Mud": "MUD",
 }
 
 
@@ -100,6 +108,7 @@ def fetch_osm_landuse() -> dict:
     headers = {"User-Agent": "beamng_autoroad/0.1 (local test)", "Accept": "application/json"}
     last_err = None
     for url in (
+        "https://overpass.private.coffee/api/interpreter",
         "https://overpass.kumi.systems/api/interpreter",
         "https://overpass-api.de/api/interpreter",
     ):
@@ -114,6 +123,170 @@ def fetch_osm_landuse() -> dict:
             last_err = ex
             print(f"Overpass landuse failed at {url}: {ex}")
     raise RuntimeError(f"OSM landuse fetch failed: {last_err}")
+
+
+def _load_landcover_geojson(rel_or_abs: str | None) -> dict | None:
+    if not rel_or_abs:
+        return None
+    path = Path(rel_or_abs)
+    if not path.is_absolute():
+        path = ROOT / path
+    if not path.is_file():
+        return None
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _geojson_rings_to_px(geom: dict, to_local: Transformer, size: int) -> list[list[tuple[float, float]]]:
+    """Extract outer rings from GeoJSON polygon/multipolygon → pixel coords."""
+    gtype = (geom or {}).get("type")
+    coords = (geom or {}).get("coordinates")
+    rings_ll: list = []
+    if gtype == "Polygon" and coords:
+        rings_ll.append(coords[0])
+    elif gtype == "MultiPolygon" and coords:
+        for poly in coords:
+            if poly:
+                rings_ll.append(poly[0])
+    out: list[list[tuple[float, float]]] = []
+    for ring in rings_ll:
+        pts = []
+        for c in ring:
+            if len(c) < 2:
+                continue
+            lon, lat = float(c[0]), float(c[1])
+            lx, ly = _local_xy(lon, lat, to_local)
+            pts.append(_to_px_geo(lx, ly, size))
+        if len(pts) >= 3:
+            out.append(pts)
+    return out
+
+
+def _paint_rings(grid: np.ndarray, rings: list[list[tuple[float, float]]], value: int) -> None:
+    size = grid.shape[0]
+    for pts in rings:
+        img = Image.new("L", (size, size), 0)
+        draw = ImageDraw.Draw(img)
+        draw.polygon(pts, outline=1, fill=1)
+        mask = np.array(img, dtype=np.uint8) > 0
+        grid[mask] = value
+
+
+def _tirol_landnutzung_kind(props: dict) -> str | None:
+    """Map Tirol Landnutzung props → semantic kind."""
+    klasse = str(props.get("KLASSE") or "").lower()
+    objekt = str(props.get("OBJEKT") or "").upper()
+    bez = str(props.get("OBJEKTBEZEICHNUNG") or "").lower()
+
+    if objekt.startswith("LN-G") or "gewässer" in bez or "gewasser" in bez:
+        if "stehend" in klasse or objekt == "LN-GWS":
+            return "water_standing"
+        return "water_flowing"
+    if "straße" in klasse or "strasse" in klasse or "weg" in klasse or objekt.startswith("LN-V"):
+        return "road"
+    if "siedlung" in bez or "anwesen" in klasse:
+        return "settlement"
+    if "hochwald" in klasse or objekt == "LN-WHW":
+        return "forest_high"
+    if "strauch" in klasse or "krumm" in klasse or objekt == "LN-WST":
+        return "forest_scrub"
+    if "alm" in klasse or "extensiv" in bez or "grünland" in klasse or "gruenland" in klasse:
+        return "meadow"
+    if "wald" in bez or objekt.startswith("LN-W"):
+        return "forest_scrub"
+    return None
+
+
+def _tirol_wald_kind(props: dict) -> str | None:
+    objekt = str(props.get("OBJEKT") or "").upper()
+    bez = str(props.get("OBJEKTBEZEICHNUNG") or "").lower()
+    if objekt == "WHOCH" or bez == "hochwald":
+        return "forest_high"
+    if objekt == "WSTRAU" or "strauch" in bez or "krumm" in bez:
+        return "forest_scrub"
+    if "wald" in bez:
+        return "forest_high"
+    return None
+
+
+def rasterize_tirol_landcover(size: int) -> tuple[np.ndarray, dict[str, np.ndarray], str]:
+    """Rasterize Landnutzung (+ optional Waldfläche).
+
+    Returns (class_grid [-1 unset], extra_masks, source_note).
+    Extra masks: forest_high, forest_scrub, water (bool arrays as uint8 0/255 later).
+    """
+    index_path = PROC / "landcover_index.json"
+    if not index_path.is_file():
+        return np.full((size, size), -1, dtype=np.int8), {}, "none"
+
+    index = json.loads(index_path.read_text(encoding="utf-8"))
+    ln = _load_landcover_geojson(index.get("landnutzung"))
+    wf = _load_landcover_geojson(index.get("waldflaeche"))
+    if not ln and not wf:
+        return np.full((size, size), -1, dtype=np.int8), {}, "none"
+
+    to_local = Transformer.from_crs("EPSG:4326", CRS, always_xy=True)
+    landuse = np.full((size, size), -1, dtype=np.int8)
+    forest_high = np.zeros((size, size), dtype=bool)
+    forest_scrub = np.zeros((size, size), dtype=bool)
+    water = np.zeros((size, size), dtype=bool)
+
+    def apply_kind(kind: str | None, rings: list[list[tuple[float, float]]]) -> None:
+        nonlocal forest_high, forest_scrub, water
+        if not kind or not rings:
+            return
+        if kind == "meadow":
+            _paint_rings(landuse, rings, CLASS_GRASS)
+        elif kind == "forest_high":
+            _paint_rings(landuse, rings, CLASS_FOREST)
+            tmp = np.zeros((size, size), dtype=np.uint8)
+            _paint_rings(tmp, rings, 1)
+            forest_high = forest_high | (tmp > 0)
+        elif kind == "forest_scrub":
+            _paint_rings(landuse, rings, CLASS_FOREST)
+            tmp = np.zeros((size, size), dtype=np.uint8)
+            _paint_rings(tmp, rings, 1)
+            forest_scrub = forest_scrub | (tmp > 0)
+        elif kind in ("water_flowing", "water_standing"):
+            _paint_rings(landuse, rings, CLASS_WATER)
+            tmp = np.zeros((size, size), dtype=np.uint8)
+            _paint_rings(tmp, rings, 1)
+            water = water | (tmp > 0)
+        elif kind == "settlement":
+            _paint_rings(landuse, rings, CLASS_DIRT)
+        # road: ignore — asphalt from OSM roads
+
+    # Landnutzung first (broader), Waldfläche refines forest type
+    n_ln = n_wf = 0
+    if ln:
+        for f in ln.get("features") or []:
+            kind = _tirol_landnutzung_kind(f.get("properties") or {})
+            rings = _geojson_rings_to_px(f.get("geometry") or {}, to_local, size)
+            if kind and rings:
+                apply_kind(kind, rings)
+                n_ln += 1
+    if wf:
+        for f in wf.get("features") or []:
+            kind = _tirol_wald_kind(f.get("properties") or {})
+            rings = _geojson_rings_to_px(f.get("geometry") or {}, to_local, size)
+            if kind and rings:
+                apply_kind(kind, rings)
+                n_wf += 1
+
+    extras = {
+        "forest_high": forest_high,
+        "forest_scrub": forest_scrub,
+        "water": water,
+    }
+    note = f"tirol_landnutzung({n_ln})+waldflaeche({n_wf})"
+    print(
+        f"Tirol landcover: painted_ln={n_ln} painted_wald={n_wf} "
+        f"grass={(landuse == CLASS_GRASS).mean()*100:.2f}% "
+        f"forest={(landuse == CLASS_FOREST).mean()*100:.2f}% "
+        f"forest_high={forest_high.mean()*100:.2f}% "
+        f"forest_scrub={forest_scrub.mean()*100:.2f}% "
+        f"water={(landuse == CLASS_WATER).mean()*100:.2f}%"
+    )
+    return landuse, extras, note
 
 
 def _tag_class(tags: dict) -> int | None:
@@ -184,15 +357,19 @@ def rasterize_landuse(data: dict, size: int) -> np.ndarray:
 
 
 def elev_to_grid(elev: np.ndarray, size: int) -> np.ndarray:
-    """Resample DGM (row0=north) to square float grid."""
+    """Resample DGM (row0=north) to square float grid.
+
+    Must stay float32 — an 8-bit detour (~3 m steps over alpine range) turns
+    slope into flat/riser zebra, so thresholds like 38° vs 43° do nothing.
+    """
     e = np.nan_to_num(elev.astype(np.float32), nan=float(np.nanmean(elev)))
-    # Normalize to 0..255 for PIL resize, then rescale — keeps relative slopes.
-    z0, z1 = float(e.min()), float(e.max())
-    if z1 <= z0:
-        return np.full((size, size), z0, dtype=np.float32)
-    u8 = ((e - z0) / (z1 - z0) * 255.0).astype(np.uint8)
-    img = Image.fromarray(u8, mode="L").resize((size, size), resample=Image.Resampling.BILINEAR)
-    return (np.array(img, dtype=np.float32) / 255.0) * (z1 - z0) + z0
+    if e.shape[0] == size and e.shape[1] == size:
+        return e
+    # PIL mode F = 32-bit float; bilinear keeps continuous gradients.
+    return np.array(
+        Image.fromarray(e, mode="F").resize((size, size), resample=Image.Resampling.BILINEAR),
+        dtype=np.float32,
+    )
 
 
 def slope_degrees(elev_grid: np.ndarray) -> np.ndarray:
@@ -275,6 +452,25 @@ def bridge_under_mask(size: int, margin_m: float = 0.5) -> np.ndarray:
     return mask
 
 
+def slope_rock_mask(slope: np.ndarray, threshold_deg: float, open_px: int) -> np.ndarray:
+    """Steep cells, then binary opening to drop thin contour stripes.
+
+    Alpine DGMs produce bench/riser patterns near a slope threshold; raw
+    ``slope >= T`` carves horizontal zebra into Grass. Opening keeps fat
+    cliff faces and removes 1-pixel ribbons.
+    """
+    raw = slope >= float(threshold_deg)
+    if open_px <= 0:
+        return raw
+    img = Image.fromarray(raw.astype(np.uint8) * 255, mode="L")
+    # Min=erode, Max=dilate; 3×3 repeated ≈ open_px metres at 1 m/px
+    for _ in range(int(open_px)):
+        img = img.filter(ImageFilter.MinFilter(3))
+    for _ in range(int(open_px)):
+        img = img.filter(ImageFilter.MaxFilter(3))
+    return np.array(img, dtype=np.uint8) > 0
+
+
 def classify(
     landuse: np.ndarray,
     slope: np.ndarray,
@@ -284,14 +480,16 @@ def classify(
 ) -> np.ndarray:
     """Exclusive material class per pixel.
 
-    Priority: Asphalt > Rock > Grass (landuse) > Dirt (default / shoulder).
+    Priority: Asphalt > Water > Rock > Forest > Grass > Dirt.
     Terrain under bridge decks is forced to rock (carriageway is MeshRoad).
     """
     out = np.full(landuse.shape, CLASS_DIRT, dtype=np.uint8)
     out[landuse == CLASS_GRASS] = CLASS_GRASS
-    out[slope >= SLOPE_ROCK_DEG] = CLASS_ROCK
+    out[landuse == CLASS_FOREST] = CLASS_FOREST
+    rock = slope_rock_mask(slope, SLOPE_ROCK_DEG, SLOPE_ROCK_OPEN_PX)
+    out[rock] = CLASS_ROCK
     out[landuse == CLASS_ROCK] = CLASS_ROCK
-    # Shoulder bankett (dirt), then asphalt carriageway on top.
+    out[landuse == CLASS_WATER] = CLASS_WATER
     out[shoulder] = CLASS_DIRT
     out[asphalt] = CLASS_ASPHALT
     if bridge_under is not None and bridge_under.any():
@@ -319,12 +517,14 @@ def write_layer_maps(classes: np.ndarray, out_dir: Path) -> list[dict]:
 
 
 def write_preview(classes: np.ndarray, path: Path) -> None:
-    """RGB preview: G=grass, brown=dirt, grey=rock, dark=asphalt."""
+    """RGB preview: grass / forest / dirt / rock / asphalt / water."""
     rgb = np.zeros((*classes.shape, 3), dtype=np.uint8)
     rgb[classes == CLASS_GRASS] = (60, 140, 50)
     rgb[classes == CLASS_DIRT] = (140, 110, 70)
     rgb[classes == CLASS_ROCK] = (150, 150, 155)
     rgb[classes == CLASS_ASPHALT] = (40, 40, 45)
+    rgb[classes == CLASS_FOREST] = (30, 90, 40)
+    rgb[classes == CLASS_WATER] = (40, 90, 180)
     Image.fromarray(rgb, mode="RGB").save(path)
     print(f"Wrote {path}")
 
@@ -342,10 +542,32 @@ def main() -> None:
     elev_g = elev_to_grid(elev, OUT_SIZE)
     slope = slope_degrees(elev_g)
     print(f"Slope deg: min={slope.min():.1f} max={slope.max():.1f} "
-          f"rock_threshold={SLOPE_ROCK_DEG}")
+          f"rock_threshold={SLOPE_ROCK_DEG} open_px={SLOPE_ROCK_OPEN_PX}")
 
-    lu_data = fetch_osm_landuse()
-    landuse = rasterize_landuse(lu_data, OUT_SIZE)
+    lu_src = str(((SITE.get("sources") or {}).get("landuse") or {}).get("type") or "osm").lower()
+    extras: dict[str, np.ndarray] = {}
+    source_note = "osm_landuse"
+    if lu_src in ("featureserver", "wfs", "tirol", "landcover"):
+        landuse, extras, source_note = rasterize_tirol_landcover(OUT_SIZE)
+        if source_note == "none" or int((landuse >= 0).sum()) == 0:
+            print("Tirol landcover missing/empty — falling back to OSM")
+            try:
+                lu_data = fetch_osm_landuse()
+                landuse = rasterize_landuse(lu_data, OUT_SIZE)
+                source_note = "osm_landuse_fallback"
+            except Exception as ex:  # noqa: BLE001
+                print(f"OSM fallback failed: {ex}")
+                landuse = np.full((OUT_SIZE, OUT_SIZE), -1, dtype=np.int8)
+                source_note = "slope_only"
+    else:
+        try:
+            lu_data = fetch_osm_landuse()
+            landuse = rasterize_landuse(lu_data, OUT_SIZE)
+        except Exception as ex:  # noqa: BLE001
+            print(f"OSM landuse failed: {ex} — slope/roads only")
+            landuse = np.full((OUT_SIZE, OUT_SIZE), -1, dtype=np.int8)
+            source_note = "slope_only"
+
     asphalt, shoulder = road_masks(OUT_SIZE)
     bridge_under = bridge_under_mask(OUT_SIZE)
     asphalt_vis = asphalt & ~bridge_under
@@ -366,8 +588,24 @@ def main() -> None:
     slope_u8 = np.clip(slope / 60.0 * 255.0, 0, 255).astype(np.uint8)
     Image.fromarray(slope_u8, mode="L").save(PROC / "mask_slope.png")
 
-    forest = ((landuse == CLASS_GRASS) & (slope < SLOPE_ROCK_DEG)).astype(np.uint8) * 255
-    Image.fromarray(forest, mode="L").save(PROC / "mask_forest.png")
+    forest_high = extras.get("forest_high")
+    forest_scrub = extras.get("forest_scrub")
+    water = extras.get("water")
+    if forest_high is None:
+        forest_high = np.zeros((OUT_SIZE, OUT_SIZE), dtype=bool)
+    if forest_scrub is None:
+        forest_scrub = np.zeros((OUT_SIZE, OUT_SIZE), dtype=bool)
+    if water is None:
+        water = np.zeros((OUT_SIZE, OUT_SIZE), dtype=bool)
+    # Forest masks = landcover polygons only (never carve by slope — that
+    # puts contour noise / "Unruhe" inside mask_forest.png).
+    forest = forest_high | forest_scrub
+    if not forest.any():
+        forest = landuse == CLASS_GRASS
+    Image.fromarray(forest.astype(np.uint8) * 255, mode="L").save(PROC / "mask_forest.png")
+    Image.fromarray(forest_high.astype(np.uint8) * 255, mode="L").save(PROC / "mask_forest_high.png")
+    Image.fromarray(forest_scrub.astype(np.uint8) * 255, mode="L").save(PROC / "mask_forest_scrub.png")
+    Image.fromarray(water.astype(np.uint8) * 255, mode="L").save(PROC / "mask_water.png")
     rock = (classes == CLASS_ROCK).astype(np.uint8) * 255
     Image.fromarray(rock, mode="L").save(PROC / "mask_rock.png")
     Image.fromarray(asphalt_vis.astype(np.uint8) * 255, mode="L").save(PROC / "mask_asphalt.png")
@@ -382,8 +620,19 @@ def main() -> None:
         "road_width_scale": ROAD_WIDTH_SCALE,
         "shoulder_m": SHOULDER_M,
         "materials": entries,
+        "landcover_source": source_note,
+        "coverage": {
+            "grass_pct": round(float((classes == CLASS_GRASS).mean() * 100), 2),
+            "dirt_pct": round(float((classes == CLASS_DIRT).mean() * 100), 2),
+            "rock_pct": round(float((classes == CLASS_ROCK).mean() * 100), 2),
+            "asphalt_pct": round(float((classes == CLASS_ASPHALT).mean() * 100), 2),
+            "forest_pct": round(float((classes == CLASS_FOREST).mean() * 100), 2),
+            "water_pct": round(float((classes == CLASS_WATER).mean() * 100), 2),
+            "forest_high_pct": round(float(forest_high.mean() * 100), 2),
+            "forest_scrub_pct": round(float(forest_scrub.mean() * 100), 2),
+        },
         "sources": [
-            "osm_landuse",
+            source_note,
             "dgm_slope",
             "osm_roads_asphalt_shoulder",
             "bridges_decks_under_rock",
@@ -391,9 +640,10 @@ def main() -> None:
         "import_notes": [
             "Terrain Tools → Import Terrain → Load terrainPreset.json (recommended)",
             "Heightmap: heightmap_%d.png, Max Height from heightmap_meta.json" % OUT_SIZE,
-            "Texture maps in order: Grass, dirt_rocky_large, rock, Asphalt",
-            "Groundmodels: GRASS / DIRT_ROCKY_LARGE / ROCK / ASPHALT",
-            "Asphalt = full OSM width; dirt = shoulder bankett around it",
+            "Texture maps in order: Grass, dirt_rocky_large, rock, Asphalt, Grass2, Mud",
+            "Groundmodels: GRASS / DIRT_ROCKY_LARGE / ROCK / ASPHALT / GRASS / MUD",
+            "Tirol: Almen→Grass; Wald→Grass2+forest scatter; Gewässer→Mud+WaterBlock/River",
+            "Asphalt = OSM width; dirt = shoulder bankett",
             "Under bridge decks: rock (MeshRoad carries the asphalt)",
             "Keep Flip Y Axis consistent with heightmap import",
         ],
@@ -460,6 +710,16 @@ def main() -> None:
         if hole_src.exists():
             Image.open(hole_src).save(user_import / "theTerrain_holemap.png")
             Image.open(hole_src).save(user_import / "holeMap.png")
+        for helper in (
+            "mask_forest.png",
+            "mask_forest_high.png",
+            "mask_forest_scrub.png",
+            "mask_water.png",
+            "preview_terrain_materials.png",
+        ):
+            hp = PROC / helper
+            if hp.is_file():
+                Image.open(hp).save(user_import / helper)
         (user_import / "terrainPreset.json").write_text(
             json.dumps(preset, indent=2), encoding="utf-8"
         )

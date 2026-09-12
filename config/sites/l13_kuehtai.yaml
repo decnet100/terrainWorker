@@ -32,14 +32,23 @@ sources:
     type_name: "Verkehrswege:Verkehrswege"
     str_code: L13
   landuse:
-    type: osm
-    note: "OSM natural/landuse polygons; Tirol LISA WFS later"
+    type: featureserver   # Tirol Landnutzung + Waldfläche (see tools/fetch_landcover.py)
+    # type: osm           # Overpass fallback
+    layers:
+      landnutzung:
+        url: "https://services3.arcgis.com/hG7UfxX49PQ8XkXh/arcgis/rest/services/Landnutzung/FeatureServer/0"
+        label: Landnutzung
+      waldflaeche:
+        url: "https://services3.arcgis.com/hG7UfxX49PQ8XkXh/arcgis/rest/services/Waldflaeche/FeatureServer/0"
+        label: Waldfläche
+    note: "Almen/Wald/Gewässer → terrain masks; Hochwald vs Strauch → mask_forest_*"
 
 beamng:
   meters_per_pixel: 1.0
   level_name: autoroad_galerie_2048
   mask_size: 2048
-  slope_rock_deg: 38
+  slope_rock_deg: 43
+  slope_rock_open_px: 1       # entfernt dünne Konturstreifen; 0 = roh (Zebra)
   road_width_scale: 1.0
   shoulder_m: 0.2
   bridges:
@@ -219,6 +228,51 @@ beamng:
     clip_galleries: true
     stop_before_gallery_m: 3.0
     gallery_clip_pad_m: 2.0
+
+  # Tirol Gewässer → Terrain Mud immer; Mesh nur für stehende Kleinteiche.
+  # Fließend als River aus Landcover-Polygonen = zu breite Scheiben → flowing: none
+  water:
+    enabled: true
+    flowing: none              # none | river (river erst mit echter Mittellinie)
+    standing: waterblock       # none | waterblock
+    standing_max_side_m: 40.0
+    depth_m: 3.0
+    surface_lift_m: 0.15
+    min_area_m2: 40.0
+    grid_element_size: 4.0
+
+  # Tirol Wald → Forest scatter (douglasfir from driver_training)
+  forest:
+    enabled: true
+    spacing_high_m: 10.0     # Hochwald
+    spacing_scrub_m: 5.0     # Strauch / Krummholz
+    slope_max_deg: 42.0
+    clear_road_m: 4.0
+    max_items: 12000
+    seed: 13
+
+  # OSM centerlines → BeamNG DecalRoad (asphalt + optional centerline paint)
+  decal_roads:
+    enabled: true
+    width_scale: 1.0
+    material: Asphalt
+    texture_length: 8.0
+    render_priority: 10
+    drivability: 1.0
+    improved_spline: true
+    over_objects: false          # true = auch über MeshRoad/Brücke projizieren
+    clip_galleries: true         # Decal endet vor Galerie (Deck hat schon Asphalt)
+    stop_before_gallery_m: 2.0
+    gallery_clip_pad_m: 1.0
+    highways: [secondary, primary, tertiary, trunk, motorway, unclassified]
+    centerline:
+      enabled: true
+      style: dashed              # solid | dashed | none
+      width_m: 0.15
+      material: Road_Line_White
+      dash_m: 3.0
+      gap_m: 6.0
+      render_priority: 25
 
 annotations:
   gpkg: data/annotations/tirol-l13-kuehtai-2048.gpkg
