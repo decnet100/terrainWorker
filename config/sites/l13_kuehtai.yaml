@@ -1,14 +1,16 @@
 # Zweites Testgebiet: L13 Sellraintal / Kühtai (Galerien, Brücken).
 # Aktivieren:  $env:AUTOROAD_SITE="config/sites/l13_kuehtai.yaml"
 # oder Datei nach config/site.yaml kopieren.
-name: tirol-l13-kuehtai-1024
+name: tirol-l13-kuehtai-2048
 crs: EPSG:31254
-# Center ~54808/231871, 1024×1024 m square
+# 2048×2048 m — covers Rauheneck + Mugkögele/Marcheck (needs >1109 m east–west).
+# (1536 is not a BeamNG-friendly power-of-two heightmap size.)
+# Center ~54646/231782
 bbox:
-  - 54296.0
-  - 231359.0
-  - 55320.0
-  - 232383.0
+  - 53878.0
+  - 230758.0
+  - 55926.0
+  - 232806.0
 
 sources:
   dgm:
@@ -35,8 +37,8 @@ sources:
 
 beamng:
   meters_per_pixel: 1.0
-  level_name: autoroad_galerie_test
-  mask_size: 1024
+  level_name: autoroad_galerie_2048
+  mask_size: 2048
   slope_rock_deg: 38
   road_width_scale: 1.0
   shoulder_m: 0.2
@@ -81,6 +83,10 @@ beamng:
   galleries:
     # Same pattern as bridges: defaults + items[] (match objectid / name).
     # MVP: open U-shell DAE + terrain hole map (build_galleries.py)
+    # Abutting GIP fragments (same name) → one gallery (no interior portal)
+    merge_abutting: true
+    merge_tol_m: 15.0
+    # Optional hard groups if auto-merge misses: merge_groups: [[7236, 10099]]
     defaults:
       width_m: 7.0
       width_from_road: true
@@ -118,9 +124,12 @@ beamng:
       deck_open_extra_m: 0.8   # Fahrbahn nur zur offenen Seite verlängern
       parapet_height_m: 1.0
       parapet_thickness_m: 0.35
+      parapet_out_m: 0.25       # Brüstung nach außen (Innenkante bleibt)
       column_spacing_m: 4.0
       column_along_m: 0.4
       column_lat_m: 0.35
+      # 0 = mittig auf Brüstung; >0 Richtung Außenkante (wird aufs Band geklemmt)
+      column_out_m: 0.0
       deck_extend_m: 12.0         # MeshRoad folgt Terrain über die Portale hinaus
       approach_mode: marry        # Auffahrt = DGM (an Terrain anbinden); Galerie = Hermite
       portal_ease_m: 4.0          # kurzer C1-Übergang knapp innerhalb der Portale
@@ -146,14 +155,20 @@ beamng:
         texture_length: 4.0
         detail_scale: 4.0
     items:
-      - match: { objectid: 7236, name: Mugkögele }
-        enabled: false
+      # Mugkögele = GIP 7236+10099 (merged to one span; primary oid = longest)
+      - match: { objectid: [7236, 10099], name: Mugkögele }
+        open_side: left
+        clear_height_m: 3.0
         hole_mode: none
-        debug_centerline: false
-      - match: { objectid: 10099, name: Mugkögele }
-        enabled: false
-        hole_mode: none
-        debug_centerline: false
+        deck_enabled: true
+        deck_width_extra_m: 0.5
+        deck_open_extra_m: 0.8
+        overhang_m: 1.0
+        parapet_height_m: 1.0
+        approach_mode: marry
+        approach_conform: false
+        style:
+          columns: rect
       - match: { objectid: 8276, name: Rauheneck }
         open_side: left
         clear_height_m: 3.0
@@ -200,12 +215,16 @@ beamng:
     snap_to_heightmap: true
     face_y_outward: true
     yaw_flip_right: false
+    # Vor Galerie/Tunnel enden (kein Durchlauf durch die Rauheneck)
+    clip_galleries: true
+    stop_before_gallery_m: 3.0
+    gallery_clip_pad_m: 2.0
 
 annotations:
-  gpkg: data/annotations/tirol-l13-kuehtai-1024.gpkg
+  gpkg: data/annotations/tirol-l13-kuehtai-2048.gpkg
   guardrail_source: auto
 
 notes: |
-  L13 Sellraintal / Kühtai 1024×1024 m. Mugkögele-/Marcheck- & Rauheneckgalerie.
+  L13 Sellraintal / Kühtai 2048×2048 m (Rauheneck + Mugkögele/Marcheck).
   GIP: python tools/fetch_gip.py
-  WGS84 approx: 47.218–47.229 N, 11.049–11.064 E
+  WGS84 approx: expand west of prior 1024 tile to include Mugkögele.

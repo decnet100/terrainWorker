@@ -75,9 +75,11 @@ GALLERY_SCALAR_KEYS = (
     "deck_extend_m",  # meters past Hermite portals for approach blend
     "parapet_height_m",
     "parapet_thickness_m",
+    "parapet_out_m",  # grow parapet outward past open deck edge (keep inner face)
     "column_spacing_m",
     "column_along_m",
     "column_lat_m",
+    "column_out_m",  # clear outside deck: inner face this far past open deck edge
     "approach_blend_m",  # marry: unused for Z float; legacy hermite_blend length
     "approach_mode",  # marry (DGM outside) | hermite_blend (float C1 outside)
     "portal_ease_m",  # marry: short C1 just inside portals
@@ -150,9 +152,16 @@ def default_gallery_cfg(bng: dict) -> tuple[dict, list]:
         "deck_extend_m": float(raw.get("deck_extend_m") or 5.0),
         "parapet_height_m": float(raw.get("parapet_height_m") or 1.0),
         "parapet_thickness_m": float(raw.get("parapet_thickness_m") or 0.35),
+        "parapet_out_m": float(
+            raw["parapet_out_m"] if raw.get("parapet_out_m") is not None else 0.25
+        ),
         "column_spacing_m": float(raw.get("column_spacing_m") or 4.0),
         "column_along_m": float(raw.get("column_along_m") or 0.4),
         "column_lat_m": float(raw.get("column_lat_m") or 0.35),
+        # >0 = further toward parapet outer edge (from midline); 0 = centered on parapet
+        "column_out_m": float(
+            raw["column_out_m"] if raw.get("column_out_m") is not None else 0.0
+        ),
         # Outside portals: C1 blend DGM approach → Hermite knot (kills grade slam)
         "approach_blend_m": float(raw.get("approach_blend_m") or 12.0),
         # marry = MeshRoad follows DGM outside (skin to terrain); hermite_blend = old float C1
@@ -212,17 +221,36 @@ def default_gallery_cfg(bng: dict) -> tuple[dict, list]:
 
 
 
+def _feat_objectids(feat: dict) -> set[int]:
+    ids: set[int] = set()
+    if feat.get("objectid") is not None:
+        ids.add(int(feat["objectid"]))
+    for x in feat.get("merged_from") or []:
+        if x is not None:
+            ids.add(int(x))
+    return ids
+
+
+def _match_objectid(m_oid, feat: dict) -> bool:
+    """True if match.objectid (int or list) hits this feature or a merge constituent."""
+    feat_oids = _feat_objectids(feat)
+    if not feat_oids:
+        return False
+    if isinstance(m_oid, (list, tuple, set)):
+        return any(int(x) in feat_oids for x in m_oid)
+    return int(m_oid) in feat_oids
+
+
 def resolve_gallery_cfg(defaults: dict, items: list, feat: dict) -> dict:
     cfg = dict(defaults)
     cfg["style"] = dict(defaults.get("style") or {})
     mats = dict(defaults.get("materials") or {})
-    oid = feat.get("objectid")
     name = str(feat.get("name") or "")
     matched = None
     for item in items or []:
         m = item.get("match") or {}
         ok = True
-        if "objectid" in m and int(m["objectid"]) != int(oid or -1):
+        if "objectid" in m and not _match_objectid(m["objectid"], feat):
             ok = False
         if "name" in m and str(m["name"]).lower() not in name.lower():
             ok = False
@@ -242,6 +270,154 @@ def resolve_gallery_cfg(defaults: dict, items: list, feat: dict) -> dict:
         cfg["match_id"] = matched.get("id") or matched.get("match")
     cfg["materials"] = mats
     return cfg
+
+
+def _poly_len_xy(xy: list[tuple[float, float]]) -> float:
+    return sum(
+        math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in zip(xy, xy[1:])
+    )
+
+
+def _chain_abutting_polylines(
+    segs: list[list[tuple[float, float]]],
+    *,
+    tol_m: float,
+) -> list[tuple[float, float]]:
+    """Concatenate polylines that share endpoints into one path."""
+    if not segs:
+        return []
+    if len(segs) == 1:
+        return list(segs[0])
+
+    remaining = [list(s) for s in segs]
+    # Start with longest fragment
+    remaining.sort(key=_poly_len_xy, reverse=True)
+    chain = remaining.pop(0)
+
+    def _d(p, q) -> float:
+        return math.hypot(p[0] - q[0], p[1] - q[1])
+
+    while remaining:
+        attached = False
+        for i, seg in enumerate(remaining):
+            variants = (seg, list(reversed(seg)))
+            for pts in variants:
+                if _d(chain[-1], pts[0]) <= tol_m:
+                    # drop duplicate junction vertex
+                    chain.extend(pts[1:] if _d(chain[-1], pts[0]) <= tol_m else pts)
+                    remaining.pop(i)
+                    attached = True
+                    break
+                if _d(chain[0], pts[-1]) <= tol_m:
+                    chain = pts[:-1] + chain
+                    remaining.pop(i)
+                    attached = True
+                    break
+            if attached:
+                break
+        if not attached:
+            # orphan fragment — keep longest chain, drop rest
+            break
+    return chain
+
+
+def merge_abutting_gallery_features(
+    feats: list[dict],
+    *,
+    tol_m: float = 15.0,
+    same_name: bool = True,
+    groups: list[list[int]] | None = None,
+) -> list[dict]:
+    """Merge GIP gallery/tunnel segments that form one physical structure.
+
+    GIP often splits one gallery into abutting OBJECTIDs (e.g. Mugkögele
+    7236+10099). Building them separately puts a Hermite portal at the
+    joint. Merge first → one centerline, portals only at true outer ends.
+
+    ``groups``: optional explicit OBJECTID lists from site YAML. Otherwise
+    auto-merge same-name features whose endpoints lie within ``tol_m``.
+    """
+    if len(feats) < 2:
+        return feats
+
+    n = len(feats)
+    parent = list(range(n))
+
+    def find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def union(i: int, j: int) -> None:
+        ri, rj = find(i), find(j)
+        if ri != rj:
+            parent[rj] = ri
+
+    oid_to_idx: dict[int, int] = {}
+    for i, f in enumerate(feats):
+        if f.get("objectid") is not None:
+            oid_to_idx[int(f["objectid"])] = i
+
+    # Explicit merge groups from YAML
+    for grp in groups or []:
+        idxs = [oid_to_idx[int(x)] for x in grp if int(x) in oid_to_idx]
+        for a, b in zip(idxs, idxs[1:]):
+            union(a, b)
+
+    # Auto: same name + abutting endpoints
+    for i in range(n):
+        for j in range(i + 1, n):
+            if feats[i].get("kind") != feats[j].get("kind"):
+                continue
+            if same_name and feats[i].get("name") != feats[j].get("name"):
+                continue
+            ends_i = (feats[i]["xy"][0], feats[i]["xy"][-1])
+            ends_j = (feats[j]["xy"][0], feats[j]["xy"][-1])
+            if any(
+                math.hypot(a[0] - b[0], a[1] - b[1]) <= tol_m
+                for a in ends_i
+                for b in ends_j
+            ):
+                union(i, j)
+
+    clusters: dict[int, list[int]] = {}
+    for i in range(n):
+        clusters.setdefault(find(i), []).append(i)
+
+    out: list[dict] = []
+    for idxs in clusters.values():
+        if len(idxs) == 1:
+            out.append(feats[idxs[0]])
+            continue
+        members = [feats[i] for i in idxs]
+        # Primary id = longest GIP fragment (stable mesh name)
+        primary = max(
+            members,
+            key=lambda f: float(f.get("length_m") or _poly_len_xy(f["xy"])),
+        )
+        xy = _chain_abutting_polylines([list(f["xy"]) for f in members], tol_m=tol_m)
+        if len(xy) < 2:
+            out.extend(members)
+            continue
+        oids = sorted(
+            {int(f["objectid"]) for f in members if f.get("objectid") is not None}
+        )
+        lengths = [float(f["length_m"]) for f in members if f.get("length_m") is not None]
+        merged = {
+            "kind": primary["kind"],
+            "name": primary["name"],
+            "objectid": primary.get("objectid"),
+            "merged_from": oids,
+            "length_m": sum(lengths) if lengths else _poly_len_xy(xy),
+            "xy": xy,
+        }
+        out.append(merged)
+        print(
+            f"merged gallery '{merged['name']}' objectids={oids} "
+            f"→ primary={merged['objectid']} span≈{_poly_len_xy(xy):.1f}m"
+        )
+    return out
 
 
 def gallery_features(site: dict, sc: SiteCoords) -> list[dict]:
@@ -879,17 +1055,24 @@ def loft_gallery_shell(
     overhang_m: float,
     embed_m: float = 0.2,
     open_extra_m: float = 0.8,
+    deck_width_extra_m: float = 0.5,
     parapet_height_m: float = 1.0,
     parapet_thickness_m: float = 0.35,
+    parapet_out_m: float = 0.25,
     column_spacing_m: float = 4.0,
     column_along_m: float = 0.4,
     column_lat_m: float = 0.35,
+    column_out_m: float = 0.15,
     build_parapet: bool = True,
 ) -> tuple[list[tuple[float, float, float]], list[tuple[int, int, int]], tuple[float, float, float]]:
     """Build open U-shell + optional open-side parapet/columns.
 
     open_side: left|right|both|none — which full-height wall is omitted (view out).
     On the open side: low continuous parapet (~1 m) and rectangular posts up to roof.
+
+    Columns sit **on the parapet** (center = parapet midline + ``column_out_m``).
+    ``column_out_m`` > 0 shifts toward the outer edge; clamped to stay on the strip.
+    ``parapet_out_m`` grows the outer face past the open deck edge (inner face fixed).
     """
     if len(nodes) < 2:
         raise ValueError("need >=2 gallery nodes")
@@ -902,13 +1085,22 @@ def loft_gallery_shell(
     open_left = side in ("left", "both")
     open_right = side in ("right", "both")
     open_extra = max(0.0, float(open_extra_m))
-    # Roof must cover parapet strip
+    deck_w_extra = max(0.0, float(deck_width_extra_m))
+    # Roof must cover parapet + outward columns
     overhang = max(float(overhang_m), open_extra if build_parapet else float(overhang_m))
     parapet_h = max(0.15, float(parapet_height_m))
     parapet_t = max(0.15, float(parapet_thickness_m))
+    parapet_out = max(0.0, float(parapet_out_m))
     col_space = max(1.0, float(column_spacing_m))
     col_along = max(0.15, float(column_along_m))
-    col_lat = max(0.15, min(float(column_lat_m), parapet_t))
+    col_lat = max(0.15, float(column_lat_m))
+    col_out = float(column_out_m)
+    # Keep roof over parapet outer edge (and any column that still sticks out)
+    overhang = max(
+        overhang,
+        open_extra + parapet_out,
+        open_extra + parapet_out + max(0.0, col_out) + 0.5 * col_lat,
+    )
 
     ring: list[dict] = []
     for n in nodes:
@@ -990,21 +1182,26 @@ def loft_gallery_shell(
                     cy + (half + wall_t) * right[1],
                     zo,
                 ),
-                # parapet cross-section (local)
+                # parapet: inner face stays at (open edge − thickness);
+                # outer grows by parapet_out_m (covers outward columns)
                 "lp_in": (
                     cx + (lat_l - parapet_t) * left[0],
                     cy + (lat_l - parapet_t) * left[1],
                     zb,
                 ),
-                "lp_out": (cx + lat_l * left[0], cy + lat_l * left[1], zb),
+                "lp_out": (
+                    cx + (lat_l + parapet_out) * left[0],
+                    cy + (lat_l + parapet_out) * left[1],
+                    zb,
+                ),
                 "lp_in_t": (
                     cx + (lat_l - parapet_t) * left[0],
                     cy + (lat_l - parapet_t) * left[1],
                     zr + parapet_h,
                 ),
                 "lp_out_t": (
-                    cx + lat_l * left[0],
-                    cy + lat_l * left[1],
+                    cx + (lat_l + parapet_out) * left[0],
+                    cy + (lat_l + parapet_out) * left[1],
                     zr + parapet_h,
                 ),
                 "rp_in": (
@@ -1012,15 +1209,19 @@ def loft_gallery_shell(
                     cy + (lat_r - parapet_t) * right[1],
                     zb,
                 ),
-                "rp_out": (cx + lat_r * right[0], cy + lat_r * right[1], zb),
+                "rp_out": (
+                    cx + (lat_r + parapet_out) * right[0],
+                    cy + (lat_r + parapet_out) * right[1],
+                    zb,
+                ),
                 "rp_in_t": (
                     cx + (lat_r - parapet_t) * right[0],
                     cy + (lat_r - parapet_t) * right[1],
                     zr + parapet_h,
                 ),
                 "rp_out_t": (
-                    cx + lat_r * right[0],
-                    cy + lat_r * right[1],
+                    cx + (lat_r + parapet_out) * right[0],
+                    cy + (lat_r + parapet_out) * right[1],
                     zr + parapet_h,
                 ),
                 "cx": cx,
@@ -1122,41 +1323,43 @@ def loft_gallery_shell(
             _quad(faces, a, b, c, d)
 
         # --- Open-side parapet (continuous low wall) ---
+        # Winding must match closed walls: left uses flipped quads so the
+        # road-side face normals point into the carriageway (not into solid).
         if build_parapet and open_left:
             # inner face (toward road)
             a = _add_vert(verts, ring[i]["lp_in"])
             b = _add_vert(verts, ring[i]["lp_in_t"])
             c = _add_vert(verts, ring[i + 1]["lp_in_t"])
             d = _add_vert(verts, ring[i + 1]["lp_in"])
-            _quad(faces, a, b, c, d)
+            _quad(faces, a, d, c, b)
             # outer face
             a = _add_vert(verts, ring[i]["lp_out"])
             b = _add_vert(verts, ring[i]["lp_out_t"])
             c = _add_vert(verts, ring[i + 1]["lp_out_t"])
             d = _add_vert(verts, ring[i + 1]["lp_out"])
-            _quad(faces, a, d, c, b)
-            # top
+            _quad(faces, a, b, c, d)
+            # top (normal up)
             a = _add_vert(verts, ring[i]["lp_in_t"])
             b = _add_vert(verts, ring[i]["lp_out_t"])
             c = _add_vert(verts, ring[i + 1]["lp_out_t"])
             d = _add_vert(verts, ring[i + 1]["lp_in_t"])
-            _quad(faces, a, b, c, d)
+            _quad(faces, a, d, c, b)
         if build_parapet and open_right:
             a = _add_vert(verts, ring[i]["rp_in"])
             b = _add_vert(verts, ring[i]["rp_in_t"])
             c = _add_vert(verts, ring[i + 1]["rp_in_t"])
             d = _add_vert(verts, ring[i + 1]["rp_in"])
-            _quad(faces, a, d, c, b)
+            _quad(faces, a, b, c, d)
             a = _add_vert(verts, ring[i]["rp_out"])
             b = _add_vert(verts, ring[i]["rp_out_t"])
             c = _add_vert(verts, ring[i + 1]["rp_out_t"])
             d = _add_vert(verts, ring[i + 1]["rp_out"])
-            _quad(faces, a, b, c, d)
+            _quad(faces, a, d, c, b)
             a = _add_vert(verts, ring[i]["rp_in_t"])
             b = _add_vert(verts, ring[i]["rp_out_t"])
             c = _add_vert(verts, ring[i + 1]["rp_out_t"])
             d = _add_vert(verts, ring[i + 1]["rp_in_t"])
-            _quad(faces, a, d, c, b)
+            _quad(faces, a, b, c, d)
 
     for idx in (0, -1):
         r = ring[idx]
@@ -1254,7 +1457,15 @@ def loft_gallery_shell(
                 for is_left, do in ((True, open_left), (False, open_right)):
                     if not do:
                         continue
-                    lat = half + open_extra - 0.5 * parapet_t
+                    # Sit on parapet: midline + column_out_m, clamped onto the strip
+                    p_in = half + open_extra - parapet_t
+                    p_out = half + open_extra + parapet_out
+                    mid = 0.5 * (p_in + p_out)
+                    lat = mid + col_out
+                    half_c = 0.5 * col_lat
+                    # Keep column footprint on parapet when it fits
+                    if p_out - p_in >= col_lat - 1e-6:
+                        lat = max(p_in + half_c, min(p_out - half_c, lat))
                     u = left_u if is_left else right_u
                     _add_box_oriented(
                         verts,
@@ -2520,8 +2731,25 @@ def main() -> None:
     feats = gallery_features(site, sc)
     if not feats:
         raise SystemExit("No gallery/tunnel features in GIP cache for this site")
+
+    gal_raw = bng.get("galleries") or {}
+    merge_on = bool(gal_raw.get("merge_abutting", True))
+    merge_tol = float(gal_raw.get("merge_tol_m") or 15.0)
+    merge_groups = gal_raw.get("merge_groups") or None
+    if merge_on:
+        feats = merge_abutting_gallery_features(
+            feats,
+            tol_m=merge_tol,
+            same_name=True,
+            groups=merge_groups,
+        )
+
     if only_ids:
-        feats = [f for f in feats if int(f.get("objectid") or -1) in only_ids]
+        feats = [
+            f
+            for f in feats
+            if _feat_objectids(f) & only_ids
+        ]
         if not feats:
             raise SystemExit(f"No features matched --only {sorted(only_ids)}")
 
@@ -2551,7 +2779,9 @@ def main() -> None:
             continue
         if feat["kind"] == "tunnel" and cfg.get("open_side") == defaults.get("open_side"):
             if not any(
-                (it.get("match") or {}).get("objectid") == feat.get("objectid") for it in items
+                _match_objectid((it.get("match") or {}).get("objectid"), feat)
+                for it in items
+                if (it.get("match") or {}).get("objectid") is not None
             ):
                 cfg["open_side"] = "none"
                 cfg["style"] = {**cfg["style"], "shell": "tunnel"}
@@ -2569,6 +2799,7 @@ def main() -> None:
         info["chain_len_m"] = round(float(road["length"]), 2)
         info["name"] = feat["name"]
         info["objectid"] = feat.get("objectid")
+        info["merged_from"] = feat.get("merged_from")
         info["kind"] = feat["kind"]
         info["gip_length_m"] = feat.get("length_m")
         info["match"] = cfg.get("match_id")
@@ -2601,11 +2832,18 @@ def main() -> None:
                 wall_t=float(cfg.get("wall_thickness_m") or 0.4),
                 overhang_m=float(cfg.get("overhang_m") or 0.6),
                 open_extra_m=float(cfg.get("deck_open_extra_m") or 0.8),
+                deck_width_extra_m=float(cfg.get("deck_width_extra_m") or 0.5),
                 parapet_height_m=float(cfg.get("parapet_height_m") or 1.0),
                 parapet_thickness_m=float(cfg.get("parapet_thickness_m") or 0.35),
+                parapet_out_m=float(
+                    cfg["parapet_out_m"] if cfg.get("parapet_out_m") is not None else 0.25
+                ),
                 column_spacing_m=float(cfg.get("column_spacing_m") or 4.0),
                 column_along_m=float(cfg.get("column_along_m") or 0.4),
                 column_lat_m=float(cfg.get("column_lat_m") or 0.35),
+                column_out_m=float(
+                    cfg["column_out_m"] if cfg.get("column_out_m") is not None else 0.0
+                ),
                 build_parapet=build_parapet,
             )
             n_tris = len(faces)
@@ -2739,6 +2977,7 @@ def main() -> None:
             {
                 "name": feat["name"],
                 "objectid": feat.get("objectid"),
+                "merged_from": feat.get("merged_from"),
                 "kind": feat["kind"],
                 "open_side": cfg.get("open_side"),
                 "clear_height_m": cfg["clear_height_m"],

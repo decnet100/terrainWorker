@@ -3,7 +3,7 @@
 | Datei | Gebiet | Level | Größe |
 |-------|--------|-------|--------|
 | [`hahntennjoch.yaml`](hahntennjoch.yaml) | Hahntennjoch (Leitplanken/Gelände) | `autoroad_m28_test` | ~500×510 → 512² |
-| [`l13_kuehtai.yaml`](l13_kuehtai.yaml) | L13 Sellraintal / Kühtai (Galerien) | `autoroad_galerie_test` | 1024² |
+| [`l13_kuehtai.yaml`](l13_kuehtai.yaml) | L13 Sellraintal / Kühtai (Galerien) | `autoroad_galerie_2048` | 2048² |
 
 ## Aktiv wählen
 

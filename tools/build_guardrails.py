@@ -60,6 +60,10 @@ ROAD_WIDTH_SCALE = float(BNG.get("road_width_scale", 1.0))
 ENABLED = bool(GR.get("enabled", True))
 TERRAIN_EXTENT = COORDS.terrain_extent
 CURVATURE_WINDOW_M = float(GR.get("curvature_window_m", 8.0))
+# Stop rails before gallery/tunnel portals (no rails through the structure)
+CLIP_GALLERIES = bool(GR.get("clip_galleries", True))
+STOP_BEFORE_GALLERY_M = float(GR.get("stop_before_gallery_m", 3.0))
+GALLERY_CLIP_PAD_M = float(GR.get("gallery_clip_pad_m", 2.0))
 # auto | gpkg | heuristic
 SOURCE_MODE = str(ANN.get("guardrail_source", GR.get("source", "auto"))).lower()
 
@@ -356,6 +360,7 @@ def build_entries_from_gpkg(gdf: gpd.GeoDataFrame) -> list[dict]:
     curve_stats = {"straight": 0, "r15": 0, "r10": 0}
     used = 0
     skipped = 0
+    corridors = _load_gallery_exclusion_corridors()
 
     for _, row in gdf.iterrows():
         if not _truthy_present(row.get("present", True)):
@@ -379,10 +384,14 @@ def build_entries_from_gpkg(gdf: gpd.GeoDataFrame) -> list[dict]:
             nodes = _nodes_from_line_crs(line, hm_pack)
             if len(nodes) < 2:
                 continue
-            part = _entries_along_rail(nodes, side, section_len, curve_stats)
-            if part:
-                used += 1
-                entries.extend(part)
+            joints = [(n[0], n[1], n[2]) for n in nodes]
+            runs = _split_joints_outside_galleries(joints, corridors)
+            for run in runs:
+                rail = [[x, y, z] for x, y, z in run]
+                part = _entries_along_rail(rail, side, section_len, curve_stats)
+                if part:
+                    used += 1
+                    entries.extend(part)
 
     print(
         f"GPKG guardrail: features_used~{used} skipped_present=false={skipped} "
@@ -393,7 +402,104 @@ def build_entries_from_gpkg(gdf: gpd.GeoDataFrame) -> list[dict]:
         f"~R15_chords={curve_stats['r15']} ~R10_chords={curve_stats['r10']} "
         f"abut_overlap_m={ABUT_OVERLAP}"
     )
+    if corridors:
+        print(
+            f"Gallery clip: corridors={len(corridors)} "
+            f"stop_before_m={STOP_BEFORE_GALLERY_M}"
+        )
     return entries
+
+
+def _load_gallery_exclusion_corridors() -> list[tuple[list[tuple[float, float]], float]]:
+    """[(xy_polyline, half_width), ...] spanning portals ± stop_before.
+
+    Used to keep heuristic (and optional GPKG) rails from entering galleries /
+    tunnels — rails end cleanly before the portal face.
+    """
+    if not CLIP_GALLERIES:
+        return []
+    cl_path = PROC / "galleries_centerlines.json"
+    if not cl_path.is_file():
+        return []
+    try:
+        data = json.loads(cl_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return []
+    corridors: list[tuple[list[tuple[float, float]], float]] = []
+    stop = max(0.0, STOP_BEFORE_GALLERY_M)
+    pad = max(0.0, GALLERY_CLIP_PAD_M)
+    for g in data.get("galleries") or []:
+        nodes = g.get("nodes") or []
+        if len(nodes) < 2:
+            continue
+        portal = g.get("portal_s")
+        if portal and len(portal) >= 2:
+            s_lo, s_hi = float(portal[0]), float(portal[1])
+            if s_hi < s_lo:
+                s_lo, s_hi = s_hi, s_lo
+            s_lo -= stop
+            s_hi += stop
+            band = [n for n in nodes if s_lo - 1e-6 <= float(n["s"]) <= s_hi + 1e-6]
+        else:
+            band = nodes
+        if len(band) < 2:
+            continue
+        xy = [(float(n["x"]), float(n["y"])) for n in band]
+        half = 0.5 * max(float(n.get("width") or 7.0) for n in band)
+        half += pad + LATERAL_EXTRA
+        corridors.append((xy, half))
+    return corridors
+
+
+def _dist_point_to_polyline_xy(
+    px: float, py: float, poly: list[tuple[float, float]]
+) -> float:
+    best = float("inf")
+    for i in range(len(poly) - 1):
+        x0, y0 = poly[i]
+        x1, y1 = poly[i + 1]
+        dx, dy = x1 - x0, y1 - y0
+        seg2 = dx * dx + dy * dy
+        if seg2 < 1e-12:
+            d = math.hypot(px - x0, py - y0)
+        else:
+            t = max(0.0, min(1.0, ((px - x0) * dx + (py - y0) * dy) / seg2))
+            d = math.hypot(px - (x0 + t * dx), py - (y0 + t * dy))
+        if d < best:
+            best = d
+    return best
+
+
+def _point_in_gallery_exclusion(
+    px: float,
+    py: float,
+    corridors: list[tuple[list[tuple[float, float]], float]],
+) -> bool:
+    for poly, half in corridors:
+        if _dist_point_to_polyline_xy(px, py, poly) <= half:
+            return True
+    return False
+
+
+def _split_joints_outside_galleries(
+    joints: list[tuple[float, float, float]],
+    corridors: list[tuple[list[tuple[float, float]], float]],
+) -> list[list[tuple[float, float, float]]]:
+    """Split a rail into contiguous runs that stay outside gallery corridors."""
+    if not corridors:
+        return [joints] if len(joints) >= 2 else []
+    runs: list[list[tuple[float, float, float]]] = []
+    cur: list[tuple[float, float, float]] = []
+    for j in joints:
+        if _point_in_gallery_exclusion(j[0], j[1], corridors):
+            if len(cur) >= 2:
+                runs.append(cur)
+            cur = []
+            continue
+        cur.append(j)
+    if len(cur) >= 2:
+        runs.append(cur)
+    return runs
 
 
 def _offset_joint(
@@ -432,6 +538,8 @@ def build_entries_heuristic(roads: dict) -> list[dict]:
     hm_pack = _load_heightmap_z() if SNAP_TO_HEIGHTMAP else None
     entries: list[dict] = []
     curve_stats = {"straight": 0, "r15": 0, "r10": 0}
+    corridors = _load_gallery_exclusion_corridors()
+    clipped_runs = 0
 
     for road in roads.values():
         hw = road.get("highway", "")
@@ -454,19 +562,28 @@ def build_entries_heuristic(roads: dict) -> list[dict]:
                     joints.append(j)
             if len(joints) < 2:
                 continue
-            # Reuse abutting placer by treating joints as a rail polyline.
-            rail_nodes = [[x, y, z] for x, y, z in joints]
-            entries.extend(
-                _entries_along_rail(
-                    rail_nodes, side_name, SECTION_LEN, curve_stats, resample=False
+            runs = _split_joints_outside_galleries(joints, corridors)
+            if corridors and len(runs) != 1:
+                clipped_runs += max(0, len(runs))
+            for run in runs:
+                rail_nodes = [[x, y, z] for x, y, z in run]
+                entries.extend(
+                    _entries_along_rail(
+                        rail_nodes, side_name, SECTION_LEN, curve_stats, resample=False
+                    )
                 )
-            )
 
     print(
         f"Heuristic placement mix: straightish={curve_stats['straight']} "
         f"~R15_chords={curve_stats['r15']} ~R10_chords={curve_stats['r10']} "
         f"abut_overlap_m={ABUT_OVERLAP} lateral_extra_m={LATERAL_EXTRA}"
     )
+    if corridors:
+        print(
+            f"Gallery clip: corridors={len(corridors)} "
+            f"stop_before_m={STOP_BEFORE_GALLERY_M} pad_m={GALLERY_CLIP_PAD_M} "
+            f"split_runs~{clipped_runs}"
+        )
     return entries
 
 
