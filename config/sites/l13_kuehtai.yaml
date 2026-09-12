@@ -49,8 +49,10 @@ beamng:
       deck_lift_m: 0.0
       # TEMP test: MeshRoad node Z = top surface (no -depth/2). Revert if too high.
       node_z_is_top: true
-      extend_before_m: 0.5   # meters past gap/GIP along OSM road
+      extend_before_m: 0.5   # meters past gap/GIP along OSM road (MeshRoad only)
       extend_after_m: 0.5
+      # Rock under-mask starts at gap ends, then shrinks inward by this (extends stay asphalt)
+      under_inset_m: 5.0
       auto_span: true         # grow along road until full-width ditch clears
       span_dip_m: 0.55
       span_search_m: 25.0
@@ -63,11 +65,16 @@ beamng:
         top: Asphalt
         bottom: Concrete
         side: Concrete
+        # MeshRoad: textureLength = m along road per UV repeat (V only).
+        # Across width UV is always 0..1 — use detail_scale for finer grain.
+        texture_length: 2.0
+        detail_scale: 6.0
     items:
       # Klammbach: oblique ditch — longer after-side on road centerline
       - match: { objectid: 7233, name: Klammbach }
         extend_before_m: 2.0
         extend_after_m: 3.5
+        under_inset_m: 5.0
         style:
           understructure: slab
           edge: none

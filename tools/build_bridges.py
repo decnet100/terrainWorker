@@ -46,6 +46,7 @@ BRIDGE_SCALAR_KEYS = (
     "node_z_is_top",
     "extend_before_m",
     "extend_after_m",
+    "under_inset_m",  # shrink rock-under mask inward from gap (asphalt stays on extends)
     "auto_span",
     "span_dip_m",
     "span_search_m",
@@ -477,6 +478,25 @@ def build_span_on_road(
         widths.append(w)
         crossfalls.append(cf)
 
+    # Terrain under-mask: ditch/gap only — extends stay asphalt; optional inset inward.
+    inset = float(cfg.get("under_inset_m") or 0.0)
+    s_u0 = s_gap0 + inset
+    s_u1 = s_gap1 - inset
+    under_xyw: list[list[float]] = []
+    if s_u1 - s_u0 >= 0.25:
+        s_u_vals: list[float] = []
+        s_u = s_u0
+        while s_u <= s_u1 + 1e-9:
+            s_u_vals.append(s_u)
+            s_u += step
+        if abs(s_u_vals[-1] - s_u1) > 0.01:
+            s_u_vals.append(s_u1)
+        for s_u in s_u_vals:
+            xu, yu, _zu, _txu, _tyu, _tzu, wu = sample_road(road, s_u)
+            t_u = 0.0 if length < 1e-9 else max(0.0, min(1.0, (s_u - s0) / length))
+            w_u = (w0 + t_u * (w1 - w0)) if width_from_road else width_fallback
+            under_xyw.append([round(xu, 3), round(yu, 3), round(w_u, 2)])
+
     info = {
         "road_id": road["id"],
         "road_name": road.get("name"),
@@ -499,11 +519,19 @@ def build_span_on_road(
         ],
         "s0": round(s0, 2),
         "s1": round(s1, 2),
+        "gap_s0": round(s_gap0, 2),
+        "gap_s1": round(s_gap1, 2),
+        "under_s0": round(s_u0, 2),
+        "under_s1": round(s_u1, 2),
+        "under_inset_m": inset,
+        "under_nodes_xyw": under_xyw,
         "gip_s0": round(s_g0, 2),
         "gip_s1": round(s_g1, 2),
         "extend_before_m": ext_b,
         "extend_after_m": ext_a,
         "span_len_m": round(s1 - s0, 2),
+        "gap_len_m": round(s_gap1 - s_gap0, 2),
+        "under_len_m": round(max(0.0, s_u1 - s_u0), 2),
         "gip_len_on_road_m": round(s_g1 - s_g0, 2),
         "max_dip_m": None if max_dip is None else round(max_dip, 2),
         "nodes": len(xy),
@@ -566,6 +594,12 @@ def make_meshroad(
                 round(nrm[2], 4),
             ]
         )
+    # meters of road per texture repeat; smaller = finer (terrain asphalt detail ~2–4 m)
+    tex_len = float(
+        materials.get("texture_length")
+        or materials.get("textureLength")
+        or 2.5
+    )
     return {
         "name": name,
         "class": "MeshRoad",
@@ -573,18 +607,119 @@ def make_meshroad(
         "topMaterial": materials.get("top") or "Asphalt",
         "bottomMaterial": materials.get("bottom") or "Concrete",
         "sideMaterial": materials.get("side") or "Concrete",
-        "textureLength": 8,
+        "textureLength": tex_len,
         "breakAngle": 2,
         "widthSubdivisions": 0,
         "nodes": nodes,
     }
 
 
-def write_level(level_name: str, entries: list[dict]) -> Path | None:
+def _mesh_material(
+    name: str,
+    *,
+    base_color: str,
+    normal: str,
+    annotation: str,
+    persistent_id: str,
+    roughness: str | None = None,
+    ao: str | None = None,
+    base_color_factor: list[float] | None = None,
+    detail_scale: float = 1.0,
+    detail_map: str | None = None,
+    detail_normal: str | None = None,
+) -> dict:
+    """Regular Material for MeshRoad (TerrainMaterial names are not usable here)."""
+    stage: dict = {
+        "baseColorMap": base_color,
+        "normalMap": normal,
+        "roughnessFactor": 0.9,
+    }
+    if roughness:
+        stage["roughnessMap"] = roughness
+    if ao:
+        stage["ambientOcclusionMap"] = ao
+    if base_color_factor is not None:
+        stage["baseColorFactor"] = base_color_factor
+    # MeshRoad U spans full width once; detailScale makes grain finer across + along.
+    if detail_map and abs(detail_scale - 1.0) > 1e-6:
+        stage["detailMap"] = detail_map
+        stage["detailScale"] = [float(detail_scale), float(detail_scale)]
+        if detail_normal:
+            stage["detailNormalMap"] = detail_normal
+            stage["detailNormalMapStrength"] = 0.65
+    return {
+        "name": name,
+        "mapTo": name,
+        "class": "Material",
+        "persistentId": persistent_id,
+        "Stages": [stage, {}, {}, {}],
+        "alphaRef": 0,
+        "annotation": annotation,
+        "castShadows": True,
+        "materialTag0": "RoadAndPath",
+        "materialTag1": "beamng",
+        "version": 1.5,
+    }
+
+
+def ensure_meshroad_materials(user_level: Path, level_name: str, materials: dict) -> None:
+    """Register MeshRoad materials in art/road, reusing this level's terrain asphalt/concrete maps."""
+    mats_path = user_level / "art" / "road" / "main.materials.json"
+    mats_path.parent.mkdir(parents=True, exist_ok=True)
+    data: dict = {}
+    if mats_path.is_file() and mats_path.stat().st_size:
+        try:
+            data = json.loads(mats_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            data = {}
+
+    terr = f"/levels/{level_name}/art/terrains"
+    detail_scale = float(materials.get("detail_scale") or 6.0)
+    # Use terrain asphalt *detail* maps (same set the TerrainMaterial blends in close-up).
+    wanted = {
+        materials.get("top") or "Asphalt": _mesh_material(
+            materials.get("top") or "Asphalt",
+            base_color=f"{terr}/t_asphalt_02_b.png",
+            normal=f"{terr}/t_asphalt_02_nm.png",
+            roughness=f"{terr}/t_asphalt_02_r.png",
+            ao=f"{terr}/t_asphalt_02_ao.png",
+            annotation="ASPHALT",
+            persistent_id="a070a5a1-b71d-4e1e-9c11-0000a5fa1701",
+            base_color_factor=[0.62, 0.62, 0.62, 1.0],
+            detail_scale=detail_scale,
+            detail_map=f"{terr}/t_asphalt_03_b.png",
+            detail_normal=f"{terr}/t_asphalt_03_nm.png",
+        ),
+        materials.get("bottom") or "Concrete": _mesh_material(
+            materials.get("bottom") or "Concrete",
+            base_color=f"{terr}/t_terrain_base_concrete_b.png",
+            normal=f"{terr}/t_terrain_base_concrete_nm.png",
+            annotation="CONCRETE",
+            persistent_id="c0ac7e7e-b71d-4e1e-9c11-0000c0ac7e7e",
+        ),
+        materials.get("side") or "Concrete": _mesh_material(
+            materials.get("side") or "Concrete",
+            base_color=f"{terr}/t_terrain_base_concrete_b.png",
+            normal=f"{terr}/t_terrain_base_concrete_nm.png",
+            annotation="CONCRETE",
+            persistent_id="c0ac7e7e-b71d-4e1e-9c11-0000c0ac7e7e",
+        ),
+    }
+    for name, mat in wanted.items():
+        data[name] = mat
+    mats_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    print(
+        f"MeshRoad materials in {mats_path.name}: {', '.join(sorted(set(wanted)))} "
+        f"(detail_scale={detail_scale})"
+    )
+
+
+def write_level(level_name: str, entries: list[dict], materials: dict) -> Path | None:
     user_level = USER_LEVELS / level_name
     if not user_level.is_dir():
         print(f"Level folder missing: {user_level}")
         return None
+    ensure_meshroad_materials(user_level, level_name, materials)
     group_dir = user_level / "main" / "MissionGroup" / "level_objects" / "bridges"
     group_dir.mkdir(parents=True, exist_ok=True)
     items_path = group_dir / "items.level.json"
@@ -625,6 +760,7 @@ def default_bridge_cfg(bng: dict) -> tuple[dict, list]:
         "node_z_is_top": bool(raw.get("node_z_is_top", False)),
         "extend_before_m": float(raw.get("extend_before_m") or raw.get("approach_overlap_m") or 0.5),
         "extend_after_m": float(raw.get("extend_after_m") or raw.get("approach_overlap_m") or 0.5),
+        "under_inset_m": float(raw.get("under_inset_m") or 0.0),
         "auto_span": bool(raw.get("auto_span", True)),
         "span_dip_m": float(raw.get("span_dip_m") or 0.55),
         "span_search_m": float(raw.get("span_search_m") or 25.0),
@@ -639,6 +775,8 @@ def default_bridge_cfg(bng: dict) -> tuple[dict, list]:
             "top": "Asphalt",
             "bottom": "Concrete",
             "side": "Concrete",
+            "texture_length": 2.5,
+            "detail_scale": 6.0,
             **(raw.get("materials") or {}),
         },
     }
@@ -713,10 +851,14 @@ def main() -> None:
         surf = [z + 0.5 * float(cfg["depth_m"]) for z in zs]
         print(
             f"{feat['name']} oid={feat.get('objectid')}: "
-            f"span={info['span_len_m']}m nodes={info['nodes']} "
+            f"span={info['span_len_m']}m gap={info.get('gap_len_m')}m "
+            f"under={info.get('under_len_m')}m(+inset {cfg.get('under_inset_m', 0)}) "
+            f"nodes={info['nodes']} "
             f"on road {info['road_name']!r} "
             f"portal_w={info['portal_width_m']} "
             f"ext=({cfg['extend_before_m']}/{cfg['extend_after_m']}) "
+            f"texLen={cfg['materials'].get('texture_length')} "
+            f"detail={cfg['materials'].get('detail_scale')} "
             f"surface_z={min(surf):.2f}..{max(surf):.2f}"
         )
 
@@ -724,21 +866,50 @@ def main() -> None:
     with out_json.open("w", encoding="utf-8", newline="\n") as f:
         for e in entries:
             f.write(json.dumps(e, separators=(",", ":")) + "\n")
+
+    # Deck footprints for terrain masks: asphalt under gap → rock (extends stay asphalt).
+    decks = []
+    for e, info in zip(entries, span_infos):
+        nodes = e.get("nodes") or []
+        under = info.get("under_nodes_xyw") or []
+        decks.append(
+            {
+                "name": e.get("name"),
+                "objectid": info.get("objectid"),
+                "nodes_xyw": [[n[0], n[1], n[3]] for n in nodes if len(n) >= 4],
+                "under_nodes_xyw": under,
+                "span_len_m": info.get("span_len_m"),
+                "gap_len_m": info.get("gap_len_m"),
+                "under_len_m": info.get("under_len_m"),
+                "under_inset_m": info.get("under_inset_m"),
+                "extend_before_m": info.get("extend_before_m"),
+                "extend_after_m": info.get("extend_after_m"),
+            }
+        )
+    decks_path = proc / "bridges_decks.json"
+    decks_path.write_text(
+        json.dumps({"level": level_name, "decks": decks}, indent=2),
+        encoding="utf-8",
+    )
+
     meta = {
         "count": len(entries),
         "level": level_name,
         "defaults": {k: defaults[k] for k in BRIDGE_SCALAR_KEYS},
         "style_defaults": defaults["style"],
+        "materials": defaults["materials"],
         "spans": span_infos,
-        "note": "XY on OSM road centerline; Z Hermite; per-bridge items[] overrides.",
+        "decks_file": str(decks_path.relative_to(ROOT)).replace("\\", "/"),
+        "note": "XY on OSM road centerline; Z Hermite; MeshRoad materials are regular Materials (not TerrainMaterial).",
     }
     (proc / "bridges_meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
     print(f"Wrote {out_json}")
+    print(f"Wrote {decks_path}")
 
-    level_path = write_level(level_name, entries)
+    level_path = write_level(level_name, entries, defaults["materials"])
     if level_path:
         print(f"Injected: {level_path}")
-        print("Reload the level in BeamNG.")
+        print("Reload the level in BeamNG (materials may need World Editor refresh).")
     else:
         print("Skipped inject (create level folder first).")
 

@@ -52,10 +52,14 @@ Hand-Korrektur in QGIS bleibt möglich (offene Galerie-Seite, Portale).
 
 - Deck-XY folgt der **OSM-Straßenachse** (Enden liegen auf der geraden Road-Geometrie)
 - Z / Neigung / Breite: **Portal-Querprofile** der Straße, dazwischen Hermite (Z) + Lerp (Breite); Normal aus Achstangente + Pitch
-- `extend_before_m` / `extend_after_m`: Verlängerung entlang der Straße (oft 0.5, manchmal ~3)
+- `extend_before_m` / `extend_after_m`: Verlängerung entlang der Straße (oft 0.5, manchmal ~3) — nur MeshRoad
+- `under_inset_m`: Fels-Maske unter der Brücke = Gap **ohne** Extends, zusätzlich um diesen Betrag nach innen verkürzt (Asphalt bleibt auf Auflagern)
+- `materials.texture_length`: MeshRoad-UV in m/Repeat (kleiner = feiner; Default ~2.5)
 - `width_from_road: true`: Portalbreiten aus OSM; `step_m` dichter → folgt Kurve besser
 - `style.understructure` / `style.edge`: Platzhalter (slab/piers/guardrail/curb …) für spätere Builds
+- `materials.top/bottom/side`: MeshRoad-Materials (echte `Material`-Einträge in `art/road/`, nicht Terrain-Paint-Namen). Default `Asphalt`/`Concrete` werden aus den Terrain-Texturen des Levels angelegt.
+- `bridges_decks.json`: `under_nodes_xyw` → `build_terrain_masks.py` malt darunter **rock**
 
 ```powershell
-cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE='config/sites/l13_kuehtai.yaml'; python tools\build_bridges.py
+cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE='config/sites/l13_kuehtai.yaml'; python tools\build_bridges.py; python tools\build_terrain_masks.py
 ```

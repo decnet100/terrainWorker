@@ -240,15 +240,52 @@ def road_masks(size: int) -> tuple[np.ndarray, np.ndarray]:
     return asphalt, shoulder
 
 
+def bridge_under_mask(size: int, margin_m: float = 0.5) -> np.ndarray:
+    """Gap footprint under bridges → rock (extends stay asphalt).
+
+    Prefers under_nodes_xyw from bridges_decks.json (gap − under_inset_m).
+    """
+    path = PROC / "bridges_decks.json"
+    img = Image.new("L", (size, size), 0)
+    if not path.exists():
+        return np.zeros((size, size), dtype=bool)
+
+    m_per_px = TERRAIN_EXTENT / max(size - 1, 1)
+    draw = ImageDraw.Draw(img)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    n_decks = 0
+    for deck in data.get("decks") or []:
+        nodes = deck.get("under_nodes_xyw") or deck.get("nodes_xyw") or []
+        if len(nodes) < 2:
+            continue
+        widths = [float(n[2]) for n in nodes if len(n) >= 3]
+        width_m = max(widths) if widths else 7.0
+        stroke = max(2, int(round((width_m + 2.0 * margin_m) / m_per_px)))
+        pts = [_to_px_beamng(float(n[0]), float(n[1]), size) for n in nodes]
+        draw.line(pts, fill=255, width=stroke, joint="curve")
+        r = max(1, stroke // 2)
+        for px, py in (pts[0], pts[-1]):
+            draw.ellipse((px - r, py - r, px + r, py + r), fill=255)
+        n_decks += 1
+    mask = np.array(img, dtype=np.uint8) > 0
+    print(
+        f"Bridge under-mask: decks={n_decks} "
+        f"coverage={(mask.mean() * 100):.3f}% (margin={margin_m}m, gap−inset)"
+    )
+    return mask
+
+
 def classify(
     landuse: np.ndarray,
     slope: np.ndarray,
     asphalt: np.ndarray,
     shoulder: np.ndarray,
+    bridge_under: np.ndarray | None = None,
 ) -> np.ndarray:
     """Exclusive material class per pixel.
 
     Priority: Asphalt > Rock > Grass (landuse) > Dirt (default / shoulder).
+    Terrain under bridge decks is forced to rock (carriageway is MeshRoad).
     """
     out = np.full(landuse.shape, CLASS_DIRT, dtype=np.uint8)
     out[landuse == CLASS_GRASS] = CLASS_GRASS
@@ -257,6 +294,8 @@ def classify(
     # Shoulder bankett (dirt), then asphalt carriageway on top.
     out[shoulder] = CLASS_DIRT
     out[asphalt] = CLASS_ASPHALT
+    if bridge_under is not None and bridge_under.any():
+        out[bridge_under] = CLASS_ROCK
     return out
 
 
@@ -308,12 +347,16 @@ def main() -> None:
     lu_data = fetch_osm_landuse()
     landuse = rasterize_landuse(lu_data, OUT_SIZE)
     asphalt, shoulder = road_masks(OUT_SIZE)
+    bridge_under = bridge_under_mask(OUT_SIZE)
+    asphalt_vis = asphalt & ~bridge_under
+    shoulder_vis = shoulder & ~bridge_under
     print(
-        f"Road masks: asphalt={(asphalt.mean()*100):.2f}% "
-        f"shoulder={(shoulder.mean()*100):.2f}% "
-        f"(width_scale={ROAD_WIDTH_SCALE}, shoulder_m={SHOULDER_M})"
+        f"Road masks: asphalt={(asphalt_vis.mean()*100):.2f}% "
+        f"shoulder={(shoulder_vis.mean()*100):.2f}% "
+        f"(width_scale={ROAD_WIDTH_SCALE}, shoulder_m={SHOULDER_M}; "
+        f"bridge_under carved to rock)"
     )
-    classes = classify(landuse, slope, asphalt, shoulder)
+    classes = classify(landuse, slope, asphalt_vis, shoulder_vis, bridge_under)
 
     mask_dir = PROC / "terrain_masks"
     entries = write_layer_maps(classes, mask_dir)
@@ -327,8 +370,9 @@ def main() -> None:
     Image.fromarray(forest, mode="L").save(PROC / "mask_forest.png")
     rock = (classes == CLASS_ROCK).astype(np.uint8) * 255
     Image.fromarray(rock, mode="L").save(PROC / "mask_rock.png")
-    Image.fromarray(asphalt.astype(np.uint8) * 255, mode="L").save(PROC / "mask_asphalt.png")
-    Image.fromarray(shoulder.astype(np.uint8) * 255, mode="L").save(PROC / "mask_shoulder.png")
+    Image.fromarray(asphalt_vis.astype(np.uint8) * 255, mode="L").save(PROC / "mask_asphalt.png")
+    Image.fromarray(shoulder_vis.astype(np.uint8) * 255, mode="L").save(PROC / "mask_shoulder.png")
+    Image.fromarray(bridge_under.astype(np.uint8) * 255, mode="L").save(PROC / "mask_bridge_under.png")
 
     meta = {
         "size_px": OUT_SIZE,
@@ -338,13 +382,19 @@ def main() -> None:
         "road_width_scale": ROAD_WIDTH_SCALE,
         "shoulder_m": SHOULDER_M,
         "materials": entries,
-        "sources": ["osm_landuse", "dgm_slope", "osm_roads_asphalt_shoulder"],
+        "sources": [
+            "osm_landuse",
+            "dgm_slope",
+            "osm_roads_asphalt_shoulder",
+            "bridges_decks_under_rock",
+        ],
         "import_notes": [
             "Terrain Tools → Import Terrain → Load terrainPreset.json (recommended)",
             "Heightmap: heightmap_%d.png, Max Height from heightmap_meta.json" % OUT_SIZE,
             "Texture maps in order: Grass, dirt_rocky_large, rock, Asphalt",
             "Groundmodels: GRASS / DIRT_ROCKY_LARGE / ROCK / ASPHALT",
             "Asphalt = full OSM width; dirt = shoulder bankett around it",
+            "Under bridge decks: rock (MeshRoad carries the asphalt)",
             "Keep Flip Y Axis consistent with heightmap import",
         ],
     }
