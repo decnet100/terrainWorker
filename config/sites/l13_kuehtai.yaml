@@ -1,0 +1,103 @@
+# Zweites Testgebiet: L13 Sellraintal / Kühtai (Galerien, Brücken).
+# Aktivieren:  $env:AUTOROAD_SITE="config/sites/l13_kuehtai.yaml"
+# oder Datei nach config/site.yaml kopieren.
+name: tirol-l13-kuehtai-1024
+crs: EPSG:31254
+# Center ~54808/231871, 1024×1024 m square
+bbox:
+  - 54296.0
+  - 231359.0
+  - 55320.0
+  - 232383.0
+
+sources:
+  dgm:
+    type: wcs
+    url: "https://gis.tirol.gv.at/arcgis/services/Service_Public/terrain/MapServer/WCSServer"
+    coverage: "Gelaendemodell_50cm_M28"
+    version: "1.0.0"
+    resolution_m: 0.5
+  ortho:
+    type: wcs
+    url: "https://gis.tirol.gv.at/arcgis/services/Service_Public/orthofoto/MapServer/WCSServer"
+    coverage: "Aktuell_RGB"
+    resolution_m: 1.0
+  roads:
+    type: osm
+  gip:
+    type: wfs
+    url: "https://dservices3.arcgis.com/hG7UfxX49PQ8XkXh/arcgis/services/Verkehrswege/WFSServer"
+    type_name: "Verkehrswege:Verkehrswege"
+    str_code: L13
+  landuse:
+    type: osm
+    note: "OSM natural/landuse polygons; Tirol LISA WFS later"
+
+beamng:
+  meters_per_pixel: 1.0
+  level_name: autoroad_galerie_test
+  mask_size: 1024
+  slope_rock_deg: 38
+  road_width_scale: 1.0
+  shoulder_m: 0.2
+  bridges:
+    # Defaults for all bridges; override per structure in items[]
+    defaults:
+      width_m: 7.0
+      width_from_road: true
+      depth_m: 0.4
+      deck_lift_m: 0.0
+      # TEMP test: MeshRoad node Z = top surface (no -depth/2). Revert if too high.
+      node_z_is_top: true
+      extend_before_m: 0.5   # meters past gap/GIP along OSM road
+      extend_after_m: 0.5
+      auto_span: true         # grow along road until full-width ditch clears
+      span_dip_m: 0.55
+      span_search_m: 25.0
+      step_m: 1.0
+      crossfall_max: 0.12   # clamp heightmap Querneigung (~7 deg)
+      style:
+        understructure: none  # none | slab | piers | walls  (later)
+        edge: none            # none | guardrail | curb | wall (later)
+      materials:
+        top: Asphalt
+        bottom: Concrete
+        side: Concrete
+    items:
+      # Klammbach: oblique ditch — longer after-side on road centerline
+      - match: { objectid: 7233, name: Klammbach }
+        extend_before_m: 2.0
+        extend_after_m: 3.5
+        style:
+          understructure: slab
+          edge: none
+  guardrails:
+    enabled: true
+    shape: "/art/shapes/objects/italy_guardrails_common_section.dae"
+    mesh_length_m: 3.1
+    section_length_m: 4.2
+    curve_r15_m: 15.0
+    curve_r10_m: 10.0
+    curve_step_r15_m: 2.8
+    curve_step_r10_m: 2.2
+    abut_overlap_m: 0.08
+    curvature_window_m: 8.0
+    lateral_extra_m: 0.55
+    z_sample_inward_m: 0.35
+    sides: both
+    highways: [secondary, primary, tertiary, trunk, motorway]
+    z_lift_m: 0.05
+    pivot_ground_offset_m: 0.0
+    align_pitch: true
+    snap_to_heightmap: true
+    face_y_outward: true
+    yaw_flip_right: false
+
+annotations:
+  gpkg: data/annotations/tirol-l13-kuehtai-1024.gpkg
+  guardrail_source: auto
+
+notes: |
+  L13 Sellraintal / Kühtai 1024×1024 m. Mugkögele-/Marcheck- & Rauheneckgalerie.
+  GIP: python tools/fetch_gip.py
+  WGS84 approx: 47.218–47.229 N, 11.049–11.064 E

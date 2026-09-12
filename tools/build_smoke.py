@@ -3,28 +3,33 @@ from __future__ import annotations
 
 import json
 import math
+import sys
 from pathlib import Path
 
 import numpy as np
 import requests
 import tifffile as tiff
-import yaml
 from PIL import Image
 from pyproj import Transformer
 
 ROOT = Path(__file__).resolve().parents[1]
-SITE = yaml.safe_load((ROOT / "config" / "site.yaml").read_text(encoding="utf-8"))
-RAW = ROOT / "data" / "raw"
-PROC = ROOT / "data" / "processed"
-PROC.mkdir(parents=True, exist_ok=True)
+sys.path.insert(0, str(ROOT / "tools"))
+from site_coords import load_site, processed_dir, site_slug  # noqa: E402
+from fetch_dgm import dgm_cache_path  # noqa: E402
 
-BBOX = SITE["bbox"]  # xmin, ymin, xmax, ymax in EPSG:31254
+SITE = load_site()
+RAW = ROOT / "data" / "raw"
+PROC = processed_dir(SITE)
+RAW.mkdir(parents=True, exist_ok=True)
+
+BBOX = SITE["bbox"]  # xmin, ymin, xmax, ymax
 XMIN, YMIN, XMAX, YMAX = map(float, BBOX)
 CRS = SITE.get("crs", "EPSG:31254")
 MPP = float(SITE.get("beamng", {}).get("meters_per_pixel", 1.0))
 HM_SIZE = int(SITE.get("beamng", {}).get("mask_size", 512))
 BW = XMAX - XMIN
 BH = YMAX - YMIN
+SLUG = site_slug(SITE)
 
 
 def geo_local_to_beamng(lx: float, ly: float) -> tuple[float, float]:
@@ -82,10 +87,15 @@ def fetch_osm_roads() -> list[dict]:
     );
     out geom;
     """
-    cache = RAW / "osm_roads.json"
-    if cache.exists():
-        print(f"Using cached {cache}")
-        data = json.loads(cache.read_text(encoding="utf-8"))
+    cache = RAW / f"osm_roads_{SLUG}.json"
+    read_path = cache
+    if not read_path.exists():
+        legacy = RAW / "osm_roads.json"
+        if legacy.exists() and SLUG.startswith("tirol-m28"):
+            read_path = legacy
+    if read_path.exists():
+        print(f"Using cached {read_path}")
+        data = json.loads(read_path.read_text(encoding="utf-8"))
     else:
         print("Overpass query…")
         headers = {
@@ -217,13 +227,21 @@ def roads_to_beamng_json(roads: list[dict]) -> dict:
 
 
 def main() -> None:
-    dgm_path = RAW / "dgm_wcs10.tif"
+    dgm_path = dgm_cache_path(SITE)
     if not dgm_path.exists():
-        raise SystemExit(f"Missing {dgm_path}")
+        # Legacy Hahntennjoch cache
+        legacy = RAW / "dgm_wcs10.tif"
+        if legacy.exists() and SLUG.startswith("tirol-m28"):
+            dgm_path = legacy
+        else:
+            raise SystemExit(
+                f"Missing {dgm_path} — run: "
+                f'$env:AUTOROAD_SITE="config/sites/…"; python tools/fetch_dgm.py'
+            )
 
     elev = load_dgm(dgm_path)
-    hm, z0, z1 = to_heightmap(elev, out_size=512)
-    hm_path = PROC / "heightmap_512.png"
+    hm, z0, z1 = to_heightmap(elev, out_size=HM_SIZE)
+    hm_path = PROC / f"heightmap_{HM_SIZE}.png"
     Image.fromarray(hm, mode="I;16").save(hm_path)
     meta = {
         "crs": CRS,

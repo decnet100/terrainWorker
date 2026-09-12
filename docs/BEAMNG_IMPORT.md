@@ -1,129 +1,182 @@
-# BeamNG Import — Smoke-Test M28
+# BeamNG Import
 
-Die Option heißt **nicht** „Neues Level → Heightmap importieren“ (das war zu knapp formuliert). Es sind **zwei Schritte**:
+**File → New Level** im World Editor ist bei dir unzuverlässig.  
+**Standardweg:** `python tools\setup_beamng_level.py <name>` — Template entpacken, Pfade umschreiben, Ocean/Props raus, Import-Assets kopieren.
 
-## 1. Neues Level anlegen
+User-Daten (BeamNG **0.39+**):
 
-1. BeamNG starten  
-2. **F11** → World Editor  
-3. **File → New Level** (oder **Ctrl+N**)  
-4. Ordner unter `levels/` wählen, z.B. `autoroad_m28_test`  
-5. Editor kopiert das Template und öffnet das Level  
+```text
+C:\Users\<user>\AppData\Local\BeamNG\BeamNG.drive\current\levels\
+```
 
-Dokumentation: [Terrain / heightmaps](https://docs.beamng.com/modding/levels/level_creation/section2/)
+| Site | Level-Ordner | Heightmap | Max Height | mpp |
+|------|--------------|-----------|------------|-----|
+| Hahntennjoch | `autoroad_m28_test` | `heightmap_512.png` | aus `heightmap_meta.json` (~254.75) | 1.0 |
+| L13 Kühtai | `autoroad_galerie_test` | `heightmap_1024.png` | aus `heightmap_meta.json` (~424.63) | 1.0 |
 
-## 2. Heightmap importieren (separat)
+Genauwerte immer aus `data/processed/<site>/heightmap_meta.json` nehmen.
+
+---
+
+## 1. Level aus Template anlegen (Skript)
+
+**Nicht** File → New Level und **nicht** den alten Expand-Archive-One-Liner — Zip-Struktur und Pfade `/levels/template/...` machen das leicht kaputt.
+
+Spiel **schließen**, dann:
+
+```powershell
+cd C:\temp\beamng_autoroad
+
+# L13 (Name aus Site-YAML, Import-Assets werden mitkopiert):
+python tools\setup_beamng_level.py autoroad_galerie_test --site config/sites/l13_kuehtai.yaml
+
+# Hahntennjoch:
+python tools\setup_beamng_level.py autoroad_m28_test --site config/sites/hahntennjoch.yaml
+
+# Oder nur Namen tippen (Prompt):
+python tools\setup_beamng_level.py
+```
+
+Bestehenden Ordner ersetzen: `--force`.
+
+Das Skript:
+
+- entpackt `content\levels\template.zip` nach  
+  `%LOCALAPPDATA%\BeamNG\BeamNG.drive\current\levels\<name>\`
+- schreibt alle `/levels/template` → `/levels/<name>` um (wichtig!)
+- setzt `info.json` (Titel, `isAuxiliary=false`)
+- entfernt Ocean/WaterPlane + Template-Backdrop/Groundcover
+- setzt `theTerrain.terrainFile` schreibbar, Position `0,0,0`, `maxHeight` aus Site-Meta
+- legt Spawn nahe Ursprung
+- kopiert `import/` aus `data/processed/...` wenn Site passt
+
+Am Ende steht `READY: ...` mit den nächsten BeamNG-Schritten.
+
+Danach:
+
+1. BeamNG → Freeroam → Level laden (nicht „New Level“).
+2. **F11** → Abschnitt **2. Heightmap importieren**.
+3. Nach Import: `python tools\build_smoke.py` (mit passendem `AUTOROAD_SITE`) für Masken-Sync + Guardrails.
+
+---
+
+## 2. Heightmap importieren
 
 **Wichtig:** `theTerrain` → Inspector → `terrainFile` muss  
-`/levels/autoroad_m28_test/theTerrain.ter` sein (**nicht** `/levels/template/...`).  
-Sonst speichert der Import nicht dauerhaft (Template ist schreibgeschützt).
+`/levels/<dein_level>/theTerrain.ter` sein (**nicht** `/levels/template/...`).  
+Sonst speichert der Import nicht dauerhaft (Template-Pfad ist schreibgeschützt).
 
-1. Toolbar → Set **Landscape**/**Default** → **Terrain Tools** → **Import Terrain**  
-2. Dialog:  
-   - Terrain name: `theTerrain`  
-   - Heightmap: `...\autoroad_m28_test\import\heightmap_512.png`  
-   - **Meters per Pixel:** `1.0`  
-   - **Max Height:** `254.75`  
-   - Position: **`0, 0, 0`** (nicht Template −512/−512/100)  
-3. **Import** → **File → Save Level**  
+1. Toolbar → Landscape/Default → **Terrain Tools** → **Import Terrain**
+2. Dialog:
+   - Terrain name: `theTerrain`
+   - Heightmap: `/levels/<level>/import/heightmap_*.png`  
+     (oder Dateien aus `data/processed/...` vorher nach `import\` kopieren)
+   - **Meters per Pixel:** `1.0`
+   - **Max Height:** Wert aus `heightmap_meta.json` → `max_height_m`
+   - Position: **`0, 0, 0`** (nicht Template −512/−512/100)
+3. **Import** → **File → Save Level**
 4. Template-**ocean** löschen/deaktivieren (sonst Wasser bei Z≈116)
 
-Danach ist das Gelände oft schwarz → **automatische Layer-Masken** nutzen:
+Danach oft schwarz → Layer-Masken (nächster Abschnitt).
 
 ### Terrain-Materials aus Masken
 
-In 0.39 heißen die Opacity-/Layer-Maps im Dialog **„Texture Maps“** — die Liste ist anfangs **leer**.
+In 0.39 heißen Opacity-/Layer-Maps **„Texture Maps“** — die Liste ist anfangs **leer**.
 
-**Einfachster Weg (Preset):**
-1. `python tools\build_terrain_masks.py` (sync’t nach `levels/autoroad_m28_test/import/`)
-2. Import-Dialog → Menüleiste **Load...** (oder **Recent**)
-3. `terrainPreset.json` wählen → Heightmap + **4** Layer werden eingetragen
-4. Materials prüfen: Grass / dirt_rocky_large / rock / **Asphalt**, Channel **R**
-5. Groundmodels sollten `GRASS` / `DIRT_ROCKY_LARGE` / `ROCK` / `ASPHALT` sein
-6. Position `0,0,0` → **Import** → Level speichern
+**Preset (einfachster Weg):**
 
-**Manuell:** Unter Texture Maps auf **Add Texture Map** nacheinander:
+1. `python tools\build_terrain_masks.py` (mit passendem `AUTOROAD_SITE`) — sync’t nach `levels/<level>/import/`
+2. Import-Dialog → **Load...** → `terrainPreset.json`
+3. Materials: Grass / dirt_rocky_large / rock / **Asphalt**, Channel **R**
+4. Groundmodels: `GRASS` / `DIRT_ROCKY_LARGE` / `ROCK` / `ASPHALT`
+5. Position `0,0,0` → **Import** → speichern
+
+**Manuell:** Texture Maps → **Add Texture Map**:
+
 - `layerMap_0_Grass.png`
 - `layerMap_1_dirt_rocky_large.png`
 - `layerMap_2_rock.png`
 - `layerMap_3_Asphalt.png`
 
-Fahrbahnbreite kommt aus OSM (`~7 m` × `road_width_scale`) plus Dirt-Bankett (`shoulder_m`, Default 1,5 m je Seite) — konfigurierbar in `config/site.yaml`.
+Fahrbahnbreite: OSM (~7 m × `road_width_scale`) + Dirt-Bankett (`shoulder_m`).
 
-Wichtig: BeamNG-Dateidialog sieht nur den **Spiel-VFS** (`/levels/...`), nicht `C:\temp\...`. Dateien müssen im Level-Ordner `import\` liegen.
+Der Dateidialog sieht nur den **Spiel-VFS** (`/levels/...`), nicht `C:\temp\...`. Dateien müssen unter `levels\<level>\import\` liegen.
 
-Nach dem Build: Vorschau `preview_terrain_materials.png` (dunkel = Asphalt, braun = Bankett, grün = Gras, grau = Fels).
+Heightmap: **quadratisch**, **2er-Potenz**, **16-bit PNG** (512 oder 1024 je Site).
 
-Heightmap muss **quadratisch**, **2er-Potenz**, **16-bit PNG** sein — unser Export ist 512×512, 16-bit.
+Vorschau nach Build: `preview_terrain_materials.png`.
 
-## Leitplanken
+Offizielle Doku: [Terrain / heightmaps](https://docs.beamng.com/modding/levels/level_creation/section2/)
+
+---
+
+## 3. Leitplanken
+
+Details: [ANNOTATIONS.md](ANNOTATIONS.md)
 
 ```powershell
-python tools\build_guardrails.py
+cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/l13_kuehtai.yaml"; python tools\seed_annotations.py; python tools\build_guardrails.py
 ```
 
 Schreibt TSStatics nach  
-`...\levels\autoroad_m28_test\main\MissionGroup\level_objects\guardrails\items.level.json`  
-Mesh: `italy_guardrails_common_section` (Italy-Kit), Segmente Stoß-an-Stoß entlang dem Straßenrand.
+`...\levels\<level>\main\MissionGroup\level_objects\guardrails\items.level.json`  
+Mesh: `italy_guardrails_common_section` (Italy-Kit).
 
-Level **neu laden** (kein Terrain-Import nötig). Config: `beamng.guardrails` in `site.yaml`  
-(`sides`, `lateral_extra_m`, `section_length_m`, `abut_overlap_m`, `align_pitch`, `snap_to_heightmap`, `pivot_ground_offset_m`, `enabled`).
+Level **neu laden**. Config: `beamng.guardrails` + `annotations.guardrail_source` (`auto`|`gpkg`|`heuristic`).
 
-- `align_pitch: true` — Segmente folgen der Steigung (Pitch über die Sektionslänge)
-- `snap_to_heightmap: true` — Z am Gelände unter der Schiene
-- `section_length_m: 4.2` — AT-übliche Gerade (Joint-Abstand)
-- `abut_overlap_m: 0.08` — leichte Überlappung, damit Enden optisch schließen
-- Enge Kurven (R≤15 / R≤10): **kurze Sehnen** statt echter gebogener Profile (gibt es im Stock-BeamNG nicht); Länge folgt der **Rand**-Sehne (außen länger)
-- `yaw_flip_right` / `face_y_outward` — Orientierung W-Profil zur Fahrbahn
-- Zu hoch/tief: `pivot_ground_offset_m` (±0.1…0.5) oder `z_lift_m`
-- Weiter in die Straße: `lateral_extra_m` erhöhen
+- `auto`: nicht-leerer `guardrail`-Layer → GPKG, sonst OSM-Heuristik
+- `align_pitch` / `snap_to_heightmap` / `section_length_m` / `abut_overlap_m` — siehe Site-YAML
+- `yaw_flip_right` / `face_y_outward` — W-Profil zur Fahrbahn
+- Höhe: `pivot_ground_offset_m` / `z_lift_m`; Abstand Heuristik: `lateral_extra_m`
 
-## Wenn New Level am Ladebildschirm hängt
+---
 
-Das ist ein bekanntes BeamNG-Problem und oft **kein** Zeichen, dass Heightmaps „nicht gehen“.
+## Wenn Straße weg / Spawn falsch
 
-1. Spiel **hart beenden** (Task-Manager → BeamNG.drive / BeamNG.drive.exe).
-2. **Nicht** erneut „New Level“ mit leerem Ordner versuchen.
-3. Stattdessen:
-   - Offizielle Map **`smallgrid`** oder **`gridmap_v2`** laden und prüfen, dass das Spiel normal startet.
-   - Dann **F11** → World Editor.
-   - Oder Template manuell kopieren (zuverlässiger):
+**Spawn:** oft noch Template `[32,32,5]` (Ecke). Freeroam braucht zusätzlich einen **benannten** Spawn + `info.json`.
 
 ```powershell
-# User-Levels liegen bei dir typisch unter AppData (nicht nur Documents):
-# C:\Users\chdem\AppData\Local\BeamNG.drive\<version>\levels\
-$ver = "0.36"   # ggf. anpassen
-$dst = "$env:LOCALAPPDATA\BeamNG.drive\$ver\levels\autoroad_m28_test"
-$zip = "C:\Program Files (x86)\Steam\steamapps\common\BeamNG.drive\content\levels\template.zip"
-New-Item -ItemType Directory -Force -Path $dst | Out-Null
-Expand-Archive -Path $zip -DestinationPath $dst -Force
+cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/l13_kuehtai.yaml"; python tools\fix_beamng_level.py
 ```
 
-4. Spiel neu starten → Level `autoroad_m28_test` laden → F11 → **Terrain Tools → Import terrain**.
-5. Während dem Hänger: Konsole mit **`` ` ``** (Taste unter Esc) öffnen und Fehler notieren; Log:  
-   `%LOCALAPPDATA%\BeamNG.drive\<version>\beamng.log`
-6. Mods kurz deaktivieren (besonders Multiplayer/UI-Mods), Cache leeren, nochmal testen.
+Erwarteter Spawn ca. Mitte L13 `(573, 498, ~83)`, Objektname `spawns_default`. BeamNG vorher schliessen.
 
-**Wichtig:** Deine User-Daten liegen unter  
-`C:\Users\chdem\AppData\Local\BeamNG.drive\`  
-(`Documents\BeamNG.drive` zeigt bei dir auf einen älteren Ordner). Levels gehören in die **aktuelle Versionsnummer**-`levels\`-Ordner.
+**Spawn selbst im World Editor setzen (empfohlen):**
+1. Level laden → F11
+2. Scene Tree: `MissionGroup` → `PlayerDropPoints` → Objekt **`spawns_default`**
+3. Mit Move-Tool (W) auf die Straße ziehen; Z etwas über dem Boden
+4. File → Save Level
+5. Freeroam neu starten (oder Fahrzeug neu spawnen) — `info.json` zeigt schon auf `spawns_default`
 
+Skript-Auswahl bisher: längste/höchste OSM-Klasse (`secondary` L13), Punkt möglichst nahe Kartenmitte, Z = Heightmap + Lift.
+
+**Keine Asphalt-Oberfläche nach Re-Import:** Meist Heightmap **ohne** Texture Maps importiert.  
+`theTerrain.terrain.json` enthält dann z. B. noch `BeachSand` statt `Asphalt`.
+
+1. Terrain Tools → Import Terrain → **Load…** →  
+   `/levels/autoroad_galerie_test/import/terrainPreset.json`
+2. Prüfen: vier Texture Maps, letzte = `layerMap_3_Asphalt.png`, Material **Asphalt**, Channel **R**
+3. Position `0,0,0` → Import → Save Level → Level neu laden
+
+Nur Heightmap erneut zu importieren löscht die Layer-Zuordnung. Vorschau: `import/preview_terrain_materials.png` (dunkel = Asphalt).
+
+Wenn `main/.../terrain/items.level.json` leer ist (nach Save passiert das manchmal): `fix_beamng_level.py` stellt den TerrainBlock wieder her.
+
+
+1. Spiel hart beenden (Task-Manager).
+2. **Nicht** erneut File → New Level mit leerem Ordner.
+3. Offizielle Map (`smallgrid` / `gridmap_v2`) laden — wenn die geht, Template-Pfad prüfen und Abschnitt 1 wiederholen.
+4. Konsole `` ` `` (unter Esc); Log:  
+   `%LOCALAPPDATA%\BeamNG\BeamNG.drive\current\beamng.log`  
+   (ältere Installationen ggf. `%LOCALAPPDATA%\BeamNG.drive\<version>\`)
+5. Mods kurz deaktivieren, nochmal testen.
+
+**Nicht** Levels nach `Documents\BeamNG.drive` oder `BeamNG.drive\0.36\` legen — die Pipeline synct nach `BeamNG\BeamNG.drive\current\levels\`.
+
+---
 
 ## Neu bauen
 
 ```powershell
-cd C:\temp\beamng_autoroad
-python tools\fetch_osm.py
-python tools\build_smoke.py
+cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/l13_kuehtai.yaml"; python tools\fetch_dgm.py; python tools\build_smoke.py
 ```
-
-
-## BeamNG 0.39 User-Ordner
-
-Ab 0.39 liegt der User-Ordner hier (nicht mehr BeamNG.drive\0.36):
-
-C:\Users\chdem\AppData\Local\BeamNG\BeamNG.drive\current\
-
-Level:
-...\current\levels\autoroad_m28_test\
-

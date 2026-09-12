@@ -5,36 +5,37 @@ Details: [BEAMNG_IMPORT.md](BEAMNG_IMPORT.md), [ANNOTATIONS.md](ANNOTATIONS.md),
 
 ## Erledigt
 
-### Terrain / Straße
+### Sites
+- **Hahntennjoch** — Default `config/site.yaml` / `config/sites/hahntennjoch.yaml` (Leitplanken/Gelände)
+- **L13 Kühtai** — `config/sites/l13_kuehtai.yaml` (Galerien via GIP); aktiv mit `AUTOROAD_SITE`
+- Processed getrennt: `data/processed/<site.name>/`
+
+### Terrain / Straße (Hahntennjoch)
 - DGM → 16-bit Heightmap + `roads_beamng.json` (BeamNG-Meter, BBOX gestreckt auf 512²)
 - Terrain-Masken: Grass / dirt_rocky_large / rock / Asphalt (+ Bankett)
 - `terrainPreset.json` → Level-`import/`
 
 ### Leitplanken
-- Italy-Mesh `italy_guardrails_common_section`, Stoß-an-Stoß entlang **Straßenrand**-Sehne
-- Orientierung: `face_y_outward: true`, `yaw_flip_right: false` (beide Seiten korrekt)
-- `lateral_extra_m: 0.55`, `abut_overlap_m: 0.08`, Z etwas Richtung Asphalt sampeln
-- Kein Pitch-Clamp (zerstört den Verbund); Pitch = echte 3D-Joint-Sehne
-- `build_guardrails.py` schreibt **nur** Level-Items, **nie** die Annotations-GPKG
+- Italy-Mesh, Stoß-an-Stoß; Orientierung `face_y_outward` / `yaw_flip_right: false`
+- `lateral_extra_m: 0.55`, `abut_overlap_m: 0.08`
+- **Zweistufig:** Seed → QGIS → `build_guardrails.py` liest Layer `guardrail` (`annotations.guardrail_source: auto`)
+- Build schreibt **nie** die GPKG; leer/fehlend → OSM-Heuristik
 
 ### GIS-Annotationen
-- Schema: Layer `road_edge`, `guardrail`, `centerline` — [ANNOTATIONS.md](ANNOTATIONS.md)
-- `tools/init_annotations_gpkg.py` — leere GPKG
-- `tools/seed_annotations.py` — Heuristik → GPKG (CRS = Site); ohne `--force` keine Überschreibung
-- Smoke-GPKG geseedet: `data/annotations/tirol-m28-test-500m.gpkg`
-- Workflow-Ziel: Seed → QGIS editieren (Lücken = Einmündungen) → Build aus GPKG
+- Schema + Seed + GPKG-Consume für Guardrails — [ANNOTATIONS.md](ANNOTATIONS.md)
+- Smoke-GPKG: `data/annotations/tirol-m28-test-500m.gpkg`
 
 ## Offen / als Nächstes
 
 | Priorität | Thema | Notiz |
 |-----------|--------|--------|
-| 1 | **Build liest GPKG** | `guardrail`/`road_edge` statt OSM-Offset; leer/fehlend → Heuristik-Fallback |
-| 2 | **Terrain-Look Alm/Moos** | Stock: kein Almrosen-Material; Moos-Texturen unter `assets/.../forest/t_moss/` (u. a. automation_test_track). Eigenes `TerrainMaterial` klonbar; optional Soft-Cover splitten (Höhe/Hang/Exposition) |
-| 3 | **Geologie / LISA** | Grundfarbe Dirt/Rock + Vegetations-Bias; Tirol Landnutzung (LISA) besser als OSM; GeoSphere-Geologie prüfen |
-| 4 | QGIS-Feinschliff Ränder/Öffnungen | nach Seed editieren |
-| 5 | DecalRoad / feinere Surfaces | |
-| 6 | Gebogene Leitplanken / AssemblySpline | Stock hat keine echten R10/R15-Meshes |
-| 7 | Tunnel/Galerien, Kamm-Impostors, Gebäude | Konzept Phase 1.5+ |
+| 1 | QGIS-Feinschliff / Öffnungen | Lücken in `guardrail` testen |
+| 2 | **Galerien/Brücken aus GIP** | Brücken-MVP: `build_bridges.py` → MeshRoad (Klammbach). Galerien/Hole-Maps offen. Level: `autoroad_galerie_test` |
+| 3 | `road_edge` → Asphalt/Bankett-Masken | analog zweistufig |
+| 4 | **Terrain-Look Alm/Moos** | `t_moss`-Texturen; eigenes TerrainMaterial |
+| 5 | **Geologie / LISA** | Grundfarbe + Vegetations-Bias |
+| 6 | DGM für L13 1024² neu laden | site.yaml bereits auf Kühtai-Quadrat |
+| 7 | DecalRoad, Tunnel-Hermite, Gebäude | |
 
 ## Bewusst nicht automatisch
 
@@ -44,8 +45,11 @@ Details: [BEAMNG_IMPORT.md](BEAMNG_IMPORT.md), [ANNOTATIONS.md](ANNOTATIONS.md),
 ## Schnellbefehle
 
 ```powershell
-python tools\build_terrain_masks.py
-python tools\build_guardrails.py
-python tools\seed_annotations.py          # nur wenn GPKG-Layer leer
+python tools\seed_annotations.py          # Entwurf (nur wenn leer)
 python tools\seed_annotations.py --force  # Heuristik bewusst neu seeden
+python tools\fetch_gip.py                 # GIP/WFS Cache (Kunstbauten)
+python tools\fetch_gip.py --force         # GIP neu laden
+# … in QGIS editieren …
+python tools\build_guardrails.py          # 3D aus GPKG (auto)
+python tools\build_terrain_masks.py
 ```

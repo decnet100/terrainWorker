@@ -19,8 +19,28 @@ Eine GeoPackage-Datei pro Site, Layer-Namen exakt wie unten.
 ```yaml
 annotations:
   gpkg: data/annotations/tirol-m28-test-500m.gpkg
+  guardrail_source: auto   # auto | gpkg | heuristic
   # seed_sample_step_m: 2.0
 ```
+
+## Zweistufiger Workflow
+
+```text
+1) python tools\seed_annotations.py [--force]
+      → Heuristik schreibt Entwurf in GPKG (centerline, road_edge, guardrail)
+
+2) QGIS: Linien verschieben / teilen / Lücken an Einmündungen
+      → present=false oder fehlende Linie = keine Planke
+
+3) python tools\build_guardrails.py
+      → liest Layer guardrail (auto), baut 3D; schreibt GPKG nie
+```
+
+| `guardrail_source` | Verhalten |
+|--------------------|-----------|
+| `auto` (Default) | GPKG wenn `guardrail` Features hat, sonst Heuristik |
+| `gpkg` | nur GPKG (Fehler wenn leer) |
+| `heuristic` | nur OSM-Offset (GPKG ignorieren) |
 
 ### Seed (Heuristik → GPKG)
 
@@ -97,36 +117,48 @@ Nur nötig, wenn OSM-Achse grob falsch ist. Sonst weglassen.
 
 ---
 
-### 4. Reserviert (noch nicht Pflicht)
+### 4. `gallery` / `bridge` / `tunnel` — aus GIP ableitbar
+
+Rohdaten: Tirol Verkehrswege WFS — siehe [GIP.md](GIP.md).  
+Felder `KUNSTBAUTEN` + `OBJEKT`/`OBJEKTBEZEICHNUNG` kennzeichnen Galerien und Brücken.
+
+| Attribut | Typ | Pflicht | Werte |
+|----------|-----|---------|--------|
+| `id` | text | ja | stabil (z. B. GIP OBJECTID) |
+| `kind` | text | ja | `gallery` \| `bridge` \| `tunnel` \| `culvert` |
+| `name` | text | nein | aus `KUNSTBAUTEN` |
+| `open_side` | text | nein | `left` \| `right` \| `both` \| `none` (Galerie) |
+| `notes` | text | nein | |
+
+Geometrie zunächst die GIP-Liniensegmente; Portale/Querschnitt später verfeinern.
+
+### 5. Reserviert
 
 | Layer | Geometrie | Zweck |
 |-------|-----------|--------|
-| `tunnel` | LineString + Portal-Punkte | XY-Pfad, Hermite-Z später |
 | `exclude` | Polygon | Seilbahn-/DOM-Artefakte aus Masken |
 | `wall` | LineString | Stützmauer/Gabione (eigenes Mesh) |
-
-Schema analog: `id`, `notes`, typspezifische Felder wenn wir sie anbinden.
 
 ---
 
 ## QGIS-Arbeitsablauf (kurz)
 
-1. Optional: `python tools\seed_annotations.py` — Heuristik als Entwurf in die GPKG.
+1. `python tools\seed_annotations.py` — Heuristik als Entwurf (nur wenn leer; sonst `--force`).
 2. Ortho + DGM laden, Projekt-CRS = Site-CRS; GPKG-Layer öffnen.
-3. `road_edge` / `guardrail` verschieben, teilen, Lücken an Einmündungen.
-4. Einmündung: `guardrail` unterbrechen (**zwei Features** sind robuster als ein Loch in einer Linie).
-5. Später: Build liest die GPKG (Einlesen noch offen); bis dahin 3D weiter aus Heuristik.
+3. `guardrail` verschieben, teilen, Lücken an Einmündungen (`present=false` optional).
+4. Einmündung: Linie unterbrechen (**zwei Features**).
+5. `python tools\build_guardrails.py` — 3D aus GPKG (`source=gpkg` in Meta).
 
-**Schutz:** Seed ohne `--force` bricht ab, wenn schon Features existieren. Normale Builds schreiben die GPKG nicht.
+**Schutz:** Seed ohne `--force` bricht ab, wenn schon Features existieren. Builds schreiben die GPKG nicht.
+
+`road_edge` / `centerline` sind für spätere Masken/Achskorrektur; Guardrail-Build nutzt vorerst nur `guardrail`.
 
 ---
 
-## Abgrenzung zur aktuellen Pipeline
+## Pipeline-Rollen
 
 | Schritt | Verhalten |
 |---------|-----------|
 | `seed_annotations.py` | Heuristik → GPKG (nur explizit, `--force` bei Übernahme) |
-| `build_guardrails.py` | 3D aus OSM-Heuristik; **schreibt keine GPKG** |
-| Später: Build aus GPKG | nur gezeichnete `guardrail`-Abschnitte; Lücken = Öffnungen |
-
-Einlesen der GPKG in den 3D-Build ist **noch nicht** implementiert.
+| QGIS | Nutzer editiert |
+| `build_guardrails.py` | liest `guardrail` (auto); **schreibt keine GPKG**; Fallback Heuristik wenn leer |

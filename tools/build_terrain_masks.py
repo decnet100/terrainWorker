@@ -2,20 +2,24 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import numpy as np
 import requests
 import tifffile as tiff
-import yaml
 from PIL import Image, ImageDraw
 from pyproj import Transformer
 
 ROOT = Path(__file__).resolve().parents[1]
-SITE = yaml.safe_load((ROOT / "config" / "site.yaml").read_text(encoding="utf-8"))
+sys.path.insert(0, str(ROOT / "tools"))
+from site_coords import load_site, processed_dir, site_slug  # noqa: E402
+from fetch_dgm import dgm_cache_path  # noqa: E402
+
+SITE = load_site()
 RAW = ROOT / "data" / "raw"
-PROC = ROOT / "data" / "processed"
-PROC.mkdir(parents=True, exist_ok=True)
+PROC = processed_dir(SITE)
+SLUG = site_slug(SITE)
 
 BBOX = SITE["bbox"]
 XMIN, YMIN, XMAX, YMAX = map(float, BBOX)
@@ -70,10 +74,15 @@ def _to_px_beamng(bx: float, by: float, size: int) -> tuple[float, float]:
 
 
 def fetch_osm_landuse() -> dict:
-    cache = RAW / "osm_landuse.json"
-    if cache.exists():
-        print(f"Using cached {cache}")
-        return json.loads(cache.read_text(encoding="utf-8"))
+    cache = RAW / f"osm_landuse_{SLUG}.json"
+    read_path = cache
+    if not read_path.exists():
+        legacy = RAW / "osm_landuse.json"
+        if legacy.exists() and SLUG.startswith("tirol-m28"):
+            read_path = legacy
+    if read_path.exists():
+        print(f"Using cached {read_path}")
+        return json.loads(read_path.read_text(encoding="utf-8"))
 
     to_wgs = Transformer.from_crs(CRS, "EPSG:4326", always_xy=True)
     west, south = to_wgs.transform(XMIN, YMIN)
@@ -99,7 +108,7 @@ def fetch_osm_landuse() -> dict:
             r.raise_for_status()
             data = r.json()
             cache.write_text(json.dumps(data), encoding="utf-8")
-            print(f"Fetched OSM landuse → {cache} ({len(data.get('elements', []))} elements)")
+            print(f"Fetched OSM landuse -> {cache} ({len(data.get('elements', []))} elements)")
             return data
         except Exception as ex:  # noqa: BLE001
             last_err = ex
@@ -282,9 +291,13 @@ def write_preview(classes: np.ndarray, path: Path) -> None:
 
 
 def main() -> None:
-    dgm_path = RAW / "dgm_wcs10.tif"
+    dgm_path = dgm_cache_path(SITE)
     if not dgm_path.exists():
-        raise SystemExit(f"Missing {dgm_path}")
+        legacy = RAW / "dgm_wcs10.tif"
+        if legacy.exists() and SLUG.startswith("tirol-m28"):
+            dgm_path = legacy
+        else:
+            raise SystemExit(f"Missing {dgm_path} — run tools/fetch_dgm.py first")
 
     elev = np.asarray(tiff.imread(dgm_path), dtype=np.float64)
     elev_g = elev_to_grid(elev, OUT_SIZE)
@@ -328,7 +341,7 @@ def main() -> None:
         "sources": ["osm_landuse", "dgm_slope", "osm_roads_asphalt_shoulder"],
         "import_notes": [
             "Terrain Tools → Import Terrain → Load terrainPreset.json (recommended)",
-            "Heightmap: heightmap_512.png, Max Height from heightmap_meta.json",
+            "Heightmap: heightmap_%d.png, Max Height from heightmap_meta.json" % OUT_SIZE,
             "Texture maps in order: Grass, dirt_rocky_large, rock, Asphalt",
             "Groundmodels: GRASS / DIRT_ROCKY_LARGE / ROCK / ASPHALT",
             "Asphalt = full OSM width; dirt = shoulder bankett around it",
@@ -340,6 +353,8 @@ def main() -> None:
     print("Wrote", meta_path)
 
     # BeamNG-friendly short names + import preset (VFS paths)
+    level_name = SITE.get("beamng", {}).get("level_name", "autoroad_test")
+    hm_name = f"heightmap_{OUT_SIZE}.png"
     short_maps = []
     for e in entries:
         src = ROOT / e["file"]
@@ -347,7 +362,7 @@ def main() -> None:
         for dest in (PROC / short, mask_dir / short):
             Image.open(src).save(dest)
         short_maps.append({
-            "path": f"/levels/autoroad_m28_test/import/{short}",
+            "path": f"/levels/{level_name}/import/{short}",
             "material": e["material"],
             "channel": "R",
         })
@@ -362,7 +377,7 @@ def main() -> None:
         "name": "theTerrain",
         "squareSize": MPP,
         "heightScale": meta_hm,
-        "heightMapPath": "/levels/autoroad_m28_test/import/heightmap_512.png",
+        "heightMapPath": f"/levels/{level_name}/import/{hm_name}",
         "holeMapPath": "",
         "opacityMaps": short_maps,
         "pos": {"x": 0, "y": 0, "z": 0},
@@ -371,7 +386,6 @@ def main() -> None:
     print("Wrote", PROC / "terrainPreset.json")
 
     # Sync into BeamNG user level import/ (VFS-visible)
-    level_name = SITE.get("beamng", {}).get("level_name", "autoroad_m28_test")
     user_import = (
         Path.home()
         / "AppData"
@@ -387,9 +401,9 @@ def main() -> None:
         user_import.mkdir(parents=True, exist_ok=True)
         for short in (m["path"].rsplit("/", 1)[-1] for m in short_maps):
             Image.open(PROC / short).save(user_import / short)
-        hm = PROC / "heightmap_512.png"
+        hm = PROC / hm_name
         if hm.exists():
-            Image.open(hm).save(user_import / "heightmap_512.png")
+            Image.open(hm).save(user_import / hm_name)
         (user_import / "terrainPreset.json").write_text(
             json.dumps(preset, indent=2), encoding="utf-8"
         )

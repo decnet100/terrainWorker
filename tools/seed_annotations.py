@@ -15,26 +15,24 @@ import sys
 from pathlib import Path
 
 import geopandas as gpd
-import yaml
 from shapely.geometry import LineString
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
+from site_coords import SiteCoords, annotations_gpkg, load_site, processed_dir  # noqa: E402
 from init_annotations_gpkg import create_gpkg  # noqa: E402
 
-SITE = yaml.safe_load((ROOT / "config" / "site.yaml").read_text(encoding="utf-8"))
-PROC = ROOT / "data" / "processed"
+SITE = load_site()
+PROC = processed_dir(SITE)
 BNG = SITE.get("beamng", {})
 GR = BNG.get("guardrails", {}) or {}
 ANN = SITE.get("annotations") or {}
+COORDS = SiteCoords(SITE)
 
-CRS = str(SITE.get("crs", "EPSG:31254"))
-BBOX = list(map(float, SITE["bbox"]))
-XMIN, YMIN, XMAX, YMAX = BBOX
-BW, BH = XMAX - XMIN, YMAX - YMIN
-MPP = float(BNG.get("meters_per_pixel", 1.0))
-HM_SIZE = int(BNG.get("mask_size", 512))
-TERRAIN_EXTENT = HM_SIZE * MPP
+CRS = COORDS.crs
+XMIN, YMIN = COORDS.xmin, COORDS.ymin
+BW, BH = COORDS.bw, COORDS.bh
+TERRAIN_EXTENT = COORDS.terrain_extent
 ROAD_WIDTH_SCALE = float(BNG.get("road_width_scale", 1.0))
 LATERAL_EXTRA = float(GR.get("lateral_extra_m", 0.55))
 HIGHWAYS = set(
@@ -45,22 +43,17 @@ HIGHWAYS = set(
 )
 SIDES = GR.get("sides", "both")
 SECTION_LEN = float(GR.get("section_length_m", 4.2))
-# Dense vertices for editable GIS lines (not mesh joint spacing).
 SAMPLE_STEP_M = float(ANN.get("seed_sample_step_m", 2.0))
 
 SEED_LAYERS = ("centerline", "road_edge", "guardrail")
 
 
 def _gpkg_path() -> Path:
-    rel = ANN.get("gpkg") or f"data/annotations/{SITE.get('name', 'annotations')}.gpkg"
-    p = Path(str(rel).replace(" ", "_"))
-    return p if p.is_absolute() else ROOT / p
+    return annotations_gpkg(SITE)
 
 
 def _beamng_to_crs(bx: float, by: float) -> tuple[float, float]:
-    lx = bx / TERRAIN_EXTENT * BW
-    ly = by / TERRAIN_EXTENT * BH
-    return XMIN + lx, YMIN + ly
+    return COORDS.beamng_to_crs(bx, by)
 
 
 def _polyline_length_xy(nodes: list[list[float]]) -> float:

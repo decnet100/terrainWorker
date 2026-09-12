@@ -1,19 +1,21 @@
 """Create empty annotations GeoPackage (road_edge, guardrail, centerline).
 
 Schema: docs/ANNOTATIONS.md
-Default output: data/annotations/<site-name>.gpkg from config/site.yaml
+Default output from active site (config/site.yaml or AUTOROAD_SITE).
 """
 from __future__ import annotations
 
 import argparse
 import sqlite3
+import sys
 from pathlib import Path
 
 import geopandas as gpd
-import yaml
 from shapely.geometry import LineString
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "tools"))
+from site_coords import annotations_gpkg, load_site  # noqa: E402
 
 
 def _seed_line(attrs: dict, crs: str) -> gpd.GeoDataFrame:
@@ -81,18 +83,12 @@ def create_gpkg(path: Path, crs: str) -> Path:
 
 
 def main() -> None:
-    site_path = ROOT / "config" / "site.yaml"
-    site = {}
-    if site_path.exists():
-        site = yaml.safe_load(site_path.read_text(encoding="utf-8")) or {}
-
-    default_name = str(site.get("name", "annotations")).replace(" ", "_")
+    site = load_site()
     default_crs = str(site.get("crs", "EPSG:31254"))
-    ann = site.get("annotations") or {}
-    default_out = ann.get("gpkg") or f"data/annotations/{default_name}.gpkg"
+    default_out = annotations_gpkg(site)
 
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--out", default=default_out, help="Output .gpkg path (relative to repo root)")
+    ap.add_argument("--out", default=str(default_out), help="Output .gpkg path")
     ap.add_argument("--crs", default=default_crs, help="CRS, e.g. EPSG:31254")
     args = ap.parse_args()
 

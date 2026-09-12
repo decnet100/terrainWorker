@@ -1,0 +1,65 @@
+# Active site = copy or set AUTOROAD_SITE=config/sites/<name>.yaml
+# Default for Leitplanken-/Gelände-Optimierung.
+name: tirol-m28-test-500m
+crs: EPSG:31254
+bbox:
+  - 22150.0
+  - 237990.0
+  - 22650.0
+  - 238500.0
+
+sources:
+  dgm:
+    type: wcs
+    url: "https://gis.tirol.gv.at/arcgis/services/Service_Public/terrain/MapServer/WCSServer"
+    coverage: "Gelaendemodell_50cm_M28"
+    version: "1.0.0"
+    resolution_m: 0.5
+  ortho:
+    type: wcs
+    url: "https://gis.tirol.gv.at/arcgis/services/Service_Public/orthofoto/MapServer/WCSServer"
+    coverage: "Aktuell_RGB"
+    resolution_m: 1.0
+  roads:
+    type: osm
+  landuse:
+    type: osm
+    note: "OSM natural/landuse polygons; Tirol LISA WFS later"
+
+beamng:
+  meters_per_pixel: 1.0
+  max_height_m: 254.75
+  level_name: autoroad_m28_test
+  mask_size: 512
+  slope_rock_deg: 38
+  road_width_scale: 1.0
+  shoulder_m: 0.2
+  guardrails:
+    enabled: true
+    shape: "/art/shapes/objects/italy_guardrails_common_section.dae"
+    mesh_length_m: 3.1
+    section_length_m: 4.2
+    curve_r15_m: 15.0
+    curve_r10_m: 10.0
+    curve_step_r15_m: 2.8
+    curve_step_r10_m: 2.2
+    abut_overlap_m: 0.08
+    curvature_window_m: 8.0
+    lateral_extra_m: 0.55
+    z_sample_inward_m: 0.35
+    sides: both
+    highways: [secondary, primary, tertiary, trunk, motorway]
+    z_lift_m: 0.05
+    pivot_ground_offset_m: 0.0
+    align_pitch: true
+    snap_to_heightmap: true
+    face_y_outward: true
+    yaw_flip_right: false
+
+annotations:
+  gpkg: data/annotations/tirol-m28-test-500m.gpkg
+  guardrail_source: auto
+
+notes: |
+  Hahntennjoch smoke ~500x510 m (M28). Leitplanken/Gelände-Optimierung.
+  WGS84 approx: 47.2804,10.6258 – 47.2850,10.6324

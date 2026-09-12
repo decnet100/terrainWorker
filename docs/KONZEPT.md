@@ -1,4 +1,4 @@
-﻿# Konzept: Geodaten → BeamNG Passstraßen (Tirol)
+# Konzept: Geodaten → BeamNG Passstraßen (Tirol)
 
 ## Ziel
 
@@ -111,6 +111,6 @@ Arbeitsverzeichnis: `C:\temp\beamng_autoroad`
 Siehe [STATUS.md](STATUS.md) (Stand + priorisierte Roadmap).
 
 Kurz:
-1. Annotations-GPKG in den Guardrail-/Masken-Build einlesen
-2. Soft-Cover Richtung Moos/Alm (TerrainMaterial + ggf. Layer-Split); Geologie/LISA später
-3. QGIS: Ränder und Öffnungen feinjustieren
+1. QGIS: Guardrail-Öffnungen/Ränder feinjustieren (Build liest GPKG bereits)
+2. `road_edge` in Terrain-Masken einbinden
+3. Soft-Cover Richtung Moos/Alm; Geologie/LISA später

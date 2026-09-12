@@ -1,6 +1,6 @@
-# site.example.yaml — Vorlage für einen Testausschnitt
-# Kopieren nach site.yaml und Werte eintragen.
-# site.yaml sollte lokal bleiben (kann in .gitignore).
+# site.example.yaml — Vorlage
+# Fertige Profile: config/sites/hahntennjoch.yaml, config/sites/l13_kuehtai.yaml
+# Aktiv: nach config/site.yaml kopieren ODER $env:AUTOROAD_SITE="config/sites/…"
 
 name: tirol-test-ausschnitt
 # Arbeits-CRS für BBOX und Verarbeitung (an DGM-Kachel anpassen):
@@ -53,11 +53,13 @@ sources:
   roads:
     type: osm
     # nutzt site.bbox (nach WGS84 transformiert) für Overpass
-    # Alternativen:
-    # type: gip
-    # path: data/raw/gip_roads.gpkg
-    # type: local
-    # path: data/annotations/centerline.gpkg
+
+  # Tirol Landesstraßen WFS (Kunstbauten). Cache; nur --force neu laden.
+  gip:
+    type: wfs
+    url: "https://dservices3.arcgis.com/hG7UfxX49PQ8XkXh/arcgis/services/Verkehrswege/WFSServer"
+    type_name: "Verkehrswege:Verkehrswege"
+    str_code: L13                # Pflicht für effizienten Download
 
 beamng:
   meters_per_pixel: 1.0          # Heightmap-Auflösung im Level (Startwert)
@@ -92,9 +94,10 @@ beamng:
 # Hand-editierte Ränder / Leitplanken (siehe docs/ANNOTATIONS.md).
 # Schema: python tools/init_annotations_gpkg.py
 # Heuristik-Entwurf: python tools/seed_annotations.py [--force]
-# Normale Builds überschreiben die GPKG nie.
+# Build liest guardrail (auto), schreibt GPKG nie.
 annotations:
   gpkg: data/annotations/tirol-test-ausschnitt.gpkg
+  guardrail_source: auto   # auto | gpkg | heuristic
 
 notes: |
   WCS-Links + bbox + coverage-Namen reichen.
