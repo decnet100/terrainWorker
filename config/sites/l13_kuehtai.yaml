@@ -67,7 +67,7 @@ beamng:
         side: Concrete
         # MeshRoad: textureLength = m along road per UV repeat (V only).
         # Across width UV is always 0..1 — use detail_scale for finer grain.
-        texture_length: 2.0
+        texture_length: 1.0
         detail_scale: 6.0
     items:
       # Klammbach: oblique ditch — longer after-side on road centerline
@@ -78,6 +78,107 @@ beamng:
         style:
           understructure: slab
           edge: none
+  galleries:
+    # Same pattern as bridges: defaults + items[] (match objectid / name).
+    # MVP: open U-shell DAE + terrain hole map (build_galleries.py)
+    defaults:
+      width_m: 7.0
+      width_from_road: true
+      clear_height_m: 3.0      # Fahrraum; Hole nur wo Terrain darüber liegt
+      roof_thickness_m: 0.5
+      wall_thickness_m: 0.4
+      overhang_m: 1.0          # Dachüberstand ≥ deck_open_extra (deckt Brüstung)
+      extend_before_m: 2.0     # Übergang vor/nach GIP-Segment
+      extend_after_m: 2.0
+      step_m: 2.0
+      crossfall_max: 0.12
+      open_side: left          # left | right | both | none — Blickrichtung
+      # Holemap: manuell (Build erhält theTerrain_holemap_manual.png falls vorhanden).
+      z_profile: hermite
+      portal_grade_step_m: 1.0
+      portal_grade_jump: 0.04
+      portal_grade_baseline_n: 3
+      portal_out_extra_m: 2.0
+      portal_grade_span_m: 3.0
+      portal_jump_min_grade: 0.12
+      portal_search_out_m: 25.0
+      portal_search_in_m: 15.0
+      hole_mode: none
+      hole_pad_m: 0.0
+      hole_portal_length_m: 4.0
+      hole_out_bite_m: 2.0
+      hole_above_road_m: 0.15
+      hole_max_above_m: 50.0
+      hole_width_scale: 1.0
+      # Fahrbahn (MeshRoad) + Block-Portalrahmen (Pfeiler/Sturz)
+      deck_enabled: true
+      deck_depth_m: 0.5
+      # Extra zur Straßenbreite: unter die Innenwand schieben (kein Spalt)
+      deck_width_extra_m: 0.5
+      deck_open_extra_m: 0.8   # Fahrbahn nur zur offenen Seite verlängern
+      parapet_height_m: 1.0
+      parapet_thickness_m: 0.35
+      column_spacing_m: 4.0
+      column_along_m: 0.4
+      column_lat_m: 0.35
+      deck_extend_m: 12.0         # MeshRoad folgt Terrain über die Portale hinaus
+      approach_mode: marry        # Auffahrt = DGM (an Terrain anbinden); Galerie = Hermite
+      portal_ease_m: 4.0          # kurzer C1-Übergang knapp innerhalb der Portale
+      approach_lift_m: 0.015      # MeshRoad knapp über Terrain (kein Z-Fight)
+      approach_blend_m: 12.0      # nur für approach_mode: hermite_blend
+      approach_conform: false     # marry braucht kein Heightmap-Bake
+      portal_frame: block
+      portal_block_m: 0.7
+      portal_depth_m: 1.0
+      portal_overhang_m: 0.8
+      portal_clear_extra_m: 0.25  # Pfeiler außen an der Fahrbahn, nicht durchschneiden
+      debug_centerline: false    # MeshRoad hat immer Collision — nur bei Bedarf + hoch gehoben
+      blend_open_dgm: true
+      style:
+        shell: gallery
+        columns: rect          # none | rect — Brüstung + Säulen offene Seite
+        edge: none
+        portal: block
+      materials:
+        top: Asphalt
+        bottom: Concrete
+        side: Concrete
+        texture_length: 4.0
+        detail_scale: 4.0
+    items:
+      - match: { objectid: 7236, name: Mugkögele }
+        enabled: false
+        hole_mode: none
+        debug_centerline: false
+      - match: { objectid: 10099, name: Mugkögele }
+        enabled: false
+        hole_mode: none
+        debug_centerline: false
+      - match: { objectid: 8276, name: Rauheneck }
+        open_side: left
+        clear_height_m: 3.0
+        extend_before_m: 3.0
+        extend_after_m: 3.0
+        hole_mode: none
+        deck_enabled: true
+        deck_width_extra_m: 0.5
+        deck_open_extra_m: 0.8
+        overhang_m: 1.0
+        parapet_height_m: 1.0
+        parapet_thickness_m: 0.35
+        column_spacing_m: 4.0
+        deck_extend_m: 12.0
+        approach_mode: marry
+        approach_conform: false
+        portal_ease_m: 4.0
+        approach_lift_m: 0.015
+        portal_frame: block
+        portal_block_m: 0.7
+        portal_depth_m: 1.0
+        portal_overhang_m: 0.8
+        portal_clear_extra_m: 0.25
+        style:
+          columns: rect
   guardrails:
     enabled: true
     shape: "/art/shapes/objects/italy_guardrails_common_section.dae"

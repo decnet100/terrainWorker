@@ -63,3 +63,38 @@ Hand-Korrektur in QGIS bleibt möglich (offene Galerie-Seite, Portale).
 ```powershell
 cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE='config/sites/l13_kuehtai.yaml'; python tools\build_bridges.py; python tools\build_terrain_masks.py
 ```
+
+### Galerien-Config (Site-YAML)
+
+`beamng.galleries.defaults` + `beamng.galleries.items[]` (Match wie Brücken):
+
+| Key | Bedeutung |
+|-----|-----------|
+| `clear_height_m` | lichte Höhe Fahrbahn → Dach-Unterkante |
+| `roof_thickness_m` | Dachstärke (für späteres Mesh) |
+| `extend_before_m` / `extend_after_m` | Übergang über GIP-Enden hinaus (Achse) |
+| `open_side` | `left` \| `right` \| `both` \| `none` |
+| `hole_pad_m` / `blend_open_dgm` | später Hole-Map / DGM-Mischung |
+| `style.shell/columns/edge/portal` | Darstellungseigenschaften je Objekt (Platzhalter) |
+| `materials.*` | wie Brücken, sobald Mesh kommt |
+
+L13-Items: Mugkögele **7236** + **10099** (Map-Rand, vorerst `enabled: false`), Fokus **Rauheneckgalerie 8276**.
+
+- Achse: OSM-XY; **`z_profile: road`** folgt dem Straßenband (nicht DGM auf dem Galeriedach). `hermite` optional.
+- Portal-Anker: Suche `terrain≈road` außerhalb der GIP-Enden (`portal_search_*`); Hole-`z_ref` nur von dort.
+
+```powershell
+cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE='config/sites/l13_kuehtai.yaml'; python tools\build_galleries.py
+```
+
+Schreibt `galleries_meta.json` + `galleries_centerlines.json`, DAE unter  
+`art/shapes/galleries/`, TSStatics in SimGroup `galleries`, und  
+`import/theTerrain_holemap.png` (Preset-`holeMapPath`). Magenta-Debug: SimGroup `gallery_debug`.
+
+`open_side: left|right` = Wand weglassen (Rausschauen). Falsch rum → in `items[]` flippen.
+
+**Hole-Map:** Portale mit Abstand≤Halbbreite+Pad;  
+`road+hole_min_above < z ≤ road+clear_height`; Neigung ≥ `hole_min_slope_deg` (45°).  
+Innen-Portale an aneinanderstoßenden GIP-OIDs (z. B. Mugkögele 7236↔10099) entfallen.
+
+Nach Build: Level neu laden, **terrainPreset.json mit Hole-Map** neu importieren.

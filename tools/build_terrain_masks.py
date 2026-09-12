@@ -432,6 +432,9 @@ def main() -> None:
         "opacityMaps": short_maps,
         "pos": {"x": 0, "y": 0, "z": 0},
     }
+    hole_src = PROC / "theTerrain_holemap.png"
+    if hole_src.exists():
+        preset["holeMapPath"] = f"/levels/{level_name}/import/theTerrain_holemap.png"
     (PROC / "terrainPreset.json").write_text(json.dumps(preset, indent=2), encoding="utf-8")
     print("Wrote", PROC / "terrainPreset.json")
 
@@ -454,6 +457,9 @@ def main() -> None:
         hm = PROC / hm_name
         if hm.exists():
             Image.open(hm).save(user_import / hm_name)
+        if hole_src.exists():
+            Image.open(hole_src).save(user_import / "theTerrain_holemap.png")
+            Image.open(hole_src).save(user_import / "holeMap.png")
         (user_import / "terrainPreset.json").write_text(
             json.dumps(preset, indent=2), encoding="utf-8"
         )
