@@ -106,6 +106,13 @@ Arbeitsverzeichnis: `C:\temp\beamng_autoroad`
 
 ---
 
+## Später: Multi-Map „Tirolrunde“
+
+Einzelne Pass-Levels sollen sich später per Hard-Switch und Session-Files zu einer durchgängigen Tour verknüpfen lassen (Zeiten + Settings über Map-Wechsel).  
+Details und Agent-Briefing: [TIROLRUNDE.md](TIROLRUNDE.md) — **nicht** Teil der aktuellen Terrain-Pipeline.
+
+---
+
 ## Nächste Schritte
 
 Siehe [STATUS.md](STATUS.md) (Stand + priorisierte Roadmap).

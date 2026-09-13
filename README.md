@@ -36,6 +36,7 @@ python tools\build_smoke.py
 
 - [docs/KONZEPT.md](docs/KONZEPT.md)
 - [docs/STATUS.md](docs/STATUS.md) — Stand, Roadmap, Schnellbefehle
+- [docs/TIROLRUNDE.md](docs/TIROLRUNDE.md) — Vision: Multi-Map Session / Portal-Tore (später)
 - [docs/DATENUEBERGABE.md](docs/DATENUEBERGABE.md)
 - [docs/ANNOTATIONS.md](docs/ANNOTATIONS.md) — GIS: Straßenrand / Leitplanken / Öffnungen
 - [docs/GIP.md](docs/GIP.md) — Tirol Verkehrswege WFS / Kunstbauten (Cache)

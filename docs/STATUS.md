@@ -1,7 +1,8 @@
 # Stand und Roadmap
 
 Kurzüberblick nach dem Hahntennjoch-Smoke-Test (BeamNG 0.39).  
-Details: [BEAMNG_IMPORT.md](BEAMNG_IMPORT.md), [ANNOTATIONS.md](ANNOTATIONS.md), [KONZEPT.md](KONZEPT.md).
+Details: [BEAMNG_IMPORT.md](BEAMNG_IMPORT.md), [ANNOTATIONS.md](ANNOTATIONS.md), [KONZEPT.md](KONZEPT.md).  
+Spätere Multi-Map-Session (nicht jetzt bauen): [TIROLRUNDE.md](TIROLRUNDE.md).
 
 ## Erledigt
 
@@ -36,6 +37,7 @@ Details: [BEAMNG_IMPORT.md](BEAMNG_IMPORT.md), [ANNOTATIONS.md](ANNOTATIONS.md),
 | 5 | **Geologie / LISA** | Grundfarbe + Vegetations-Bias |
 | 6 | DGM für L13 1024² neu laden | site.yaml bereits auf Kühtai-Quadrat |
 | 7 | DecalRoad, Tunnel-Hermite, Gebäude | |
+| — | **Tirolrunde** (Multi-Map Session) | Vision only — [TIROLRUNDE.md](TIROLRUNDE.md); nach mehreren spielbaren Pässen |
 
 ## Bewusst nicht automatisch
 
