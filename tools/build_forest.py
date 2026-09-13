@@ -201,7 +201,11 @@ def scatter(site: dict, cfg: dict) -> dict[str, list[dict]]:
     water = _load_mask(proc / "mask_water.png", size)
     asphalt = _load_mask(proc / "mask_asphalt.png", size)
     shoulder = _load_mask(proc / "mask_shoulder.png", size)
-    clear = _dilate(asphalt | shoulder | water, max(1, int(round(float(cfg["clear_road_m"]) / mpp))))
+    settlement = _load_mask(proc / "mask_settlement.png", size)
+    clear = _dilate(
+        asphalt | shoulder | water | settlement,
+        max(1, int(round(float(cfg["clear_road_m"]) / mpp))),
+    )
 
     high = high & ~clear
     scrub = scrub & ~high & ~clear

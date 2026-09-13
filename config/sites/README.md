@@ -6,6 +6,7 @@
 | [`l13_kuehtai.yaml`](l13_kuehtai.yaml) | L13 Sellraintal / Kühtai (Galerien) | `autoroad_galerie_2048` | 2048² |
 | [`l13_splining.yaml`](l13_splining.yaml) | L13 Splining-Test (Strassennetz + 4 MeshRoads) | `autoroad_l13_splining` | 2048² |
 | [`fernpass.yaml`](fernpass.yaml) | B179 Fernpass | `autoroad_fernpass_4096` | 4096² |
+| [`fernpass_mega.yaml`](fernpass_mega.yaml) | B179 Mega-Fernpass | `autoroad_fernpass_8192` | 8192² |
 
 ## Aktiv wählen
 
@@ -22,6 +23,9 @@ $env:AUTOROAD_SITE = "config/sites/l13_kuehtai.yaml"
 
 # Fernpass 4096
 $env:AUTOROAD_SITE = "config/sites/fernpass.yaml"
+
+# Mega-Fernpass 8192
+$env:AUTOROAD_SITE = "config/sites/fernpass_mega.yaml"
 python tools\fetch_dgm.py
 python tools\build_smoke.py
 ```

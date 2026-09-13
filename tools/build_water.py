@@ -1,7 +1,13 @@
 """Inject BeamNG WaterBlock / River from Tirol landcover Gewässer polygons.
 
-Standing water (LN-GWS) → WaterBlock (AABB).
-Flowing water (LN-GWF) → River along polygon long axis (approx centerline).
+Standing water (LN-GWS) → WaterBlock(s) + optional heightmap basin carve.
+Terrain Mud stays as shore/bed paint; reflective water needs WaterBlock meshes.
+
+Large lakes: shrink by shore_inset_m, then tile WaterBlocks that overlap the
+core. standing_depress_m lowers the DGM under LN-GWS so blocks sit in a hole.
+
+Flowing water (LN-GWF) → optional River, or WaterBlocks when wide_flowing_min_width_m
+is set and the floodplain is wide enough.
 
 Usage:
   $env:AUTOROAD_SITE='config/sites/l13_kuehtai.yaml'
@@ -17,6 +23,8 @@ from pathlib import Path
 
 import numpy as np
 from pyproj import Transformer
+from shapely.geometry import Polygon
+from shapely.validation import make_valid
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
@@ -43,7 +51,16 @@ def _cfg(bng: dict) -> dict:
         "depth_m": float(raw.get("depth_m") or 3.0),
         "surface_lift_m": float(raw.get("surface_lift_m") or 0.15),
         "min_area_m2": float(raw.get("min_area_m2") or 40.0),
-        "standing_max_side_m": float(raw.get("standing_max_side_m") or 60.0),
+        # Single WaterBlock AABB up to this side length; larger lakes are tiled.
+        "standing_max_side_m": float(raw.get("standing_max_side_m") or 80.0),
+        "standing_tile_m": float(raw.get("standing_tile_m") or 64.0),
+        # Positive: erode polygon so Mud rim stays visible around WaterBlocks.
+        "shore_inset_m": float(raw.get("shore_inset_m") or 4.0),
+        # LN-GWF wider than this (PCA half-width*2) also get WaterBlocks.
+        "wide_flowing_min_width_m": float(raw.get("wide_flowing_min_width_m") or 0.0),
+        # Lower terrain under LN-GWS lakes so WaterBlocks have a basin (meters).
+        "standing_depress_m": float(raw.get("standing_depress_m") or 0.0),
+        "standing_depress_blend_m": float(raw.get("standing_depress_blend_m") or 6.0),
         "river_min_length_m": float(raw.get("river_min_length_m") or 12.0),
         "river_min_width_m": float(raw.get("river_min_width_m") or 2.0),
         "river_max_width_m": float(raw.get("river_max_width_m") or 12.0),
@@ -104,12 +121,11 @@ def _z_samples(z_at, xy: np.ndarray, n: int = 24) -> float:
     return float(np.median(zs))
 
 
-def _water_block(name: str, xy: np.ndarray, z_surf: float, cfg: dict) -> dict:
-    xmin, xmax = float(xy[:, 0].min()), float(xy[:, 0].max())
-    ymin, ymax = float(xy[:, 1].min()), float(xy[:, 1].max())
-    cx, cy = 0.5 * (xmin + xmax), 0.5 * (ymin + ymax)
-    sx = max(2.0, xmax - xmin)
-    sy = max(2.0, ymax - ymin)
+def _water_block_box(
+    name: str, cx: float, cy: float, sx: float, sy: float, z_surf: float, cfg: dict
+) -> dict:
+    # Volume depth must reach the carved lake bed when standing_depress_m is set.
+    depth = max(float(cfg["depth_m"]), float(cfg["standing_depress_m"]) + 0.5)
     obj: dict = {
         "name": name,
         "class": "WaterBlock",
@@ -117,13 +133,113 @@ def _water_block(name: str, xy: np.ndarray, z_surf: float, cfg: dict) -> dict:
         "persistentId": str(uuid.uuid4()),
         "position": [cx, cy, z_surf],
         "rotationMatrix": [1, 0, 0, 0, 1, 0, 0, 0, 1],
-        "scale": [sx, sy, float(cfg["depth_m"])],
+        "scale": [max(2.0, sx), max(2.0, sy), depth],
         "gridElementSize": float(cfg["grid_element_size"]),
     }
     mat = cfg.get("material") or ""
     if mat:
         obj["material"] = mat
     return obj
+
+
+def _as_polygon(xy: np.ndarray) -> Polygon | None:
+    if xy.shape[0] < 3:
+        return None
+    try:
+        poly = make_valid(Polygon(xy))
+    except Exception:
+        return None
+    if poly.is_empty:
+        return None
+    if poly.geom_type == "Polygon":
+        return poly if not poly.is_empty else None
+    if poly.geom_type == "MultiPolygon":
+        parts = [g for g in poly.geoms if isinstance(g, Polygon) and not g.is_empty]
+        if not parts:
+            return None
+        return max(parts, key=lambda g: g.area)
+    return None
+
+
+def _core_geoms(xy: np.ndarray, shore_inset_m: float) -> list[Polygon]:
+    """Erode standing water so Mud rim remains; fall back to full poly if too thin."""
+    poly = _as_polygon(xy)
+    if poly is None:
+        return []
+    if shore_inset_m <= 0:
+        return [poly]
+    eroded = poly.buffer(-float(shore_inset_m))
+    if eroded.is_empty:
+        return [poly]
+    if eroded.geom_type == "Polygon":
+        return [eroded]
+    if eroded.geom_type == "MultiPolygon":
+        return [g for g in eroded.geoms if isinstance(g, Polygon) and not g.is_empty]
+    return [poly]
+
+
+def _pca_width_m(xy: np.ndarray) -> float:
+    """Approx floodplain width via PCA (2 * median |lateral|)."""
+    if xy.shape[0] < 3:
+        return 0.0
+    mean = xy.mean(axis=0)
+    centered = xy - mean
+    _, _, vt = np.linalg.svd(centered, full_matrices=False)
+    perp = vt[1] if vt.shape[0] > 1 else np.array([-vt[0, 1], vt[0, 0]])
+    lat = centered @ perp
+    return 2.0 * float(np.percentile(np.abs(lat), 50))
+
+
+def _standing_water_blocks(name: str, xy: np.ndarray, z_at, cfg: dict) -> list[dict]:
+    """One AABB WaterBlock per lake core; tile only if larger than standing_max_side_m.
+
+    Prefer few large blocks (FPS). Dense tiling is only a fallback for huge polys.
+    """
+    from shapely.geometry import box as shapely_box
+
+    cores = _core_geoms(xy, float(cfg["shore_inset_m"]))
+    if not cores:
+        return []
+    max_side = float(cfg["standing_max_side_m"])
+    tile = max(8.0, float(cfg["standing_tile_m"]))
+    lift = float(cfg["surface_lift_m"])
+    min_area = float(cfg["min_area_m2"])
+    out: list[dict] = []
+    for ci, core in enumerate(cores):
+        if core.area < min_area * 0.25:
+            continue
+        minx, miny, maxx, maxy = core.bounds
+        sx = float(maxx - minx)
+        sy = float(maxy - miny)
+        if max(sx, sy) <= max_side:
+            cx, cy = float(core.centroid.x), float(core.centroid.y)
+            z_surf = float(z_at(cx, cy)) + lift
+            out.append(_water_block_box(f"{name}_c{ci}", cx, cy, sx, sy, z_surf, cfg))
+            continue
+        # Sparse fallback for oversized lakes (axis-aligned tiles, no dense overlap).
+        nx = max(1, int(math.ceil(sx / tile)))
+        ny = max(1, int(math.ceil(sy / tile)))
+        tw = sx / nx
+        th = sy / ny
+        min_overlap = 0.25 * tw * th
+        for iy in range(ny):
+            for ix in range(nx):
+                cx = minx + (ix + 0.5) * tw
+                cy = miny + (iy + 0.5) * th
+                tile_g = shapely_box(cx - tw * 0.5, cy - th * 0.5, cx + tw * 0.5, cy + th * 0.5)
+                try:
+                    inter = core.intersection(tile_g)
+                except Exception:
+                    continue
+                if inter.is_empty or float(inter.area) < min_overlap:
+                    continue
+                z_surf = float(z_at(cx, cy)) + lift
+                out.append(
+                    _water_block_box(
+                        f"{name}_c{ci}_t{ix}_{iy}", cx, cy, tw, th, z_surf, cfg
+                    )
+                )
+    return out
 
 
 def _river(name: str, xy: np.ndarray, z_at, cfg: dict) -> dict | None:
@@ -197,7 +313,8 @@ def build_entries(site: dict, cfg: dict) -> list[dict]:
     z_at, _ = bg.load_terrain_z_slope(site)
 
     entries: list[dict] = []
-    n_block = n_river = n_skip = 0
+    n_block = n_river = n_skip = n_wide = 0
+    wide_min = float(cfg["wide_flowing_min_width_m"])
     for i, (kind, feat) in enumerate(_load_water_features(proc)):
         props = feat.get("properties") or {}
         oid = props.get("OBJECTID") or props.get("objectid") or i
@@ -206,33 +323,37 @@ def build_entries(site: dict, cfg: dict) -> list[dict]:
             area = abs(_poly_area(xy))
             if area < float(cfg["min_area_m2"]):
                 continue
-            z_surf = _z_samples(z_at, xy) + float(cfg["surface_lift_m"])
             name = f"water_{kind}_{oid}_{ri}"
-            if kind == "water_standing":
+            as_standing = kind == "water_standing"
+            if kind == "water_flowing" and wide_min > 0 and _pca_width_m(xy) >= wide_min:
+                as_standing = True
+                n_wide += 1
+
+            if as_standing:
                 if cfg["standing"] != "waterblock":
                     n_skip += 1
                     continue
-                sx = float(xy[:, 0].max() - xy[:, 0].min())
-                sy = float(xy[:, 1].max() - xy[:, 1].min())
-                if max(sx, sy) > float(cfg["standing_max_side_m"]):
-                    print(f"Skip large standing pond {name}: {sx:.0f}x{sy:.0f}m")
+                blocks = _standing_water_blocks(name, xy, z_at, cfg)
+                if not blocks:
                     n_skip += 1
                     continue
-                entries.append(_water_block(name, xy, z_surf, cfg))
-                n_block += 1
+                entries.extend(blocks)
+                n_block += len(blocks)
+                continue
+
+            if cfg["flowing"] != "river":
+                n_skip += 1
+                continue
+            river = _river(name, xy, z_at, cfg)
+            if river is not None:
+                entries.append(river)
+                n_river += 1
             else:
-                if cfg["flowing"] != "river":
-                    n_skip += 1
-                    continue
-                river = _river(name, xy, z_at, cfg)
-                if river is not None:
-                    entries.append(river)
-                    n_river += 1
-                else:
-                    n_skip += 1
+                n_skip += 1
     print(
         f"Water objects: WaterBlock={n_block} River={n_river} "
-        f"skipped={n_skip} (flowing={cfg['flowing']}, standing={cfg['standing']})"
+        f"skipped={n_skip} wide_flowing→block={n_wide} "
+        f"(flowing={cfg['flowing']}, standing={cfg['standing']})"
     )
     return entries
 
@@ -277,6 +398,144 @@ def write_level(level_name: str, entries: list[dict]) -> Path | None:
     return items_path
 
 
+def _standing_rings_px(
+    site: dict, size: int, extent: float, min_area_m2: float
+) -> list[list[tuple[float, float]]]:
+    """LN-GWS polygon rings in heightmap pixel space (only true standing water)."""
+    proc = processed_dir(site)
+    coords = SiteCoords(site)
+    to_crs = Transformer.from_crs("EPSG:4326", coords.crs, always_xy=True)
+    rings_px: list[list[tuple[float, float]]] = []
+    for kind, feat in _load_water_features(proc):
+        if kind != "water_standing":
+            continue
+        for ring in _rings_wgs84(feat.get("geometry") or {}):
+            xy = _to_beamng(ring, to_crs, coords)
+            if abs(_poly_area(xy)) < min_area_m2:
+                continue
+            pts = []
+            for bx, by in xy:
+                px = float(bx) / extent * (size - 1)
+                py = (1.0 - float(by) / extent) * (size - 1)
+                pts.append((px, py))
+            if len(pts) >= 3:
+                rings_px.append(pts)
+    return rings_px
+
+
+def _load_elev_m(site: dict, level_name: str) -> tuple[np.ndarray, float, int, float, Path]:
+    """Load meters elev from processed bakes (never import — keeps carve idempotent)."""
+    from PIL import Image
+
+    proc = processed_dir(site)
+    bng = site.get("beamng") or {}
+    size = int(bng.get("mask_size") or 512)
+    mpp = float(bng.get("meters_per_pixel") or 1.0)
+    extent = float(size) * mpp
+    meta = json.loads((proc / "heightmap_meta.json").read_text(encoding="utf-8"))
+    max_h = float(meta["max_height_m"])
+    # Prefer latest structure bake; skip *_water.png so re-runs don't stack -5m.
+    candidates = [
+        proc / f"heightmap_{size}_gallery_embed.png",
+        proc / f"heightmap_{size}_gallery_approach.png",
+        proc / f"heightmap_{size}_gallery.png",
+        proc / f"heightmap_{size}_bridge_conform.png",
+        proc / f"heightmap_{size}.png",
+    ]
+    hm_path = next((p for p in candidates if p.is_file()), None)
+    if hm_path is None:
+        raise SystemExit(f"Missing heightmap — run build_smoke first ({candidates[-1]})")
+    hm = np.asarray(Image.open(hm_path), dtype=np.float64)
+    elev = hm / 65535.0 * max_h
+    return elev, max_h, size, extent, hm_path
+
+
+def depress_standing_lakes(
+    site: dict,
+    level_name: str,
+    cfg: dict,
+) -> Path | None:
+    """Lower terrain under LN-GWS lakes so WaterBlocks sit in a basin.
+
+    Soft shore via Gaussian blur of the standing mask. Does not touch flowing
+    floodplain mud. Writes heightmap_{N}_water.png and syncs level import/.
+    """
+    from PIL import Image, ImageDraw, ImageFilter
+
+    depress = float(cfg["standing_depress_m"])
+    if depress <= 0:
+        return None
+
+    elev, max_h, size, extent, src_path = _load_elev_m(site, level_name)
+    rings = _standing_rings_px(site, size, extent, float(cfg["min_area_m2"]))
+    if not rings:
+        print("standing_depress: no LN-GWS polygons — skip")
+        return None
+
+    mask_img = Image.new("L", (size, size), 0)
+    draw = ImageDraw.Draw(mask_img)
+    for pts in rings:
+        draw.polygon([(float(x), float(y)) for x, y in pts], outline=255, fill=255)
+
+    blend_m = max(0.0, float(cfg["standing_depress_blend_m"]))
+    if blend_m > 0:
+        # ~1 px ≈ mpp meters; radius ≈ half blend width.
+        radius = max(1.0, 0.5 * blend_m / max(extent / max(size - 1, 1), 1e-6))
+        weight_img = mask_img.filter(ImageFilter.GaussianBlur(radius=radius))
+    else:
+        weight_img = mask_img
+    weight = np.asarray(weight_img, dtype=np.float64) / 255.0
+    n_core = int(np.count_nonzero(np.asarray(mask_img) > 0))
+    if n_core == 0:
+        print("standing_depress: empty mask — skip")
+        return None
+
+    out = elev.astype(np.float64).copy()
+    out -= depress * weight
+    out = np.clip(out, 0.0, max_h)
+
+    u16 = np.clip(np.round(out / max(max_h, 1e-6) * 65535.0), 0, 65535).astype(np.uint16)
+    proc = processed_dir(site)
+    carved_path = proc / f"heightmap_{size}_water.png"
+    Image.fromarray(u16, mode="I;16").save(carved_path)
+
+    # Preview: blue = depressed weight
+    preview = np.zeros((size, size, 3), dtype=np.uint8)
+    preview[..., 0] = np.clip(weight * 40, 0, 255).astype(np.uint8)
+    preview[..., 1] = np.clip(weight * 120, 0, 255).astype(np.uint8)
+    preview[..., 2] = np.clip(weight * 255, 0, 255).astype(np.uint8)
+    Image.fromarray(preview, mode="RGB").save(proc / "preview_water_depress.png")
+
+    preset_path = proc / "terrainPreset.json"
+    preset: dict = {}
+    if preset_path.is_file():
+        try:
+            preset = json.loads(preset_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            preset = {}
+    preset.setdefault("type", "TerrainData")
+    preset.setdefault("name", "theTerrain")
+    preset["heightScale"] = float(max_h)
+    preset["heightMapPath"] = f"/levels/{level_name}/import/heightmap_{size}.png"
+    preset_path.write_text(json.dumps(preset, indent=2), encoding="utf-8")
+
+    user_import = USER_LEVELS / level_name / "import"
+    if user_import.parent.is_dir():
+        user_import.mkdir(parents=True, exist_ok=True)
+        Image.fromarray(u16, mode="I;16").save(user_import / f"heightmap_{size}.png")
+        (user_import / "terrainPreset.json").write_text(
+            json.dumps(preset, indent=2), encoding="utf-8"
+        )
+        print(f"Synced water-depress heightmap -> {user_import}")
+        print("Re-import terrainPreset.json in World Editor (heightmap changed).")
+
+    print(
+        f"Standing lake depress: -{depress:.1f}m on {n_core} px "
+        f"(blend={blend_m:.1f}m, src={src_path.name}) -> {carved_path.name}"
+    )
+    return carved_path
+
+
 def main() -> None:
     site = load_site()
     bng = site.get("beamng") or {}
@@ -288,6 +547,9 @@ def main() -> None:
         raise SystemExit("water.enabled is false")
 
     proc = processed_dir(site)
+    # Basin first so import HM is ready; WaterBlock Z still samples pristine surface.
+    depress_standing_lakes(site, level_name, cfg)
+
     entries = build_entries(site, cfg)
     out = proc / "water_items.level.json"
     with out.open("w", encoding="utf-8", newline="\n") as f:
@@ -298,7 +560,7 @@ def main() -> None:
     injected = write_level(level_name, entries)
     if injected:
         print(f"Injected: {injected}")
-        print("Reload the level in BeamNG to see water.")
+        print("Reload the level in BeamNG to see water (re-import terrain if carved).")
 
 
 if __name__ == "__main__":

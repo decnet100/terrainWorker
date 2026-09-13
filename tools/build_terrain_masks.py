@@ -43,6 +43,7 @@ MATERIALS = [
     "Asphalt",            # 3 carriageway
     "Grass2",             # 4 forest floor (Hochwald / Strauch)
     "Mud",                # 5 water footprint (under WaterBlock/River)
+    "Concrete",           # 6 Siedlung / Anwesen / Gewerbe (Zementflächen)
 ]
 
 CLASS_GRASS = 0
@@ -51,6 +52,7 @@ CLASS_ROCK = 2
 CLASS_ASPHALT = 3
 CLASS_FOREST = 4
 CLASS_WATER = 5
+CLASS_CONCRETE = 6
 
 GROUNDMODELS = {
     "Grass": "GRASS",
@@ -59,6 +61,7 @@ GROUNDMODELS = {
     "Asphalt": "ASPHALT",
     "Grass2": "GRASS",
     "Mud": "MUD",
+    "Concrete": "CONCRETE",
 }
 
 
@@ -183,7 +186,15 @@ def _tirol_landnutzung_kind(props: dict) -> str | None:
         return "water_flowing"
     if "straße" in klasse or "strasse" in klasse or "weg" in klasse or objekt.startswith("LN-V"):
         return "road"
-    if "siedlung" in bez or "anwesen" in klasse:
+    # LN-S*: Siedlung Wohnen/Misch/Industrie/Anwesen/Sonstige; also keyword fallback
+    if (
+        objekt.startswith("LN-S")
+        or "siedlung" in bez
+        or "anwesen" in klasse
+        or "industrie" in klasse
+        or "gewerbe" in klasse
+        or "wohn" in klasse
+    ):
         return "settlement"
     if "hochwald" in klasse or objekt == "LN-WHW":
         return "forest_high"
@@ -252,7 +263,7 @@ def rasterize_tirol_landcover(size: int) -> tuple[np.ndarray, dict[str, np.ndarr
             _paint_rings(tmp, rings, 1)
             water = water | (tmp > 0)
         elif kind == "settlement":
-            _paint_rings(landuse, rings, CLASS_DIRT)
+            _paint_rings(landuse, rings, CLASS_CONCRETE)
         # road: ignore — asphalt from OSM roads
 
     # Landnutzung first (broader), Waldfläche refines forest type
@@ -284,7 +295,8 @@ def rasterize_tirol_landcover(size: int) -> tuple[np.ndarray, dict[str, np.ndarr
         f"forest={(landuse == CLASS_FOREST).mean()*100:.2f}% "
         f"forest_high={forest_high.mean()*100:.2f}% "
         f"forest_scrub={forest_scrub.mean()*100:.2f}% "
-        f"water={(landuse == CLASS_WATER).mean()*100:.2f}%"
+        f"water={(landuse == CLASS_WATER).mean()*100:.2f}% "
+        f"concrete={(landuse == CLASS_CONCRETE).mean()*100:.2f}%"
     )
     return landuse, extras, note
 
@@ -300,6 +312,11 @@ def _tag_class(tags: dict) -> int | None:
         "meadow", "grass", "farmland",
     }:
         return CLASS_GRASS
+    if landuse in {
+        "residential", "commercial", "industrial", "retail",
+        "construction", "garages", "railway",
+    }:
+        return CLASS_CONCRETE
     return None
 
 
@@ -527,7 +544,7 @@ def classify(
 ) -> np.ndarray:
     """Exclusive material class per pixel.
 
-    Priority: Asphalt > Water > Rock > Forest > Grass > Dirt.
+    Priority: Asphalt > Concrete(settlement) > Water > Rock > Forest > Grass > Dirt.
     Terrain under bridge decks / on gallery roofs is forced to rock
     (carriageway is MeshRoad).
     """
@@ -538,6 +555,7 @@ def classify(
     out[rock] = CLASS_ROCK
     out[landuse == CLASS_ROCK] = CLASS_ROCK
     out[landuse == CLASS_WATER] = CLASS_WATER
+    out[landuse == CLASS_CONCRETE] = CLASS_CONCRETE
     out[shoulder] = CLASS_DIRT
     out[asphalt] = CLASS_ASPHALT
     if bridge_under is not None and bridge_under.any():
@@ -567,7 +585,7 @@ def write_layer_maps(classes: np.ndarray, out_dir: Path) -> list[dict]:
 
 
 def write_preview(classes: np.ndarray, path: Path) -> None:
-    """RGB preview: grass / forest / dirt / rock / asphalt / water."""
+    """RGB preview: grass / forest / dirt / rock / asphalt / water / concrete."""
     rgb = np.zeros((*classes.shape, 3), dtype=np.uint8)
     rgb[classes == CLASS_GRASS] = (60, 140, 50)
     rgb[classes == CLASS_DIRT] = (140, 110, 70)
@@ -575,6 +593,7 @@ def write_preview(classes: np.ndarray, path: Path) -> None:
     rgb[classes == CLASS_ASPHALT] = (40, 40, 45)
     rgb[classes == CLASS_FOREST] = (30, 90, 40)
     rgb[classes == CLASS_WATER] = (40, 90, 180)
+    rgb[classes == CLASS_CONCRETE] = (180, 180, 175)
     Image.fromarray(rgb, mode="RGB").save(path)
     print(f"Wrote {path}")
 
@@ -666,6 +685,9 @@ def main() -> None:
     Image.fromarray(shoulder_vis.astype(np.uint8) * 255, mode="L").save(PROC / "mask_shoulder.png")
     Image.fromarray(bridge_under.astype(np.uint8) * 255, mode="L").save(PROC / "mask_bridge_under.png")
     Image.fromarray(gallery_roof.astype(np.uint8) * 255, mode="L").save(PROC / "mask_gallery_roof.png")
+    Image.fromarray((classes == CLASS_CONCRETE).astype(np.uint8) * 255, mode="L").save(
+        PROC / "mask_settlement.png"
+    )
 
     meta = {
         "size_px": OUT_SIZE,
@@ -683,6 +705,7 @@ def main() -> None:
             "asphalt_pct": round(float((classes == CLASS_ASPHALT).mean() * 100), 2),
             "forest_pct": round(float((classes == CLASS_FOREST).mean() * 100), 2),
             "water_pct": round(float((classes == CLASS_WATER).mean() * 100), 2),
+            "concrete_pct": round(float((classes == CLASS_CONCRETE).mean() * 100), 2),
             "forest_high_pct": round(float(forest_high.mean() * 100), 2),
             "forest_scrub_pct": round(float(forest_scrub.mean() * 100), 2),
             "gallery_roof_pct": round(float(gallery_roof.mean() * 100), 2),
@@ -693,13 +716,15 @@ def main() -> None:
             "osm_roads_asphalt_shoulder",
             "bridges_decks_under_rock",
             "galleries_roof_rock",
+            "tirol_settlement_concrete",
         ],
         "import_notes": [
             "Terrain Tools → Import Terrain → Load terrainPreset.json (recommended)",
             "Heightmap: heightmap_%d.png, Max Height from heightmap_meta.json" % OUT_SIZE,
-            "Texture maps in order: Grass, dirt_rocky_large, rock, Asphalt, Grass2, Mud",
-            "Groundmodels: GRASS / DIRT_ROCKY_LARGE / ROCK / ASPHALT / GRASS / MUD",
+            "Texture maps in order: Grass, dirt_rocky_large, rock, Asphalt, Grass2, Mud, Concrete",
+            "Groundmodels: GRASS / DIRT_ROCKY_LARGE / ROCK / ASPHALT / GRASS / MUD / CONCRETE",
             "Tirol: Almen→Grass; Wald→Grass2+forest scatter; Gewässer→Mud+WaterBlock/River",
+            "Siedlung (LN-S*) → Concrete (Zementflächen)",
             "Asphalt = OSM width; dirt = shoulder bankett",
             "Under bridge decks: rock (MeshRoad carries the asphalt)",
             "Gallery roofs: rock (OSM asphalt carved; MeshRoad is the carriageway)",
