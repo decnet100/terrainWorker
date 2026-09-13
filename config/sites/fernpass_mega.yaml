@@ -45,7 +45,10 @@ beamng:
   slope_rock_deg: 43
   slope_rock_open_px: 1
   road_width_scale: 0.9
-  shoulder_m: 0.15
+  # Option 2: no terrain Asphalt — gravel bed/bankett; DecalRoad = Fahrbahn.
+  road_terrain: gravel
+  dirt_material: gravel
+  shoulder_m: 3.0
 
   bridges:
     defaults:
@@ -162,16 +165,20 @@ beamng:
     standing: waterblock
     # One AABB WaterBlock per lake (not a dense tile grid — FPS).
     # Tiling only if a single side exceeds standing_max_side_m.
-    shore_inset_m: 2.0
+    shore_inset_m: 1.0
     standing_max_side_m: 2500.0
     standing_tile_m: 128.0
+    # Cover irregular corners the AABB would miss (~5–8%).
+    standing_xy_pad: 0.08
     # Basin under LN-GWS only (WFS standing water), soft shore blend.
     standing_depress_m: 5.0
     standing_depress_blend_m: 6.0
     # Off: wide floodplains as WaterBlocks explode object count / FPS.
     wide_flowing_min_width_m: 0.0
-    depth_m: 5.5
+    depth_m: 10.5
     surface_lift_m: 0.15
+    # Global WaterBlock Z nudge (m); negative = lower. Tune after visual check.
+    waterlevel_z_offset_m: -4.0
     min_area_m2: 40.0
     grid_element_size: 4.0
 

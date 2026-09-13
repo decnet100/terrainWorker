@@ -31,6 +31,10 @@ SLOPE_ROCK_DEG = float(SITE.get("beamng", {}).get("slope_rock_deg", 38.0))
 SLOPE_ROCK_OPEN_PX = int(SITE.get("beamng", {}).get("slope_rock_open_px", 2))
 ROAD_WIDTH_SCALE = float(SITE.get("beamng", {}).get("road_width_scale", 1.0))
 SHOULDER_M = float(SITE.get("beamng", {}).get("shoulder_m", 1.5))
+# asphalt = paint terrain Asphalt under roads (legacy).
+# gravel = option 2: terrain bed/bankett only; DecalRoad supplies asphalt look.
+ROAD_TERRAIN = str(SITE.get("beamng", {}).get("road_terrain") or "asphalt").lower()
+DIRT_MATERIAL = str(SITE.get("beamng", {}).get("dirt_material") or "dirt_rocky_large")
 BW = XMAX - XMIN
 BH = YMAX - YMIN
 TERRAIN_EXTENT = OUT_SIZE * MPP
@@ -38,9 +42,9 @@ TERRAIN_EXTENT = OUT_SIZE * MPP
 # Layer order must match import material list (template-compatible names).
 MATERIALS = [
     "Grass",              # 0 meadow / Alm
-    "dirt_rocky_large",   # 1 alpine default + road shoulder
+    DIRT_MATERIAL,        # 1 alpine default + road bed/bankett (often gravel)
     "rock",               # 2 bare rock / scree / steep slopes
-    "Asphalt",            # 3 carriageway
+    "Asphalt",            # 3 carriageway (empty when road_terrain=gravel)
     "Grass2",             # 4 forest floor (Hochwald / Strauch)
     "Mud",                # 5 water footprint (under WaterBlock/River)
     "Concrete",           # 6 Siedlung / Anwesen / Gewerbe (Zementflächen)
@@ -57,12 +61,15 @@ CLASS_CONCRETE = 6
 GROUNDMODELS = {
     "Grass": "GRASS",
     "dirt_rocky_large": "DIRT_ROCKY_LARGE",
+    "Dirt": "DIRT",
+    "gravel": "DIRT",
     "rock": "ROCK",
     "Asphalt": "ASPHALT",
     "Grass2": "GRASS",
     "Mud": "MUD",
     "Concrete": "CONCRETE",
 }
+GROUNDMODELS.setdefault(DIRT_MATERIAL, "DIRT")
 
 
 def _local_xy(lon: float, lat: float, to_local: Transformer) -> tuple[float, float]:
@@ -544,9 +551,9 @@ def classify(
 ) -> np.ndarray:
     """Exclusive material class per pixel.
 
-    Priority: Asphalt > Concrete(settlement) > Water > Rock > Forest > Grass > Dirt.
-    Terrain under bridge decks / on gallery roofs is forced to rock
-    (carriageway is MeshRoad).
+    Priority: road bed > Concrete > Water > Rock > Forest > Grass > Dirt.
+    road_terrain=asphalt → carriageway CLASS_ASPHALT; gravel → CLASS_DIRT
+    (DecalRoad supplies the asphalt look). Bridge/gallery roofs stay rock.
     """
     out = np.full(landuse.shape, CLASS_DIRT, dtype=np.uint8)
     out[landuse == CLASS_GRASS] = CLASS_GRASS
@@ -556,8 +563,12 @@ def classify(
     out[landuse == CLASS_ROCK] = CLASS_ROCK
     out[landuse == CLASS_WATER] = CLASS_WATER
     out[landuse == CLASS_CONCRETE] = CLASS_CONCRETE
+    # Road corridor overrides slope-rock (Böschung = Kies/Dirt, not Fels).
     out[shoulder] = CLASS_DIRT
-    out[asphalt] = CLASS_ASPHALT
+    if ROAD_TERRAIN in ("gravel", "dirt", "none", "decal"):
+        out[asphalt] = CLASS_DIRT
+    else:
+        out[asphalt] = CLASS_ASPHALT
     if bridge_under is not None and bridge_under.any():
         out[bridge_under] = CLASS_ROCK
     if gallery_roof is not None and gallery_roof.any():
@@ -646,7 +657,8 @@ def main() -> None:
     print(
         f"Road masks: asphalt={(asphalt_vis.mean()*100):.2f}% "
         f"shoulder={(shoulder_vis.mean()*100):.2f}% "
-        f"(width_scale={ROAD_WIDTH_SCALE}, shoulder_m={SHOULDER_M}; "
+        f"(width_scale={ROAD_WIDTH_SCALE}, shoulder_m={SHOULDER_M}, "
+        f"road_terrain={ROAD_TERRAIN}, dirt={DIRT_MATERIAL}; "
         f"bridge/gallery roof carved to rock)"
     )
     classes = classify(
@@ -696,6 +708,8 @@ def main() -> None:
         "slope_rock_deg": SLOPE_ROCK_DEG,
         "road_width_scale": ROAD_WIDTH_SCALE,
         "shoulder_m": SHOULDER_M,
+        "road_terrain": ROAD_TERRAIN,
+        "dirt_material": DIRT_MATERIAL,
         "materials": entries,
         "landcover_source": source_note,
         "coverage": {
@@ -721,11 +735,18 @@ def main() -> None:
         "import_notes": [
             "Terrain Tools → Import Terrain → Load terrainPreset.json (recommended)",
             "Heightmap: heightmap_%d.png, Max Height from heightmap_meta.json" % OUT_SIZE,
-            "Texture maps in order: Grass, dirt_rocky_large, rock, Asphalt, Grass2, Mud, Concrete",
-            "Groundmodels: GRASS / DIRT_ROCKY_LARGE / ROCK / ASPHALT / GRASS / MUD / CONCRETE",
+            "Texture maps in order: Grass, %s, rock, Asphalt, Grass2, Mud, Concrete"
+            % DIRT_MATERIAL,
+            "Groundmodels: GRASS / DIRT / ROCK / ASPHALT / GRASS / MUD / CONCRETE",
             "Tirol: Almen→Grass; Wald→Grass2+forest scatter; Gewässer→Mud+WaterBlock/River",
             "Siedlung (LN-S*) → Concrete (Zementflächen)",
-            "Asphalt = OSM width; dirt = shoulder bankett",
+            (
+                "road_terrain=gravel: OSM corridor → %s (DecalRoad = asphalt); "
+                "shoulder overrides slope-rock"
+                % DIRT_MATERIAL
+                if ROAD_TERRAIN in ("gravel", "dirt", "none", "decal")
+                else "Asphalt = OSM width; dirt/gravel = shoulder bankett"
+            ),
             "Under bridge decks: rock (MeshRoad carries the asphalt)",
             "Gallery roofs: rock (OSM asphalt carved; MeshRoad is the carriageway)",
             "Keep Flip Y Axis consistent with heightmap import",
@@ -787,8 +808,20 @@ def main() -> None:
         user_import.mkdir(parents=True, exist_ok=True)
         for short in (m["path"].rsplit("/", 1)[-1] for m in short_maps):
             Image.open(PROC / short).save(user_import / short)
-        hm = PROC / hm_name
-        if hm.exists():
+        # Prefer latest heightmap bake (water/bridge/gallery) over pristine DGM.
+        hm = None
+        for cand in (
+            PROC / f"heightmap_{OUT_SIZE}_water.png",
+            PROC / f"heightmap_{OUT_SIZE}_gallery_embed.png",
+            PROC / f"heightmap_{OUT_SIZE}_gallery_approach.png",
+            PROC / f"heightmap_{OUT_SIZE}_gallery.png",
+            PROC / f"heightmap_{OUT_SIZE}_bridge_conform.png",
+            PROC / hm_name,
+        ):
+            if cand.is_file():
+                hm = cand
+                break
+        if hm is not None:
             Image.open(hm).save(user_import / hm_name)
         if hole_src.exists():
             Image.open(hole_src).save(user_import / "theTerrain_holemap.png")

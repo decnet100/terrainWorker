@@ -5,6 +5,7 @@ Terrain Mud stays as shore/bed paint; reflective water needs WaterBlock meshes.
 
 Large lakes: shrink by shore_inset_m, then tile WaterBlocks that overlap the
 core. standing_depress_m lowers the DGM under LN-GWS so blocks sit in a hole.
+WaterBlock Z comes from densified shoreline samples (not centroid — islands).
 
 Flowing water (LN-GWF) → optional River, or WaterBlocks when wide_flowing_min_width_m
 is set and the floodplain is wide enough.
@@ -50,12 +51,16 @@ def _cfg(bng: dict) -> dict:
         "material": str(raw.get("material") or ""),
         "depth_m": float(raw.get("depth_m") or 3.0),
         "surface_lift_m": float(raw.get("surface_lift_m") or 0.15),
+        # Global Z nudge for all WaterBlocks (m). Positive = higher.
+        "waterlevel_z_offset_m": float(raw.get("waterlevel_z_offset_m") or 0.0),
         "min_area_m2": float(raw.get("min_area_m2") or 40.0),
         # Single WaterBlock AABB up to this side length; larger lakes are tiled.
         "standing_max_side_m": float(raw.get("standing_max_side_m") or 80.0),
         "standing_tile_m": float(raw.get("standing_tile_m") or 64.0),
         # Positive: erode polygon so Mud rim stays visible around WaterBlocks.
         "shore_inset_m": float(raw.get("shore_inset_m") or 4.0),
+        # Grow WaterBlock XY beyond lake AABB (fraction, e.g. 0.08 = +8%).
+        "standing_xy_pad": float(raw.get("standing_xy_pad") or 0.0),
         # LN-GWF wider than this (PCA half-width*2) also get WaterBlocks.
         "wide_flowing_min_width_m": float(raw.get("wide_flowing_min_width_m") or 0.0),
         # Lower terrain under LN-GWS lakes so WaterBlocks have a basin (meters).
@@ -102,23 +107,73 @@ def _poly_area(xy: np.ndarray) -> float:
     return 0.5 * float(np.abs(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1))))
 
 
-def _z_samples(z_at, xy: np.ndarray, n: int = 24) -> float:
-    """Median terrain Z over polygon samples (surface height)."""
-    xs = xy[:, 0]
-    ys = xy[:, 1]
-    xmin, xmax = float(xs.min()), float(xs.max())
-    ymin, ymax = float(ys.min()), float(ys.max())
-    if xmax <= xmin or ymax <= ymin:
-        return float(z_at(float(xs.mean()), float(ys.mean())))
-    zs = []
-    rng = np.random.default_rng(0)
-    for _ in range(n):
-        bx = float(rng.uniform(xmin, xmax))
-        by = float(rng.uniform(ymin, ymax))
-        zs.append(float(z_at(bx, by)))
-    # also corners + centroid
-    zs.append(float(z_at(float(xs.mean()), float(ys.mean()))))
-    return float(np.median(zs))
+def _densify_ring(xy: np.ndarray, spacing_m: float) -> np.ndarray:
+    """Evenly sample along a closed ring (last point may equal first)."""
+    if xy.shape[0] < 2:
+        return xy
+    pts = [xy[0]]
+    for i in range(len(xy) - 1):
+        p0 = xy[i]
+        p1 = xy[i + 1]
+        seg = p1 - p0
+        length = float(np.hypot(seg[0], seg[1]))
+        if length < 1e-6:
+            continue
+        n = max(1, int(math.ceil(length / max(spacing_m, 0.5))))
+        for k in range(1, n + 1):
+            t = k / n
+            pts.append(p0 + t * seg)
+    return np.asarray(pts, dtype=np.float64)
+
+
+def _lake_surface_z(z_at, xy: np.ndarray, *, spacing_m: float = 8.0) -> float:
+    """Estimate flat water surface height from DGM (island-safe).
+
+    Prefer the modal elevation of *interior* samples in the lower half of the
+    height range — alpine DGMs are usually flat at the water plane over the
+    lake body, while island summits are high outliers. Shore-ring samples are
+    a fallback (cliffs can bias them upward).
+    """
+    from shapely.geometry import Point
+
+    poly = _as_polygon(xy)
+    zs: list[float] = []
+    if poly is not None and poly.area > 1.0:
+        minx, miny, maxx, maxy = poly.bounds
+        # ~1 sample / 12 m², capped.
+        n = int(max(80, min(1200, poly.area / 12.0)))
+        rng = np.random.default_rng(abs(hash((round(minx, 1), round(miny, 1))) ) % (2**32))
+        tries = 0
+        while len(zs) < n and tries < n * 8:
+            tries += 1
+            x = float(rng.uniform(minx, maxx))
+            y = float(rng.uniform(miny, maxy))
+            if poly.contains(Point(x, y)):
+                zs.append(float(z_at(x, y)))
+    if len(zs) >= 20:
+        arr = np.asarray(zs, dtype=np.float64)
+        # Keep lower half so island peaks never enter the mode vote.
+        lo = arr[arr <= float(np.median(arr))]
+        if lo.size == 0:
+            lo = arr
+        bins = np.round(lo * 4.0) / 4.0  # 0.25 m bins
+        vals, counts = np.unique(bins, return_counts=True)
+        return float(vals[int(np.argmax(counts))])
+
+    # Fallback: densified exterior ring, low percentile.
+    if xy.shape[0] < 3:
+        return float(z_at(float(xy[:, 0].mean()), float(xy[:, 1].mean())))
+    ring = xy
+    if len(ring) > 3 and np.hypot(*(ring[0] - ring[-1])) < 0.05:
+        ring = ring[:-1]
+    closed = np.vstack([ring, ring[0]])
+    samples = _densify_ring(closed, spacing_m)
+    shore = np.asarray(
+        [float(z_at(float(p[0]), float(p[1]))) for p in samples], dtype=np.float64
+    )
+    if shore.size == 0:
+        return float(z_at(float(xy[:, 0].mean()), float(xy[:, 1].mean())))
+    return float(np.percentile(shore, 20))
 
 
 def _water_block_box(
@@ -126,14 +181,18 @@ def _water_block_box(
 ) -> dict:
     # Volume depth must reach the carved lake bed when standing_depress_m is set.
     depth = max(float(cfg["depth_m"]), float(cfg["standing_depress_m"]) + 0.5)
+    pad = max(0.0, float(cfg.get("standing_xy_pad") or 0.0))
+    sx_p = max(2.0, sx * (1.0 + pad))
+    sy_p = max(2.0, sy * (1.0 + pad))
+    z_pos = float(z_surf) + float(cfg.get("waterlevel_z_offset_m") or 0.0)
     obj: dict = {
         "name": name,
         "class": "WaterBlock",
         "__parent": "Water",
         "persistentId": str(uuid.uuid4()),
-        "position": [cx, cy, z_surf],
+        "position": [cx, cy, z_pos],
         "rotationMatrix": [1, 0, 0, 0, 1, 0, 0, 0, 1],
-        "scale": [max(2.0, sx), max(2.0, sy), depth],
+        "scale": [sx_p, sy_p, depth],
         "gridElementSize": float(cfg["grid_element_size"]),
     }
     mat = cfg.get("material") or ""
@@ -194,6 +253,8 @@ def _standing_water_blocks(name: str, xy: np.ndarray, z_at, cfg: dict) -> list[d
     """One AABB WaterBlock per lake core; tile only if larger than standing_max_side_m.
 
     Prefer few large blocks (FPS). Dense tiling is only a fallback for huge polys.
+    Z is taken once from the full shoreline (not core centroid) so islands/hills
+    inside the lake do not lift the water plane.
     """
     from shapely.geometry import box as shapely_box
 
@@ -204,6 +265,7 @@ def _standing_water_blocks(name: str, xy: np.ndarray, z_at, cfg: dict) -> list[d
     tile = max(8.0, float(cfg["standing_tile_m"]))
     lift = float(cfg["surface_lift_m"])
     min_area = float(cfg["min_area_m2"])
+    z_surf = _lake_surface_z(z_at, xy) + lift
     out: list[dict] = []
     for ci, core in enumerate(cores):
         if core.area < min_area * 0.25:
@@ -211,9 +273,10 @@ def _standing_water_blocks(name: str, xy: np.ndarray, z_at, cfg: dict) -> list[d
         minx, miny, maxx, maxy = core.bounds
         sx = float(maxx - minx)
         sy = float(maxy - miny)
+        # Place XY at AABB center (coverage); Z stays shoreline water level.
+        cx = 0.5 * (minx + maxx)
+        cy = 0.5 * (miny + maxy)
         if max(sx, sy) <= max_side:
-            cx, cy = float(core.centroid.x), float(core.centroid.y)
-            z_surf = float(z_at(cx, cy)) + lift
             out.append(_water_block_box(f"{name}_c{ci}", cx, cy, sx, sy, z_surf, cfg))
             continue
         # Sparse fallback for oversized lakes (axis-aligned tiles, no dense overlap).
@@ -224,19 +287,20 @@ def _standing_water_blocks(name: str, xy: np.ndarray, z_at, cfg: dict) -> list[d
         min_overlap = 0.25 * tw * th
         for iy in range(ny):
             for ix in range(nx):
-                cx = minx + (ix + 0.5) * tw
-                cy = miny + (iy + 0.5) * th
-                tile_g = shapely_box(cx - tw * 0.5, cy - th * 0.5, cx + tw * 0.5, cy + th * 0.5)
+                tcx = minx + (ix + 0.5) * tw
+                tcy = miny + (iy + 0.5) * th
+                tile_g = shapely_box(
+                    tcx - tw * 0.5, tcy - th * 0.5, tcx + tw * 0.5, tcy + th * 0.5
+                )
                 try:
                     inter = core.intersection(tile_g)
                 except Exception:
                     continue
                 if inter.is_empty or float(inter.area) < min_overlap:
                     continue
-                z_surf = float(z_at(cx, cy)) + lift
                 out.append(
                     _water_block_box(
-                        f"{name}_c{ci}_t{ix}_{iy}", cx, cy, tw, th, z_surf, cfg
+                        f"{name}_c{ci}_t{ix}_{iy}", tcx, tcy, tw, th, z_surf, cfg
                     )
                 )
     return out
@@ -560,7 +624,31 @@ def main() -> None:
     injected = write_level(level_name, entries)
     if injected:
         print(f"Injected: {injected}")
-        print("Reload the level in BeamNG to see water (re-import terrain if carved).")
+        # Verify Fernstein-sized lakes landed at expected Z (editor must not overwrite).
+        for e in entries:
+            if "401334" in str(e.get("name") or ""):
+                p, s = e["position"], e["scale"]
+                print(
+                    f"Fernsteinsee block {e['name']}: "
+                    f"posZ={p[2]:.3f} xy=({p[0]:.1f},{p[1]:.1f}) "
+                    f"scaleXY=({s[0]:.1f},{s[1]:.1f}) depth={s[2]:.1f}"
+                )
+        # Read-back from disk (catches BeamNG editor holding old MissionGroup).
+        try:
+            disk = [
+                json.loads(ln)
+                for ln in injected.read_text(encoding="utf-8").splitlines()
+                if ln.strip()
+            ]
+            for e in disk:
+                if "401334" in str(e.get("name") or ""):
+                    print(f"Disk verify 401334 posZ={e['position'][2]:.3f}")
+        except OSError as ex:
+            print(f"Disk verify failed: {ex}")
+        print(
+            "Reload the level in BeamNG WITHOUT saving the old MissionGroup "
+            "(World Editor can overwrite Water items with stale Z)."
+        )
 
 
 if __name__ == "__main__":
