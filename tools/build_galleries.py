@@ -52,7 +52,18 @@ GALLERY_SCALAR_KEYS = (
     "step_m",
     "crossfall_max",
     "open_side",
-    "z_profile",  # hermite (default) | road
+    "z_profile",  # hermite (default) | road | road_spline
+    "profile",  # alias: road_spline | hermite (bridges naming)
+    "centerline",  # osm | strassennetz
+    "free_span",  # linear | pchip_ends
+    "solid_run_m",
+    "span_dip_m",
+    "span_search_m",
+    "deck_lift_m",
+    "corner_up_m",
+    "corner_down_m",
+    "corner_band",
+    "abutment_s",  # optional [s0, s1] override along centerline
     "portal_grade_step_m",
     "portal_grade_jump",  # relative Δgrade (e.g. 0.04 = +4 pp)
     "portal_grade_baseline_n",
@@ -120,7 +131,25 @@ def default_gallery_cfg(bng: dict) -> tuple[dict, list]:
         "crossfall_max": float(raw.get("crossfall_max") or 0.12),
         "open_side": str(raw.get("open_side") or "left"),
         # hermite: Z only from secured flat portals (grade-jump); never mid-gallery DGM
+        # road_spline: Strassennetz + road_span_profile (4 MeshRoad strips)
         "z_profile": str(raw.get("z_profile") or "hermite"),
+        "profile": str(raw.get("profile") or ""),
+        "centerline": str(raw.get("centerline") or "osm"),
+        "free_span": str(raw.get("free_span") or "linear"),
+        "solid_run_m": float(raw.get("solid_run_m") or 3.0),
+        "span_dip_m": float(raw.get("span_dip_m") or 0.45),
+        "span_search_m": float(raw.get("span_search_m") or 40.0),
+        "deck_lift_m": float(raw.get("deck_lift_m") or 0.02),
+        "corner_up_m": float(
+            raw["corner_up_m"] if raw.get("corner_up_m") is not None else 0.25
+        ),
+        "corner_down_m": float(
+            raw["corner_down_m"] if raw.get("corner_down_m") is not None else 0.06
+        ),
+        "corner_band": float(
+            raw["corner_band"] if raw.get("corner_band") is not None else 0.2
+        ),
+        "abutment_s": raw.get("abutment_s"),
         "portal_grade_step_m": float(raw.get("portal_grade_step_m") or 1.0),
         "portal_grade_jump": float(raw.get("portal_grade_jump") or 0.04),
         "portal_grade_baseline_n": int(raw.get("portal_grade_baseline_n") or 3),
@@ -709,6 +738,205 @@ def find_secured_portal(
         "ty": round(ty, 5),
         "tz": round(tz, 5),
     }
+
+
+def _gallery_uses_road_spline(cfg: dict) -> bool:
+    prof = str(cfg.get("profile") or "").lower().strip()
+    zprof = str(cfg.get("z_profile") or "").lower().strip()
+    return prof == "road_spline" or zprof == "road_spline"
+
+
+def _shift_xy_open(
+    x: float,
+    y: float,
+    tx: float,
+    ty: float,
+    open_side: str,
+    open_extra_m: float,
+) -> tuple[float, float]:
+    """Shift so only the open edge grows when width already includes open_extra."""
+    extra = max(0.0, float(open_extra_m))
+    side = (open_side or "").lower().strip()
+    if extra < 1e-9 or side not in ("left", "right"):
+        return x, y
+    left_u, right_u = bb.left_right_unit(tx, ty)
+    u = left_u if side == "left" else right_u
+    return x + 0.5 * extra * u[0], y + 0.5 * extra * u[1]
+
+
+def build_gallery_road_spline(
+    feat: dict,
+    road: dict,
+    z_terrain,
+    cfg: dict,
+) -> tuple[list[dict], list[dict], dict]:
+    """Strassennetz + road_span_profile → shell nodes + 4 MeshRoad strips.
+
+    Abutments = secured portals (grade jump into roof), not bridge dip heuristic —
+    mid-gallery DGM is polluted by the roof.
+    """
+    import road_span_profile as rsp
+
+    clear_h = float(cfg["clear_height_m"])
+    roof_t = float(cfg["roof_thickness_m"])
+    width_base = float(cfg["width_m"])
+    w_extra = max(0.0, float(cfg.get("deck_width_extra_m") or 0.0))
+    open_extra = max(0.0, float(cfg.get("deck_open_extra_m") or 0.0))
+    open_side = str(cfg.get("open_side") or "left")
+    # Match legacy single MeshRoad: widen + shift toward open side
+    width_eff = width_base + w_extra + open_extra
+
+    s_ends = [rsp.project_xy(road, x, y)[0] for x, y in (feat["xy"][0], feat["xy"][-1])]
+    s_g0, s_g1 = min(s_ends), max(s_ends)
+
+    abut = cfg.get("abutment_s")
+    portal_anchors: dict = {}
+    if abut is not None and len(abut) >= 2:
+        s_p0, s_p1 = float(abut[0]), float(abut[1])
+        if s_p1 < s_p0:
+            s_p0, s_p1 = s_p1, s_p0
+        portal_method = "override"
+    else:
+        p0 = find_secured_portal(
+            road,
+            s_g0,
+            end="s0",
+            z_terrain=z_terrain,
+            search_out_m=float(cfg.get("portal_search_out_m") or 25.0),
+            search_in_m=float(cfg.get("portal_search_in_m") or 15.0),
+            step=float(cfg.get("portal_grade_step_m") or 1.0),
+            jump_dp=float(cfg.get("portal_grade_jump") or 0.04),
+            baseline_n=int(cfg.get("portal_grade_baseline_n") or 3),
+            out_extra_m=float(cfg.get("portal_out_extra_m") or 2.0),
+            grade_span_m=float(cfg.get("portal_grade_span_m") or 3.0),
+            jump_min_grade=float(cfg.get("portal_jump_min_grade") or 0.12),
+        )
+        p1 = find_secured_portal(
+            road,
+            s_g1,
+            end="s1",
+            z_terrain=z_terrain,
+            search_out_m=float(cfg.get("portal_search_out_m") or 25.0),
+            search_in_m=float(cfg.get("portal_search_in_m") or 15.0),
+            step=float(cfg.get("portal_grade_step_m") or 1.0),
+            jump_dp=float(cfg.get("portal_grade_jump") or 0.04),
+            baseline_n=int(cfg.get("portal_grade_baseline_n") or 3),
+            out_extra_m=float(cfg.get("portal_out_extra_m") or 2.0),
+            grade_span_m=float(cfg.get("portal_grade_span_m") or 3.0),
+            jump_min_grade=float(cfg.get("portal_jump_min_grade") or 0.12),
+        )
+        s_p0, s_p1 = float(p0["s"]), float(p1["s"])
+        if s_p1 < s_p0:
+            p0, p1 = p1, p0
+            s_p0, s_p1 = s_p1, s_p0
+        portal_anchors = {"s0": p0, "s1": p1}
+        portal_method = "grade_jump"
+
+    deck_ext = float(cfg.get("deck_extend_m") or 0.0)
+    ext_b = max(float(cfg.get("extend_before_m") or 0.0), deck_ext)
+    ext_a = max(float(cfg.get("extend_after_m") or 0.0), deck_ext)
+
+    prof = rsp.build_span_profile(
+        road,
+        z_terrain,
+        feat["xy"],
+        width_m=width_eff,
+        dip_m=float(cfg.get("span_dip_m") or 0.45),
+        search_m=float(cfg.get("span_search_m") or 40.0),
+        step_m=float(cfg.get("step_m") or 1.0),
+        solid_run_m=float(cfg.get("solid_run_m") or 3.0),
+        extend_before_m=ext_b,
+        extend_after_m=ext_a,
+        deck_lift_m=float(cfg.get("deck_lift_m") or 0.0),
+        abutment_s=(s_p0, s_p1),
+        free_span=str(cfg.get("free_span") or "linear"),
+        corner_up_m=float(cfg.get("corner_up_m") if cfg.get("corner_up_m") is not None else 0.25),
+        corner_down_m=float(
+            cfg.get("corner_down_m") if cfg.get("corner_down_m") is not None else 0.06
+        ),
+        corner_band=float(cfg.get("corner_band") if cfg.get("corner_band") is not None else 0.2),
+    )
+
+    # Shell / portal nodes: width for loft = base (+ width_extra on closed sense via loft args)
+    nodes: list[dict] = []
+    for k, s in enumerate(prof.s):
+        x, y = prof.xy[k]
+        _xr, _yr, _zn, tx, ty, _tz, _w = rsp.sample_road_xy(road, s)
+        x, y = _shift_xy_open(x, y, tx, ty, open_side, open_extra)
+        z = float(prof.z_center[k])
+        nodes.append(
+            {
+                "x": round(x, 3),
+                "y": round(y, 3),
+                "z_road": round(z, 3),
+                "z_hermite": round(z, 3),
+                "z_roof_inner": round(z + clear_h, 3),
+                "z_roof_outer": round(z + clear_h + roof_t, 3),
+                "width": round(width_base + w_extra, 2),
+                "tx": round(tx, 5),
+                "ty": round(ty, 5),
+                "s": round(float(s), 2),
+            }
+        )
+
+    slug = bb._slug(str(feat.get("name") or "gallery"))
+    oid = feat.get("objectid") or "x"
+    depth = float(cfg.get("deck_depth_m") or cfg.get("depth_m") or 0.5)
+    mats = cfg.get("materials") or {}
+    strip_entries: list[dict] = []
+    for i, strip in enumerate(prof.strips):
+        shifted = []
+        for j, n in enumerate(strip):
+            sx, sy, sz, sw, nx, ny, nz = n
+            s = float(prof.s[j])
+            _xr, _yr, _zn, tx, ty, _tz, _w = rsp.sample_road_xy(road, s)
+            sx, sy = _shift_xy_open(sx, sy, tx, ty, open_side, open_extra)
+            shifted.append((sx, sy, sz, sw, nx, ny, nz))
+        entry = bb.make_meshroad_from_strip(
+            f"gallery_deck_{slug}_{oid}_s{i}",
+            shifted,
+            depth_m=depth,
+            materials=mats,
+        )
+        entry["__parent"] = "galleries"
+        strip_entries.append(entry)
+
+    z0 = float(prof.z_center[min(range(len(prof.s)), key=lambda i: abs(prof.s[i] - s_p0))])
+    z1 = float(prof.z_center[min(range(len(prof.s)), key=lambda i: abs(prof.s[i] - s_p1))])
+
+    info = dict(prof.info)
+    info.update(
+        {
+            "road_id": road.get("id"),
+            "road_name": road.get("name"),
+            "z_profile": "road_spline",
+            "profile": "road_spline",
+            "centerline": "strassennetz",
+            "portal_s": [round(s_p0, 3), round(s_p1, 3)],
+            "portal_z": [round(z0, 3), round(z1, 3)],
+            "portal_anchors": portal_anchors,
+            "portal_method": portal_method,
+            "gip_len_on_road_m": round(s_g1 - s_g0, 2),
+            "clear_height_m": clear_h,
+            "roof_thickness_m": roof_t,
+            "wall_thickness_m": float(cfg.get("wall_thickness_m") or 0.4),
+            "overhang_m": float(cfg.get("overhang_m") or 0.6),
+            "open_side": open_side,
+            "hole_mode": cfg.get("hole_mode"),
+            "hole_pad_m": cfg.get("hole_pad_m"),
+            "hole_portal_length_m": cfg.get("hole_portal_length_m"),
+            "blend_open_dgm": cfg.get("blend_open_dgm"),
+            "style": cfg.get("style") or {},
+            "materials": mats,
+            "deck_strips": len(strip_entries),
+            "width_eff_m": round(width_eff, 2),
+            "extend_before_m": ext_b,
+            "extend_after_m": ext_a,
+            "approach_mode": "road_spline_terrain",
+            "approach_conform": bool(cfg.get("approach_conform", False)),
+        }
+    )
+    return nodes, strip_entries, info
 
 
 def build_gallery_centerline(
@@ -3020,8 +3248,6 @@ def main() -> None:
 
     proc = processed_dir(site)
     roads = bb.load_road_polylines(proc)
-    if not roads:
-        raise SystemExit(f"Missing {proc / 'roads_beamng.json'}")
 
     defaults, items = default_gallery_cfg(bng)
     if args.step is not None:
@@ -3054,6 +3280,26 @@ def main() -> None:
         ]
         if not feats:
             raise SystemExit(f"No features matched --only {sorted(only_ids)}")
+
+    use_spline_default = _gallery_uses_road_spline(defaults)
+    use_net = use_spline_default or str(defaults.get("centerline") or "").lower() == "strassennetz"
+    if not use_net:
+        for it in items:
+            if str(it.get("profile") or it.get("z_profile") or "").lower() == "road_spline":
+                use_net = True
+                break
+            if str(it.get("centerline") or "").lower() == "strassennetz":
+                use_net = True
+                break
+    net_road = None
+    if use_net:
+        net_road = bb.load_strassennetz_road(proc)
+        print(
+            f"Centerline Strassennetz: {net_road.get('name')!r} "
+            f"len={net_road['length']:.1f}m nodes={len(net_road['pts'])}"
+        )
+    elif not roads:
+        raise SystemExit(f"Missing {proc / 'roads_beamng.json'}")
 
     centerlines = []
     span_infos = []
@@ -3093,17 +3339,30 @@ def main() -> None:
                 cfg["open_side"] = "none"
                 cfg["style"] = {**cfg["style"], "shell": "tunnel"}
 
-        seed = bb.pick_road(roads, feat["xy"])
-        pad = float(cfg.get("portal_search_out_m") or 25.0) + float(
-            cfg.get("portal_out_extra_m") or 2.0
-        ) + 5.0
-        road = extend_road_chain(roads, seed, tol_m=1.0, pad_m=pad)
-        nodes, info = build_gallery_centerline(
-            feat["xy"], road, cfg, z_terrain=z_terrain
-        )
-        info["seed_road_id"] = seed.get("id")
-        info["chain_ids"] = road.get("chain_ids")
-        info["chain_len_m"] = round(float(road["length"]), 2)
+        spline = _gallery_uses_road_spline(cfg)
+        strip_entries: list[dict] = []
+        if spline:
+            road = net_road if net_road is not None else bb.load_strassennetz_road(proc)
+            nodes, strip_entries, info = build_gallery_road_spline(
+                feat, road, z_terrain, cfg
+            )
+            info["seed_road_id"] = road.get("id")
+            info["chain_ids"] = None
+            info["chain_len_m"] = round(float(road["length"]), 2)
+        else:
+            if not roads:
+                raise SystemExit(f"Missing {proc / 'roads_beamng.json'} (needed for hermite galleries)")
+            seed = bb.pick_road(roads, feat["xy"])
+            pad = float(cfg.get("portal_search_out_m") or 25.0) + float(
+                cfg.get("portal_out_extra_m") or 2.0
+            ) + 5.0
+            road = extend_road_chain(roads, seed, tol_m=1.0, pad_m=pad)
+            nodes, info = build_gallery_centerline(
+                feat["xy"], road, cfg, z_terrain=z_terrain
+            )
+            info["seed_road_id"] = seed.get("id")
+            info["chain_ids"] = road.get("chain_ids")
+            info["chain_len_m"] = round(float(road["length"]), 2)
         info["name"] = feat["name"]
         info["objectid"] = feat.get("objectid")
         info["merged_from"] = feat.get("merged_from")
@@ -3186,32 +3445,35 @@ def main() -> None:
                 }
             )
 
-            # --- Fahrbahn (MeshRoad): extend past portals, Z = z_road (Hermite/DGM) ---
+            # --- Fahrbahn (MeshRoad): road_spline = 4 strips; else single Hermite deck ---
             if cfg.get("deck_enabled", True):
-                deck_ext = max(
-                    float(cfg.get("deck_extend_m") or 5.0),
-                    float(cfg.get("approach_blend_m") or 0.0),
-                )
-                deck_nodes = [
-                    n
-                    for n in nodes
-                    if (s_p0 - deck_ext) - 1e-6 <= float(n["s"]) <= (s_p1 + deck_ext) + 1e-6
-                ]
-                if len(deck_nodes) < 2:
-                    deck_nodes = mesh_nodes
-                deck = make_gallery_deck_meshroad(
-                    f"gallery_deck_{slug}_{oid}",
-                    deck_nodes,
-                    depth_m=float(cfg.get("deck_depth_m") or 0.5),
-                    width_extra_m=float(cfg.get("deck_width_extra_m") or 0.0),
-                    materials=cfg.get("materials") or {},
-                    z_terrain=z_terrain,
-                    portal_s=(s_p0, s_p1),
-                    crossfall_max=float(cfg.get("crossfall_max") or 0.12),
-                    open_side=str(cfg.get("open_side") or "left"),
-                    open_extra_m=float(cfg.get("deck_open_extra_m") or 0.0),
-                )
-                ts_entries.append(deck)
+                if spline and strip_entries:
+                    ts_entries.extend(strip_entries)
+                else:
+                    deck_ext = max(
+                        float(cfg.get("deck_extend_m") or 5.0),
+                        float(cfg.get("approach_blend_m") or 0.0),
+                    )
+                    deck_nodes = [
+                        n
+                        for n in nodes
+                        if (s_p0 - deck_ext) - 1e-6 <= float(n["s"]) <= (s_p1 + deck_ext) + 1e-6
+                    ]
+                    if len(deck_nodes) < 2:
+                        deck_nodes = mesh_nodes
+                    deck = make_gallery_deck_meshroad(
+                        f"gallery_deck_{slug}_{oid}",
+                        deck_nodes,
+                        depth_m=float(cfg.get("deck_depth_m") or 0.5),
+                        width_extra_m=float(cfg.get("deck_width_extra_m") or 0.0),
+                        materials=cfg.get("materials") or {},
+                        z_terrain=z_terrain,
+                        portal_s=(s_p0, s_p1),
+                        crossfall_max=float(cfg.get("crossfall_max") or 0.12),
+                        open_side=str(cfg.get("open_side") or "left"),
+                        open_extra_m=float(cfg.get("deck_open_extra_m") or 0.0),
+                    )
+                    ts_entries.append(deck)
 
             # --- Block portals at both ends ---
             portal_style = str(
@@ -3370,18 +3632,24 @@ def main() -> None:
                 "approach_conform_pad_m": cfg.get("approach_conform_pad_m"),
                 "approach_conform_falloff_m": cfg.get("approach_conform_falloff_m"),
                 "approach_conform_sink_m": cfg.get("approach_conform_sink_m"),
+                "profile": info.get("profile") or info.get("z_profile"),
                 "shape": shape_vfs,
                 "origin": [round(origin[0], 3), round(origin[1], 3), round(origin[2], 3)],
                 "mesh_tris": n_tris,
                 "nodes": nodes,
             }
         )
+        deck_note = (
+            f"strips={len(strip_entries)}"
+            if spline and strip_entries
+            else f"deck={cfg.get('deck_enabled', True)}"
+        )
         print(
             f"{feat['kind']} {feat['name']!r} oid={oid}: "
             f"span={info['span_len_m']}m gip={info['gip_len_on_road_m']}m "
             f"z_profile={info.get('z_profile')} "
             f"portal_z={info.get('portal_z')} portal_s={info.get('portal_s')} "
-            f"deck={cfg.get('deck_enabled', True)} "
+            f"{deck_note} "
             f"portal_frame={cfg.get('portal_frame')} "
             + (f"tris={n_tris}" if not args.holes_only else "(holes-only)")
         )

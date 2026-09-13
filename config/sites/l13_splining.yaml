@@ -1,0 +1,193 @@
+# L13 splining test: same geography/data as l13_kuehtai, separate BeamNG level.
+# Centerline = Tirol Strassennetz (not OSM). Bridge decks = 4 parallel MeshRoads
+# from road_span_profile (5 lateral lines, conservative abutments, linear free span).
+#
+# Activate:  $env:AUTOROAD_SITE="config/sites/l13_splining.yaml"
+# Setup:     python tools/setup_beamng_level.py --site config/sites/l13_splining.yaml
+# Fetch:     python tools/fetch_strassennetz.py
+# Bridges:   python tools/build_bridges.py
+# Galleries: python tools/build_galleries.py
+name: tirol-l13-kuehtai-2048
+crs: EPSG:31254
+bbox:
+  - 53878.0
+  - 230758.0
+  - 55926.0
+  - 232806.0
+
+sources:
+  dgm:
+    type: wcs
+    url: "https://gis.tirol.gv.at/arcgis/services/Service_Public/terrain/MapServer/WCSServer"
+    coverage: "Gelaendemodell_50cm_M28"
+    version: "1.0.0"
+    resolution_m: 0.5
+  ortho:
+    type: wcs
+    url: "https://gis.tirol.gv.at/arcgis/services/Service_Public/orthofoto/MapServer/WCSServer"
+    coverage: "Aktuell_RGB"
+    resolution_m: 1.0
+  roads:
+    type: osm   # still used for decals / width hints
+  strassennetz:
+    type: wfs
+    url: "https://dservices3.arcgis.com/hG7UfxX49PQ8XkXh/arcgis/services/Strassennetz/WFSServer"
+    type_name: "Strassennetz:Strassennetz"
+    str_code: L13
+  gip:
+    type: wfs
+    url: "https://dservices3.arcgis.com/hG7UfxX49PQ8XkXh/arcgis/services/Verkehrswege/WFSServer"
+    type_name: "Verkehrswege:Verkehrswege"
+    str_code: L13
+  landuse:
+    type: featureserver
+    layers:
+      landnutzung:
+        url: "https://services3.arcgis.com/hG7UfxX49PQ8XkXh/arcgis/rest/services/Landnutzung/FeatureServer/0"
+        label: Landnutzung
+      waldflaeche:
+        url: "https://services3.arcgis.com/hG7UfxX49PQ8XkXh/arcgis/rest/services/Waldflaeche/FeatureServer/0"
+        label: Waldfläche
+
+beamng:
+  meters_per_pixel: 1.0
+  level_name: autoroad_l13_splining
+  mask_size: 2048
+  slope_rock_deg: 43
+  slope_rock_open_px: 1
+  road_width_scale: 1.0
+  shoulder_m: 0.1
+
+  bridges:
+    defaults:
+      profile: road_spline          # road_span_profile → 4 MeshRoad strips
+      centerline: strassennetz
+      width_m: 7.0
+      width_from_road: false        # Strassennetz has no width attr
+      depth_m: 0.4
+      deck_lift_m: 0.02
+      node_z_is_top: true
+      extend_before_m: 2.0
+      extend_after_m: 2.0
+      under_inset_m: 5.0
+      auto_span: true
+      span_dip_m: 0.45
+      span_search_m: 40.0
+      solid_run_m: 3.0
+      free_span: linear             # no sag
+      # Soft-match deck corners to DGM (up more than down — avoid ditch dive)
+      corner_up_m: 0.25
+      corner_down_m: 0.06
+      corner_band: 0.2              # frac of half-width near each edge
+      step_m: 1.0
+      approach_conform: false
+      style:
+        understructure: none
+        edge: none
+      materials:
+        top: Asphalt
+        bottom: Concrete
+        side: Concrete
+        texture_length: 6.0
+        detail_scale: 4.0
+    items:
+      # Optional manual abutments (meters along Strassennetz centerline):
+      # abutment_s: [1234.0, 1290.0]
+      - match: { objectid: 7233, name: Klammbachbrücke }
+
+  galleries:
+    merge_abutting: true
+    merge_tol_m: 15.0
+    defaults:
+      profile: road_spline          # same deck module as bridges
+      centerline: strassennetz
+      width_m: 7.0
+      width_from_road: false
+      clear_height_m: 3.0
+      roof_thickness_m: 0.5
+      wall_thickness_m: 0.4
+      overhang_m: 1.0
+      extend_before_m: 2.0
+      extend_after_m: 2.0
+      step_m: 1.0
+      crossfall_max: 0.12
+      open_side: left
+      free_span: linear
+      deck_lift_m: 0.02
+      corner_up_m: 0.25
+      corner_down_m: 0.06
+      corner_band: 0.2
+      # Portals still via grade-jump (mid-gallery DGM = roof)
+      portal_grade_step_m: 1.0
+      portal_grade_jump: 0.04
+      portal_grade_baseline_n: 3
+      portal_out_extra_m: 2.0
+      portal_grade_span_m: 3.0
+      portal_jump_min_grade: 0.12
+      portal_search_out_m: 25.0
+      portal_search_in_m: 15.0
+      hole_mode: none
+      deck_enabled: true
+      deck_depth_m: 0.5
+      deck_width_extra_m: 0.5
+      deck_open_extra_m: 0.8
+      deck_extend_m: 12.0
+      parapet_height_m: 1.0
+      parapet_thickness_m: 0.35
+      parapet_out_m: 0.25
+      column_spacing_m: 4.0
+      column_along_m: 0.4
+      column_lat_m: 0.35
+      column_out_m: 0.0
+      approach_conform: false
+      portal_frame: block
+      portal_block_m: 0.7
+      portal_depth_m: 1.0
+      portal_overhang_m: 0.8
+      portal_clear_extra_m: 0.25
+      portal_collar: false
+      debug_centerline: false
+      style:
+        shell: gallery
+        columns: rect
+        edge: none
+        portal: block
+      materials:
+        top: Asphalt
+        bottom: Concrete
+        side: Concrete
+        collar: GalleryRock
+        texture_length: 6.0
+        detail_scale: 4.0
+    items:
+      - match: { objectid: [7236, 10099], name: Mugkögele }
+        open_side: right
+      - match: { objectid: 8276, name: Rauheneck }
+        open_side: right
+        extend_before_m: 3.0
+        extend_after_m: 3.0
+        deck_open_extra_m: 1.5
+
+  guardrails:
+    enabled: false
+
+  water:
+    enabled: false
+
+  forest:
+    enabled: false
+
+  decal_roads:
+    enabled: true
+    width_scale: 0.9
+    material: Asphalt
+    texture_length: 6.0
+    detail_scale: 4.0
+    highways: [secondary, primary, tertiary, trunk, motorway]
+    centerline:
+      enabled: false
+
+notes: |
+  Splining test level. Reuses processed data of tirol-l13-kuehtai-2048.
+  Bridges + galleries: Strassennetz + road_span_profile (4 MeshRoad strips).
+  Gallery abutments = grade-jump portals (not bridge dip).

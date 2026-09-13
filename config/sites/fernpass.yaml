@@ -1,0 +1,207 @@
+# Fernpass (B179) — 4096×4096 m Testgebiet.
+# Aktivieren:  $env:AUTOROAD_SITE="config/sites/fernpass.yaml"
+# Center ~38400 / 246100 (EPSG:31254)
+name: tirol-fernpass-4096
+crs: EPSG:31254
+bbox:
+  - 36352.0
+  - 244052.0
+  - 40448.0
+  - 248148.0
+
+sources:
+  dgm:
+    type: wcs
+    url: "https://gis.tirol.gv.at/arcgis/services/Service_Public/terrain/MapServer/WCSServer"
+    coverage: "Gelaendemodell_50cm_M28"
+    version: "1.0.0"
+    resolution_m: 0.5
+  ortho:
+    type: wcs
+    url: "https://gis.tirol.gv.at/arcgis/services/Service_Public/orthofoto/MapServer/WCSServer"
+    coverage: "Aktuell_RGB"
+    resolution_m: 1.0
+  roads:
+    type: osm
+  gip:
+    type: wfs
+    url: "https://dservices3.arcgis.com/hG7UfxX49PQ8XkXh/arcgis/services/Verkehrswege/WFSServer"
+    type_name: "Verkehrswege:Verkehrswege"
+    str_code: B179
+  landuse:
+    type: featureserver
+    layers:
+      landnutzung:
+        url: "https://services3.arcgis.com/hG7UfxX49PQ8XkXh/arcgis/rest/services/Landnutzung/FeatureServer/0"
+        label: Landnutzung
+      waldflaeche:
+        url: "https://services3.arcgis.com/hG7UfxX49PQ8XkXh/arcgis/rest/services/Waldflaeche/FeatureServer/0"
+        label: Waldfläche
+
+beamng:
+  meters_per_pixel: 1.0
+  level_name: autoroad_fernpass_4096
+  mask_size: 4096
+  slope_rock_deg: 43
+  slope_rock_open_px: 1
+  road_width_scale: 0.9
+  shoulder_m: 0.15
+
+  bridges:
+    defaults:
+      width_m: 7.0
+      width_from_road: true
+      depth_m: 0.4
+      node_z_is_top: true
+      extend_before_m: 0.0       # Auffahrt bündig am Terrain (kaum sichtbar)
+      extend_after_m: 0.0
+      under_inset_m: 5.0
+      # Kurzes GIP: Enden aufpolstern + Graben weiter suchen (sichtbare Spannweite)
+      gip_pad_m: 10.0
+      auto_span: true
+      span_dip_m: 0.45
+      span_search_m: 40.0
+      # Portale auf echtem Auflager (Straße≈Terrain), nicht im Einschnitt/Graben
+      abut_tol_m: 0.25
+      abut_run_m: 3.0
+      abut_search_m: 40.0
+      abut_snap_z: true
+      # Terrain unter Deck an MeshRoad-Z anpassen (Lippen/Einschnitt; Graben unberührt)
+      approach_conform: true
+      approach_conform_pad_m: 0.5
+      approach_conform_falloff_m: 1.5
+      approach_conform_sink_m: 0.02
+      approach_conform_max_delta_m: 1.0
+      step_m: 1.0
+      crossfall_max: 0.12
+      style:
+        understructure: none
+        edge: none
+      materials:
+        top: Asphalt
+        bottom: Concrete
+        side: Concrete
+        texture_length: 6.0
+        detail_scale: 4.0
+    items:
+      - match: { objectid: 3168, name: Fernsteinbrücke }
+      - match: { objectid: 4103, name: Kriegerbachbrücke }
+  galleries:
+    merge_abutting: true
+    merge_tol_m: 15.0
+    defaults:
+      width_m: 7.0
+      width_from_road: true
+      clear_height_m: 4.5
+      roof_thickness_m: 0.5
+      wall_thickness_m: 0.4
+      overhang_m: 1.0
+      extend_before_m: 2.0
+      extend_after_m: 2.0
+      step_m: 2.0
+      open_side: left
+      deck_enabled: true
+      deck_width_extra_m: 0.5
+      deck_open_extra_m: 0.8
+      deck_extend_m: 12.0
+      approach_mode: marry
+      approach_lift_m: 0.015
+      approach_conform: false
+      portal_ease_m: 4.0
+      portal_frame: block
+      portal_block_m: 0.7
+      portal_depth_m: 1.0
+      portal_overhang_m: 0.8
+      portal_clear_extra_m: 0.25
+      portal_collar: false
+      hole_mode: none
+      blend_open_dgm: true
+      style:
+        shell: gallery
+        columns: rect
+        edge: none
+        portal: block
+      materials:
+        top: Asphalt
+        bottom: Concrete
+        side: Concrete
+        collar: GalleryRock
+        texture_length: 6.0
+        detail_scale: 4.0
+    items: []
+
+  guardrails:
+    enabled: true
+    shape: "/art/shapes/objects/italy_guardrails_common_section.dae"
+    mesh_length_m: 3.1
+    section_length_m: 4.2
+    curve_r15_m: 15.0
+    curve_r10_m: 10.0
+    curve_step_r15_m: 2.8
+    curve_step_r10_m: 2.2
+    abut_overlap_m: 0.08
+    curvature_window_m: 8.0
+    lateral_extra_m: 0.25
+    z_sample_inward_m: 0.35
+    sides: both
+    highways: [secondary, primary, tertiary, trunk, motorway]
+    z_lift_m: 0.05
+    pivot_ground_offset_m: 0.0
+    align_pitch: true
+    snap_to_heightmap: true
+    face_y_outward: true
+    yaw_flip_right: false
+    clip_galleries: true
+    stop_before_gallery_m: 3.0
+    gallery_clip_pad_m: 2.0
+
+  water:
+    enabled: true
+    flowing: none
+    standing: waterblock
+    standing_max_side_m: 40.0
+    depth_m: 3.0
+    surface_lift_m: 0.15
+    min_area_m2: 40.0
+    grid_element_size: 4.0
+
+  forest:
+    enabled: true
+    spacing_high_m: 10.0
+    spacing_scrub_m: 5.0
+    slope_max_deg: 42.0
+    clear_road_m: 4.0
+    max_items: 25000
+    seed: 13
+
+  decal_roads:
+    enabled: true
+    width_scale: 0.9
+    material: Asphalt
+    texture_length: 6.0
+    detail_scale: 4.0
+    render_priority: 10
+    drivability: 1.0
+    improved_spline: true
+    over_objects: false
+    clip_galleries: true
+    stop_before_gallery_m: 2.0
+    gallery_clip_pad_m: 1.0
+    highways: [secondary, primary, tertiary, trunk, motorway, unclassified]
+    centerline:
+      enabled: true
+      style: dashed
+      width_m: 0.15
+      material: Road_Line_White
+      dash_m: 3.0
+      gap_m: 6.0
+      render_priority: 25
+
+annotations:
+  gpkg: data/annotations/tirol-fernpass-4096.gpkg
+  guardrail_source: auto
+
+notes: |
+  Fernpass B179, 4096×4096 m @ 1 m/px, center EPSG:31254 ~38400/246100.
+  Pipeline: fetch_dgm → build_smoke → fetch_landcover → build_terrain_masks →
+  fetch_gip → setup_beamng_level → bridges/galleries/decal/guardrails as needed.

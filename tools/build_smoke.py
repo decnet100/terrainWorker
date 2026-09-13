@@ -141,7 +141,19 @@ def fetch_osm_roads() -> list[dict]:
             continue
         tags = el.get("tags", {})
         hw = tags.get("highway", "unclassified")
-        width = float(tags.get("width") or width_by_class.get(hw, 5.0))
+        raw_w = tags.get("width")
+        if raw_w is None or raw_w == "":
+            width = float(width_by_class.get(hw, 5.0))
+        else:
+            s = str(raw_w).strip().lower().replace("m", "").replace(",", ".")
+            for sep in (";", "|", "/", "-"):
+                if sep in s:
+                    s = s.split(sep)[0].strip()
+                    break
+            try:
+                width = max(1.5, float(s))
+            except ValueError:
+                width = float(width_by_class.get(hw, 5.0))
         nodes = []
         for g in el["geometry"]:
             x, y = to_local.transform(g["lon"], g["lat"])
