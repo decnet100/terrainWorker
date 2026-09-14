@@ -42,7 +42,13 @@ TYPE_NAME = str(GIP.get("type_name", "Verkehrswege:Verkehrswege"))
 STR_CODE = GIP.get("str_code") or None
 PAGE = int(GIP.get("page_size", 500))
 TIMEOUT = int(GIP.get("timeout_s", 300))
-
+# FeatureServer for OBJECTID lookups (Kunstbauten-Nachträge außerhalb STR_CODE).
+FS_QUERY = str(
+    GIP.get(
+        "feature_server_query",
+        "https://services3.arcgis.com/hG7UfxX49PQ8XkXh/arcgis/rest/services/Verkehrswege/FeatureServer/0/query",
+    )
+)
 
 def _cache_key() -> str:
     payload = {
@@ -161,19 +167,138 @@ def _clip_to_bbox(features: list[dict]) -> list[dict]:
 
 
 def _structure_kind(props: dict) -> str | None:
+    """Classify Kunstbaute; honors YAML gip_extra override when present."""
+    extra = str(props.get("_autoroad_gip_extra_kind") or "").strip().lower()
+    if extra in {"bridge", "gallery", "tunnel", "culvert", "structure"}:
+        return extra
     name = str(props.get("KUNSTBAUTEN") or "").strip()
     bez = str(props.get("OBJEKTBEZEICHNUNG") or "").lower()
     if not name or name.lower() == "none":
         return None
-    if "galerie" in name.lower() or "tunnel" in bez:
-        if "galerie" in name.lower():
-            return "gallery"
+    nl = name.lower()
+    if "galerie" in nl:
+        return "gallery"
+    if "tunnel" in nl or "unterführung" in nl or "unterfuehrung" in nl or "tunnel" in bez:
         return "tunnel"
-    if "brücke" in name.lower() or "bruecke" in name.lower() or "brücke" in bez or "bruecke" in bez:
+    if "brücke" in nl or "bruecke" in nl or "brücke" in bez or "bruecke" in bez:
         return "bridge"
-    if "durchlass" in name.lower():
+    if "durchlass" in nl:
         return "culvert"
     return "structure"
+
+
+def _gip_extra_entries(site: dict | None = None) -> list[dict]:
+    """Manual Kunstbauten Nachträge from site YAML.
+
+    beamng.bridges.gip_extra:
+      - objectid: 3992
+        # name: optional (default Brücke {oid} / Tunnel {oid} / …)
+        # kind: bridge | tunnel | gallery (default bridge)
+    """
+    site = site or SITE
+    raw = ((site.get("beamng") or {}).get("bridges") or {}).get("gip_extra") or []
+    out: list[dict] = []
+    for i, entry in enumerate(raw):
+        if isinstance(entry, (int, float, str)) and str(entry).strip().isdigit():
+            out.append({"objectid": int(entry), "kind": "bridge", "name": None})
+            continue
+        if not isinstance(entry, dict):
+            continue
+        oid = entry.get("objectid")
+        if oid is None:
+            continue
+        out.append({
+            "objectid": int(oid),
+            "kind": str(entry.get("kind") or "bridge").lower(),
+            "name": entry.get("name"),
+        })
+    return out
+
+
+def _fetch_features_by_objectids(oids: list[int]) -> list[dict]:
+    """Pull individual Verkehrswege features via FeatureServer (any STR_CODE)."""
+    if not oids:
+        return []
+    headers = {"User-Agent": "beamng_autoroad/0.1", "Accept": "application/json"}
+    # Batch OR query
+    where = " OR ".join(f"OBJECTID={int(o)}" for o in oids)
+    params = {
+        "where": where,
+        "outFields": "*",
+        "returnGeometry": "true",
+        "outSR": "4326",
+        "f": "geojson",
+    }
+    r = requests.get(FS_QUERY, params=params, headers=headers, timeout=TIMEOUT)
+    r.raise_for_status()
+    data = _fix_mojibake(r.json())
+    feats = data.get("features") or []
+    print(f"  FeatureServer OBJECTID fetch: asked={len(oids)} got={len(feats)}")
+    return feats
+
+
+def _apply_gip_extra(features: list[dict], site: dict | None = None) -> list[dict]:
+    """Merge YAML gip_extra OBJECTIDs; label Brücke/Tunnel/{oid} when unnamed."""
+    extras = _gip_extra_entries(site)
+    if not extras:
+        return features
+
+    by_oid: dict[int, dict] = {}
+    for f in features:
+        p = f.get("properties") or {}
+        oid = p.get("OBJECTID")
+        if oid is not None:
+            by_oid[int(oid)] = f
+
+    missing = [e["objectid"] for e in extras if e["objectid"] not in by_oid]
+    if missing:
+        for f in _fetch_features_by_objectids(missing):
+            p = f.get("properties") or {}
+            oid = p.get("OBJECTID")
+            if oid is not None:
+                by_oid[int(oid)] = f
+
+    merged = list(features)
+    present = {
+        int((f.get("properties") or {}).get("OBJECTID"))
+        for f in merged
+        if (f.get("properties") or {}).get("OBJECTID") is not None
+    }
+
+    for e in extras:
+        oid = e["objectid"]
+        f = by_oid.get(oid)
+        if f is None:
+            print(f"  WARNING: gip_extra OBJECTID={oid} not found on FeatureServer")
+            continue
+        f = json.loads(json.dumps(f))  # deep copy
+        p = dict(f.get("properties") or {})
+        kind = e["kind"]
+        if e.get("name"):
+            label = str(e["name"])
+        elif kind == "bridge":
+            label = f"Brücke {oid}"
+        elif kind == "gallery":
+            label = f"Galerie {oid}"
+        elif kind == "tunnel":
+            label = f"Tunnel {oid}"
+        else:
+            label = f"{kind} {oid}"
+        p["KUNSTBAUTEN"] = label
+        p["_autoroad_gip_extra"] = True
+        p["_autoroad_gip_extra_kind"] = kind
+        f["properties"] = p
+        if oid in present:
+            merged = [
+                f if int((x.get("properties") or {}).get("OBJECTID") or -1) == oid else x
+                for x in merged
+            ]
+        else:
+            merged.append(f)
+            present.add(oid)
+        print(f"  gip_extra: OBJECTID={oid} → {label} ({kind})")
+
+    return merged
 
 
 def _summarize(features: list[dict]) -> dict:
@@ -223,7 +348,11 @@ def main() -> None:
         print(f"Using cached GIP extract: {cache_path}")
         print(f"  features={meta.get('feature_count')} key={meta.get('cache_key')}")
         data = json.loads(cache_path.read_text(encoding="utf-8"))
-        summary = _summarize(data.get("features") or [])
+        feats = _apply_gip_extra(data.get("features") or [])
+        data["features"] = feats
+        # Persist merge so build_bridges sees extras without re-fetch logic
+        cache_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        summary = _summarize(feats)
         summary_path.write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
         print(f"Wrote {summary_path}")
         for s in summary["structures"]:
@@ -242,6 +371,7 @@ def main() -> None:
     print(f"Road features total: {len(all_feats)}")
     clipped = _clip_to_bbox(all_feats)
     print(f"After site BBOX clip: {len(clipped)}")
+    clipped = _apply_gip_extra(clipped)
 
     fc = {
         "type": "FeatureCollection",
@@ -259,7 +389,8 @@ def main() -> None:
         "bbox": BBOX,
         "feature_count": len(clipped),
         "road_feature_count": len(all_feats),
-        "note": "Cached clip; re-run with --force to refresh",
+        "gip_extra": _gip_extra_entries(),
+        "note": "Cached clip; re-run with --force to refresh road extract; gip_extra merged each run",
     }
     meta_path.write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
     summary_path.write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")

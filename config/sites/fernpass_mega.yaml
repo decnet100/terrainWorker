@@ -84,12 +84,33 @@ beamng:
         texture_length: 6.0
         detail_scale: 4.0
     # Kunstbauten ohne KUNSTBAUTEN-Feld nachtragen (FeatureServer OBJECTID).
-    # Werden als "Brücke 1", "Brücke 2", … benannt (oder name: …).
+    # Default-Name: "Brücke {oid}" / "Tunnel {oid}" (oder name: …).
     gip_extra:
       - objectid: 101710
+        name: Brücke 101710
+      - objectid: 3992
+        name: Brücke 3992
+      - objectid: 2304
+        name: Brücke 2304
+      - objectid: 3836
+        name: Brücke 3836
+      - objectid: 3844
+        name: Brücke 3844
+      - objectid: 3852
+        name: Brücke 3852
+      # Unterflur / Rampe: langer S-BR → Tunnel auf der 8081-Seite (nicht die Außenhälfte).
+      - objectid: 8082
+        kind: tunnel
+        name: Tunnel 8082
     items:
       - match: { objectid: 3168, name: Fernsteinbrücke }
       - match: { objectid: 4103, name: Kriegerbachbrücke }
+      - match: { objectid: 3992, name: Brücke 3992 }
+      - match: { objectid: 2304, name: Brücke 2304 }
+      - match: { objectid: 101710, name: Brücke 101710 }
+      - match: { objectid: 3836, name: Brücke 3836 }
+      - match: { objectid: 3844, name: Brücke 3844 }
+      - match: { objectid: 3852, name: Brücke 3852 }
   galleries:
     merge_abutting: true
     merge_tol_m: 15.0
@@ -132,7 +153,23 @@ beamng:
         collar: GalleryRock
         texture_length: 6.0
         detail_scale: 4.0
-    items: []
+    items:
+      # 8082: GIP ~211m; nur der 8081-nahe Abschnitt ist Tunnel.
+      # trim_s0 = GIP-Start (BeamNG ~6513,5564), trim_s1 = GIP-Ende an 8081 (~6349,5677).
+      # Seite zu lang → jeweiligen trim erhöhen; zu kurz → verringern.
+      - match: { objectid: 8082 }
+        open_side: none
+        style: { shell: tunnel }
+        trim_s0_m: 156.0
+        trim_s1_m: 30.0
+        extend_before_m: 1.0
+        extend_after_m: 1.0
+        deck_extend_m: 4.0
+      # Lermooser: Portal/Eingang separat (Gebäude) — vorerst nicht als Tunnel mesh’en.
+      - match: { name: Lermooser Tunnel }
+        enabled: false
+      - match: { objectid: [3699, 3842] }
+        enabled: false
 
   guardrails:
     enabled: true
@@ -207,13 +244,43 @@ beamng:
   decal_roads:
     enabled: true
     width_scale: 0.9
-    material: Asphalt
+    # Distinct from TerrainMaterial "Asphalt" (name clash → white/broken Decals).
+    material: Road_Asphalt
     texture_length: 6.0
     detail_scale: 4.0
     render_priority: 10
     drivability: 1.0
     improved_spline: true
+    densify_max_step_m: 10.0
+    decal_bias: 0.20
+    z_bias: 0.02
+    snap_to_heightmap: true
+    z_lift_m: 0.03
+    snap_max_raise_m: 2.0
+    # Smooth DGM under roads so Decals capture clean tris (needs terrain re-import).
+    # Shared value/opacity raster over all roads, then one composite onto heightmap.
+    road_bed_conform: true
+    road_bed_pad_m: 1.0
+    road_bed_falloff_m: 3.0
+    road_bed_sink_m: 0.08
+    road_bed_max_delta_m: 2.0
+    # Dips = raise; high bank sawteeth = cut into hillside (needs larger cut).
+    road_bed_max_raise_m: 2.0
+    road_bed_max_cut_m: 2.0
+    road_bed_smooth_m: 12.0
+    road_bed_items:
+      - match: { objectid: [3998, 4163] }
+        pad_m: 3.0
+        falloff_m: 4.0
+        sink_m: 0.12
+        max_raise_m: 2.5
+        max_cut_m: 12.0
+        smooth_m: 16.0
     over_objects: false
+    # 0 = no fade at ends (default 2+2m caused visible gaps at every OSM-way joint).
+    start_end_fade: [0.0, 0.0]
+    # Long single DecalRoads (e.g. OSM 731 ~700m) often lose asphalt geometry in BeamNG.
+    max_decal_length_m: 300.0
     clip_galleries: true
     stop_before_gallery_m: 2.0
     gallery_clip_pad_m: 1.0
@@ -226,7 +293,7 @@ beamng:
       dash_m: 3.0
       gap_m: 6.0
       render_priority: 25
-
+      decal_bias: 0.22
 annotations:
   gpkg: data/annotations/tirol-fernpass-8192.gpkg
   guardrail_source: auto

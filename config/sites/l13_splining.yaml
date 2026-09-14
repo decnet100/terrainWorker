@@ -140,6 +140,27 @@ beamng:
       column_lat_m: 0.35
       column_out_m: 0.0
       approach_conform: false
+      # Lip bake: lower = valleyward only; upper = hangward only (open flank)
+      terrain_embed: true
+      terrain_embed_upper: true          # probe hangward upper
+      terrain_embed_rings: 2
+      terrain_embed_upper_m: 1.0         # hard radius hangward from magenta roof edge
+      # Magenta station = green − inset (≥1 terrain cell) toward centerline
+      terrain_embed_upper_inset_m: 1.0
+      # Influence from green foundation line: out = terrain/valley, in = toward road
+      terrain_embed_lower_m: 1.0   # hard radius outward (talwärts)
+      terrain_embed_in_m: 1.0      # hard radius inward (keep small → no Doppelgrate)
+      terrain_embed_soft_m: 3.0    # soft falloff beyond hard
+      terrain_embed_curve: smoothstep
+      terrain_embed_foundation_m: 1.0
+      # Bake/debug Z (lower only) = z_road − foundation + lower_z
+      terrain_embed_lower_z_m: 1.0 #Offset to raise lower-lip   
+      terrain_embed_max_delta_m: 12.0
+      terrain_embed_open_side: true
+      terrain_embed_portal_face: true         # Stirn lower lip bake
+      terrain_embed_portal_face_upper: true   # Stirn upper: gallery-inward only
+      terrain_embed_portal_holes: true        # holemap between green/magenta (Stirn + full open flank)
+      terrain_embed_debug: true          # magenta inset ≥1m vs green; Z lower vs roof
       portal_frame: block
       portal_block_m: 0.7
       portal_depth_m: 1.0
@@ -162,11 +183,12 @@ beamng:
     items:
       - match: { objectid: [7236, 10099], name: Mugkögele }
         open_side: right
+        deck_open_extra_m: 0.0
       - match: { objectid: 8276, name: Rauheneck }
         open_side: right
         extend_before_m: 3.0
         extend_after_m: 3.0
-        deck_open_extra_m: 1.5
+        deck_open_extra_m: 0.0
 
   guardrails:
     enabled: false
@@ -191,3 +213,7 @@ notes: |
   Splining test level. Reuses processed data of tirol-l13-kuehtai-2048.
   Bridges + galleries: Strassennetz + road_span_profile (4 MeshRoad strips).
   Gallery abutments = grade-jump portals (not bridge dip).
+  terrain_embed: open flank only (never hang side). portal_face opt-in.
+  terrain_embed_debug → green lower / magenta roof (exact bake Z, no lift).
+  terrain_embed_upper_inset_m ≥ mpp: magenta inward vs green so upper hangward bake misses valley.
+  terrain_embed_lower_m / in_m / soft_m = out / in / soft; lower_z_m raises lower bake Z.

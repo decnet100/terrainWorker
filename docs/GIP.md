@@ -20,6 +20,17 @@ python tools\fetch_gip.py --force  # bewusst neu laden
 - Spatial `bbox=` am WFS liefert hier oft **0 Treffer** — daher Road-Filter + lokaler Clip
 - Cache: `data/raw/gip_<site>_<hash>.geojson` (+ `.meta.json`)
 - Zusammenfassung: `data/processed/gip_structures.json`
+- **Nachträge:** `beamng.bridges.gip_extra` — OBJECTIDs ohne `KUNSTBAUTEN` (auch außerhalb `STR_CODE`) per FeatureServer holen; Default-Name `Brücke {oid}` / `Tunnel {oid}` (oder `name:`)
+
+```yaml
+beamng:
+  bridges:
+    gip_extra:
+      - objectid: 3992            # → Brücke 3992
+      - objectid: 8082
+        kind: tunnel
+        name: Tunnel 8082
+```
 
 Normale Builds (`build_smoke` / Masken / Guardrails) rufen den WFS **nicht** an.
 
@@ -73,6 +84,7 @@ cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE='config/sites/l13_kuehtai.yaml'; 
 | `clear_height_m` | lichte Höhe Fahrbahn → Dach-Unterkante |
 | `roof_thickness_m` | Dachstärke (für späteres Mesh) |
 | `extend_before_m` / `extend_after_m` | Übergang über GIP-Enden hinaus (Achse) |
+| `trim_s0_m` / `trim_s1_m` | Meter abschneiden am GIP-Start / -Ende (Portal s0 / s1) |
 | `open_side` | `left` \| `right` \| `both` \| `none` |
 | `hole_pad_m` / `blend_open_dgm` | später Hole-Map / DGM-Mischung |
 | `style.shell/columns/edge/portal` | Darstellungseigenschaften je Objekt (Platzhalter) |

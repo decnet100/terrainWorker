@@ -27,6 +27,7 @@ import json
 import math
 import shutil
 import sys
+import time
 from pathlib import Path
 from xml.sax.saxutils import escape
 
@@ -100,6 +101,24 @@ GALLERY_SCALAR_KEYS = (
     "approach_conform_falloff_m",
     "approach_conform_sink_m",  # terrain slightly under MeshRoad (anti z-fight)
     "approach_conform_max_delta_m",  # skip mountain cells (|Δz| too large)
+    # Portal/opening lip bake so holemap has free 1×1 tiles at edges
+    "terrain_embed",
+    "terrain_embed_upper",  # bake roof lip (default off until roof edge is solid)
+    "terrain_embed_rings",  # legacy fallback → meters via mpp (both lips)
+    "terrain_embed_upper_m",  # hangward hard radius from upper station (m)
+    "terrain_embed_upper_inset_m",  # pull magenta station inward vs green (≥1 cell)
+    "terrain_embed_lower_m",  # outward hard radius from foundation line (m)
+    "terrain_embed_in_m",  # inward hard radius toward road (m); None → foundation_m
+    "terrain_embed_soft_m",  # soft falloff beyond hard radius (both sides)
+    "terrain_embed_curve",  # smoothstep | cosine | linear
+    "terrain_embed_foundation_m",  # lower lip Z drop + outward offset of lip line
+    "terrain_embed_lower_z_m",  # lower lip only: + raises bake/debug Z toward deck underside
+    "terrain_embed_max_delta_m",
+    "terrain_embed_open_side",  # bake long lookout opening (open flank only)
+    "terrain_embed_portal_face",  # bake portal-front lower lip (default off)
+    "terrain_embed_portal_face_upper",  # also bake portal-front upper lip (opt-in)
+    "terrain_embed_portal_holes",  # holemap strip between portal green/magenta faces
+    "terrain_embed_debug",  # MeshRoad of foundation/roof lip lines in WE
     "portal_frame",  # none | block
     "portal_block_m",  # pier/lintel thickness
     "portal_depth_m",  # how far portal extends along road
@@ -114,6 +133,8 @@ GALLERY_SCALAR_KEYS = (
     "enabled",
     "blend_open_dgm",
     "overhang_m",
+    "trim_s0_m",  # meters to drop from GIP polyline start (portal s0)
+    "trim_s1_m",  # meters to drop from GIP polyline end (portal s1)
 )
 
 
@@ -209,6 +230,60 @@ def default_gallery_cfg(bng: dict) -> tuple[dict, list]:
         "approach_conform_max_delta_m": float(
             raw.get("approach_conform_max_delta_m") or 0.35
         ),
+        "terrain_embed": bool(raw.get("terrain_embed", False)),
+        "terrain_embed_upper": bool(raw.get("terrain_embed_upper", False)),
+        "terrain_embed_rings": int(raw.get("terrain_embed_rings") or 2),
+        "terrain_embed_upper_m": (
+            float(raw["terrain_embed_upper_m"])
+            if raw.get("terrain_embed_upper_m") is not None
+            else None
+        ),
+        "terrain_embed_upper_inset_m": (
+            float(raw["terrain_embed_upper_inset_m"])
+            if raw.get("terrain_embed_upper_inset_m") is not None
+            else None
+        ),
+        "terrain_embed_lower_m": (
+            float(raw["terrain_embed_lower_m"])
+            if raw.get("terrain_embed_lower_m") is not None
+            else None
+        ),
+        "terrain_embed_in_m": (
+            float(raw["terrain_embed_in_m"])
+            if raw.get("terrain_embed_in_m") is not None
+            else None
+        ),
+        "terrain_embed_soft_m": float(
+            raw["terrain_embed_soft_m"]
+            if raw.get("terrain_embed_soft_m") is not None
+            else 1.0
+        ),
+        "terrain_embed_curve": str(raw.get("terrain_embed_curve") or "smoothstep"),
+        "terrain_embed_foundation_m": float(
+            raw.get("terrain_embed_foundation_m")
+            if raw.get("terrain_embed_foundation_m") is not None
+            else 1.0
+        ),
+        "terrain_embed_lower_z_m": float(
+            raw.get("terrain_embed_lower_z_m")
+            if raw.get("terrain_embed_lower_z_m") is not None
+            else 0.0
+        ),
+        "terrain_embed_max_delta_m": float(
+            raw.get("terrain_embed_max_delta_m")
+            if raw.get("terrain_embed_max_delta_m") is not None
+            else 12.0
+        ),
+        "terrain_embed_open_side": bool(raw.get("terrain_embed_open_side", True)),
+        # Portal-front lower lip — off by default (no hang-side lips ever)
+        "terrain_embed_portal_face": bool(raw.get("terrain_embed_portal_face", False)),
+        "terrain_embed_portal_face_upper": bool(
+            raw.get("terrain_embed_portal_face_upper", False)
+        ),
+        "terrain_embed_portal_holes": bool(
+            raw.get("terrain_embed_portal_holes", False)
+        ),
+        "terrain_embed_debug": bool(raw.get("terrain_embed_debug", False)),
         "portal_frame": str(raw.get("portal_frame") or "block"),
         "portal_block_m": float(raw.get("portal_block_m") or 0.7),
         "portal_depth_m": float(raw.get("portal_depth_m") or 1.2),
@@ -310,6 +385,67 @@ def resolve_gallery_cfg(defaults: dict, items: list, feat: dict) -> dict:
         cfg["match_id"] = matched.get("id") or matched.get("match")
     cfg["materials"] = mats
     return cfg
+
+
+def _trim_polyline_m(
+    xy: list[tuple[float, float]],
+    trim_m: float,
+    *,
+    from_start: bool,
+) -> list[tuple[float, float]]:
+    """Drop ``trim_m`` meters from one end of a polyline."""
+    if trim_m <= 0 or len(xy) < 2:
+        return list(xy)
+    pts = list(xy) if from_start else list(reversed(xy))
+    acc = 0.0
+    for i in range(len(pts) - 1):
+        a, b = pts[i], pts[i + 1]
+        seg = math.hypot(b[0] - a[0], b[1] - a[1])
+        if acc + seg <= trim_m + 1e-9:
+            acc += seg
+            continue
+        t = (trim_m - acc) / seg if seg > 1e-9 else 0.0
+        start = (a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1]))
+        out = [start] + pts[i + 1 :]
+        return out if from_start else list(reversed(out))
+    # trimmed away entire poly — keep a stub near the far end
+    stub = pts[-2:] if from_start else list(reversed(pts[:2]))
+    return stub if len(stub) >= 2 else list(xy)
+
+
+def apply_gallery_span_trims(
+    feat: dict, cfg: dict, site: dict, sc: SiteCoords
+) -> dict:
+    """Trim GIP axis ends before centerline build.
+
+    ``trim_s0_m`` / ``trim_s1_m``: meters to cut from polyline start / end
+    (same ends as portal s0 / s1). Increase a side to shorten that portal.
+    """
+    _ = (site, sc)
+    xy = list(feat.get("xy") or [])
+    if len(xy) < 2:
+        return feat
+    notes: list[str] = []
+    for key, from_start in (("trim_s0_m", True), ("trim_s1_m", False)):
+        tm = float(cfg.get(key) or 0.0)
+        if tm > 0:
+            before = _poly_len_xy(xy)
+            xy = _trim_polyline_m(xy, tm, from_start=from_start)
+            notes.append(f"{key}={tm:.1f} ({before:.1f}→{_poly_len_xy(xy):.1f}m)")
+    if not notes:
+        return feat
+    out = dict(feat)
+    out["xy"] = xy
+    out["trim_notes"] = notes
+    s0, s1 = xy[0], xy[-1]
+    print(
+        f"  gallery oid={feat.get('objectid')}: "
+        f"after trim L={_poly_len_xy(xy):.1f}m "
+        f"s0=({s0[0]:.1f},{s0[1]:.1f}) s1=({s1[0]:.1f},{s1[1]:.1f})"
+    )
+    for n in notes:
+        print(f"  gallery oid={feat.get('objectid')}: {n}")
+    return out
 
 
 def _poly_len_xy(xy: list[tuple[float, float]]) -> float:
@@ -1748,7 +1884,11 @@ def _add_box_oriented(
     z0: float,
     z1: float,
 ) -> None:
-    """Axis-aligned in road frame: along=fwd, lat=left, Z up. z0/z1 absolute world Z."""
+    """Axis-aligned in road frame: along=fwd, lat=left, Z up. z0/z1 absolute world Z.
+
+    Face winding assumes a right-handed (fwd, left, Z). Portal s1 flips ``fwd``
+    via into_sign while keeping road-left, so det(fwd,left)<0 — reverse quads.
+    """
     ox, oy, oz = origin
     cx, cy, cz = center
     # 8 corners: along ±, lat ±, z0/z1
@@ -1763,13 +1903,20 @@ def _add_box_oriented(
     # Order: (sa,sl,z): 0=(-,-,0) 1=(-,-,1) 2=(-,+,0) 3=(-,+,1) 4=(+,-,0) 5=(+,-,1) 6=(+,+,0) 7=(+,+,1)
     idx = [_add_vert(verts, c) for c in corners_w]
     # Outward normals (from box center). Order matches sa/sl/z corners above.
-    _quad(faces, idx[0], idx[1], idx[3], idx[2])  # -along
-    _quad(faces, idx[4], idx[6], idx[7], idx[5])  # +along
-    _quad(faces, idx[0], idx[4], idx[5], idx[1])  # -lat
-    _quad(faces, idx[2], idx[3], idx[7], idx[6])  # +lat
-    _quad(faces, idx[0], idx[2], idx[6], idx[4])  # bottom
-    _quad(faces, idx[1], idx[5], idx[7], idx[3])  # top
-
+    quads = (
+        (idx[0], idx[1], idx[3], idx[2]),  # -along
+        (idx[4], idx[6], idx[7], idx[5]),  # +along
+        (idx[0], idx[4], idx[5], idx[1]),  # -lat
+        (idx[2], idx[3], idx[7], idx[6]),  # +lat
+        (idx[0], idx[2], idx[6], idx[4]),  # bottom
+        (idx[1], idx[5], idx[7], idx[3]),  # top
+    )
+    lh = (fwd[0] * left[1] - fwd[1] * left[0]) < 0.0
+    for a, b, c, d in quads:
+        if lh:
+            _quad(faces, a, d, c, b)
+        else:
+            _quad(faces, a, b, c, d)
 
 def loft_portal_frame(
     node: dict,
@@ -2695,6 +2842,1321 @@ def write_approach_conform_assets(
     return proc / carved_name
 
 
+def _gallery_flag(g: dict, defaults: dict, key: str, default: bool = False) -> bool:
+    if g.get(key) is not None:
+        return bool(g.get(key))
+    if defaults.get(key) is not None:
+        return bool(defaults.get(key))
+    return bool(default)
+
+
+def _gallery_num(g: dict, defaults: dict, key: str, fallback: float) -> float:
+    if g.get(key) is not None:
+        return float(g[key])
+    if defaults.get(key) is not None:
+        return float(defaults[key])
+    return float(fallback)
+
+
+def _smooth_weight(dist_m: float, core_m: float, soft_m: float, curve: str) -> float:
+    """1 inside core, 0 outside core+soft; smooth falloff in between."""
+    if dist_m <= core_m:
+        return 1.0
+    span = max(0.0, soft_m)
+    if span < 1e-9:
+        return 0.0
+    t = (dist_m - core_m) / span
+    if t >= 1.0:
+        return 0.0
+    u = 1.0 - t  # 1 at core edge → 0 at outer
+    c = (curve or "smoothstep").lower().strip()
+    if c in ("linear", "lin"):
+        return u
+    if c in ("cosine", "cos", "cosine_half"):
+        return 0.5 * (1.0 + math.cos(math.pi * (1.0 - u)))
+    # smoothstep (default): 3u² − 2u³
+    return u * u * (3.0 - 2.0 * u)
+
+
+def _dist_point_to_poly(
+    bx: float,
+    by: float,
+    poly: list[tuple[float, float, float]],
+) -> tuple[float, float]:
+    """Nearest distance to polyline + Z at closest point. poly = (x,y,z)."""
+    if not poly:
+        return 1e9, 0.0
+    best_d = 1e9
+    best_z = float(poly[0][2])
+    for i, (x0, y0, z0) in enumerate(poly):
+        if i + 1 >= len(poly):
+            d = math.hypot(bx - x0, by - y0)
+            if d < best_d:
+                best_d = d
+                best_z = z0
+            continue
+        x1, y1, z1 = poly[i + 1]
+        dx, dy = x1 - x0, y1 - y0
+        seg2 = dx * dx + dy * dy
+        if seg2 < 1e-12:
+            t = 0.0
+        else:
+            t = max(0.0, min(1.0, ((bx - x0) * dx + (by - y0) * dy) / seg2))
+        px = x0 + t * dx
+        py = y0 + t * dy
+        d = math.hypot(bx - px, by - py)
+        if d < best_d:
+            best_d = d
+            best_z = z0 + t * (z1 - z0)
+    return best_d, best_z
+
+
+def _embed_lip_radii(
+    g: dict,
+    defaults: dict,
+    *,
+    mpp: float,
+) -> tuple[float, float, float, float, float, float]:
+    """Return (upper_core_m, out_core_m, in_core_m, soft_m, foundation_m, lower_z_m).
+
+    Lower bake is centered on the foundation *outer* line:
+    - ``out_core`` = reach away from the road (terrain side)
+    - ``in_core``  = reach toward the road (defaults to foundation_m so the
+      Vorfeld band clears without crossing the carriageway)
+    - lower bake/debug Z = ``z_road - foundation_m + lower_z_m``
+    """
+    rings = int(
+        g["terrain_embed_rings"]
+        if g.get("terrain_embed_rings") is not None
+        else defaults.get("terrain_embed_rings") or 2
+    )
+    rings = max(1, min(8, rings))
+    ring_m = rings * mpp
+    upper = g.get("terrain_embed_upper_m")
+    if upper is None:
+        upper = defaults.get("terrain_embed_upper_m")
+    lower = g.get("terrain_embed_lower_m")
+    if lower is None:
+        lower = defaults.get("terrain_embed_lower_m")
+    upper_r = float(upper) if upper is not None else ring_m
+    out_r = float(lower) if lower is not None else ring_m
+    foundation = _gallery_num(g, defaults, "terrain_embed_foundation_m", 1.0)
+    soft = _gallery_num(g, defaults, "terrain_embed_soft_m", 1.0)
+    in_raw = g.get("terrain_embed_in_m")
+    if in_raw is None:
+        in_raw = defaults.get("terrain_embed_in_m")
+    in_r = float(in_raw) if in_raw is not None else foundation
+    lower_z = _gallery_num(g, defaults, "terrain_embed_lower_z_m", 0.0)
+    return (
+        max(0.0, upper_r),
+        max(0.0, out_r),
+        max(0.0, in_r),
+        max(0.0, soft),
+        max(0.0, foundation),
+        float(lower_z),
+    )
+
+
+def _foundation_edge_polylines_n(
+    nodes: list[dict],
+    *,
+    open_side: str,
+    open_extra_m: float,
+    width_extra_m: float,
+    foundation_m: float,
+    only_open: bool,
+    step_m: float = 0.5,
+    z_offset_m: float = 0.0,
+) -> list[list[tuple[float, float, float, float, float]]]:
+    """Foundation outer lip as (x,y,z,nx,ny) with outward normals (away from road).
+
+    Z = ``z_road - foundation_m + z_offset_m`` (``terrain_embed_lower_z_m``).
+    """
+    if len(nodes) < 1:
+        return []
+    by_s = sorted(nodes, key=lambda n: float(n["s"]))
+    samples: list[dict] = [by_s[0]]
+    for n in by_s[1:]:
+        prev = samples[-1]
+        ds = abs(float(n["s"]) - float(prev["s"]))
+        if ds < 1e-6:
+            samples[-1] = n
+            continue
+        n_seg = max(1, int(math.ceil(ds / max(step_m, 0.25))))
+        for k in range(1, n_seg + 1):
+            t = k / n_seg
+            samples.append(
+                {
+                    "x": float(prev["x"]) + t * (float(n["x"]) - float(prev["x"])),
+                    "y": float(prev["y"]) + t * (float(n["y"]) - float(prev["y"])),
+                    "tx": float(n.get("tx") or prev.get("tx") or 1.0),
+                    "ty": float(n.get("ty") or prev.get("ty") or 0.0),
+                    "width": float(prev.get("width") or 7.0)
+                    + t * (float(n.get("width") or 7.0) - float(prev.get("width") or 7.0)),
+                    "z_road": float(prev["z_road"])
+                    + t * (float(n["z_road"]) - float(prev["z_road"])),
+                    "s": float(prev["s"]) + t * (float(n["s"]) - float(prev["s"])),
+                }
+            )
+    side = (open_side or "left").lower().strip()
+    want_left = (side in ("left", "both")) if only_open else True
+    want_right = (side in ("right", "both")) if only_open else True
+    out_lines: list[list[tuple[float, float, float, float, float]]] = []
+    for want, u_name in ((want_left, "left"), (want_right, "right")):
+        if not want:
+            continue
+        line: list[tuple[float, float, float, float, float]] = []
+        for n in samples:
+            tx = float(n.get("tx") or 1.0)
+            ty = float(n.get("ty") or 0.0)
+            left_u, right_u = bb.left_right_unit(tx, ty)
+            u = left_u if u_name == "left" else right_u
+            half = 0.5 * float(n.get("width") or 7.0) + 0.5 * width_extra_m
+            if side in (u_name, "both"):
+                bot_lat = half + open_extra_m
+            else:
+                bot_lat = half
+            lat = bot_lat + max(0.0, foundation_m)
+            z_bot = float(n["z_road"]) - foundation_m + z_offset_m
+            line.append(
+                (
+                    float(n["x"]) + lat * u[0],
+                    float(n["y"]) + lat * u[1],
+                    z_bot,
+                    float(u[0]),
+                    float(u[1]),
+                )
+            )
+        if len(line) >= 2:
+            out_lines.append(line)
+    return out_lines
+
+
+def _portal_face_polyline_n(
+    node: dict,
+    *,
+    into_sign: float,
+    out_m: float,
+    open_extra_m: float,
+    width_extra_m: float,
+    foundation_m: float,
+    overhang_m: float,
+    n_lat: int = 17,
+    z_offset_m: float = 0.0,
+    lat_span_m: float | None = None,
+) -> list[tuple[float, float, float, float, float]]:
+    """Portal face lower lip with outward normal (= out of gallery along road).
+
+    ``lat_span_m`` overrides lateral half-extent (default: road half + extras +
+    foundation). Holemap stamps should pass carriageway-only span so hillside
+    cells above the lintel are not punched.
+    """
+    x = float(node["x"])
+    y = float(node["y"])
+    tx = float(node.get("tx") or 1.0)
+    ty = float(node.get("ty") or 0.0)
+    horiz = math.hypot(tx, ty) or 1.0
+    fx, fy = tx / horiz, ty / horiz
+    nx, ny = into_sign * fx, into_sign * fy
+    left_u, _ = bb.left_right_unit(tx, ty)
+    half = 0.5 * float(node.get("width") or 7.0) + 0.5 * width_extra_m
+    z_bot = float(node["z_road"]) - foundation_m + z_offset_m
+    ox = x + into_sign * out_m * fx
+    oy = y + into_sign * out_m * fy
+    if lat_span_m is not None:
+        span = max(0.5, float(lat_span_m))
+    else:
+        span = half + max(open_extra_m, overhang_m) + foundation_m
+    lower: list[tuple[float, float, float, float, float]] = []
+    for i in range(max(3, n_lat)):
+        t = -1.0 + 2.0 * i / max(n_lat - 1, 1)
+        lat = t * span
+        lower.append(
+            (
+                ox + lat * left_u[0],
+                oy + lat * left_u[1],
+                z_bot,
+                nx,
+                ny,
+            )
+        )
+    return lower
+
+
+def _dist_signed_to_poly_n(
+    bx: float,
+    by: float,
+    poly: list[tuple[float, float, float, float, float]],
+) -> tuple[float, float, float]:
+    """Nearest euclidean distance, Z, and signed lateral (dot with outward normal)."""
+    if not poly:
+        return 1e9, 0.0, 0.0
+    best_d = 1e9
+    best_z = float(poly[0][2])
+    best_s = 0.0
+    for i, (x0, y0, z0, nx0, ny0) in enumerate(poly):
+        if i + 1 >= len(poly):
+            d = math.hypot(bx - x0, by - y0)
+            if d < best_d:
+                best_d = d
+                best_z = z0
+                best_s = (bx - x0) * nx0 + (by - y0) * ny0
+            continue
+        x1, y1, z1, nx1, ny1 = poly[i + 1]
+        dx, dy = x1 - x0, y1 - y0
+        seg2 = dx * dx + dy * dy
+        if seg2 < 1e-12:
+            t = 0.0
+        else:
+            t = max(0.0, min(1.0, ((bx - x0) * dx + (by - y0) * dy) / seg2))
+        px = x0 + t * dx
+        py = y0 + t * dy
+        d = math.hypot(bx - px, by - py)
+        if d < best_d:
+            best_d = d
+            best_z = z0 + t * (z1 - z0)
+            nx = nx0 + t * (nx1 - nx0)
+            ny = ny0 + t * (ny1 - ny0)
+            nh = math.hypot(nx, ny) or 1.0
+            best_s = ((bx - px) * nx + (by - py) * ny) / nh
+    return best_d, best_z, best_s
+
+
+def _bake_lip_field_sided(
+    out: np.ndarray,
+    *,
+    size: int,
+    extent: float,
+    poly: list[tuple[float, float, float, float, float]],
+    out_core_m: float,
+    in_core_m: float,
+    soft_m: float,
+    max_delta_m: float,
+    curve: str,
+) -> tuple[int, int, float]:
+    """Bake lip with separate inward/outward hard radii (half-plane of normal).
+
+    Positive signed distance = outward (along stored normal). A side with
+    ``core_m <= 0`` is skipped entirely (no soft falloff either).
+    """
+    if len(poly) < 1:
+        return 0, 0, 0.0
+    radius = max(out_core_m, in_core_m) + soft_m
+    if radius < 1e-9:
+        return 0, 0, 0.0
+    xs = [p[0] for p in poly]
+    ys = [p[1] for p in poly]
+    margin = radius + 1.5
+    px0, py0 = _to_px_beamng(min(xs) - margin, max(ys) + margin, size, extent)
+    px1, py1 = _to_px_beamng(max(xs) + margin, min(ys) - margin, size, extent)
+    c0 = max(0, int(math.floor(min(px0, px1))))
+    c1 = min(size - 1, int(math.ceil(max(px0, px1))))
+    r0 = max(0, int(math.floor(min(py0, py1))))
+    r1 = min(size - 1, int(math.ceil(max(py0, py1))))
+    if c1 < c0 or r1 < r0:
+        return 0, 0, 0.0
+
+    tested = 0
+    changed = 0
+    max_abs = 0.0
+    for py in range(r0, r1 + 1):
+        for px in range(c0, c1 + 1):
+            bx, by = _from_px_beamng(float(px), float(py), size, extent)
+            dist, z_tgt, signed = _dist_signed_to_poly_n(bx, by, poly)
+            core = out_core_m if signed >= 0.0 else in_core_m
+            # core<=0 ⇒ no influence on that half-plane (do NOT leak soft_m
+            # across the line — that was wiping the green lower lip).
+            if core <= 1e-9:
+                continue
+            if dist > core + soft_m + 1e-9:
+                continue
+            wt = _smooth_weight(dist, core, soft_m, curve)
+            if wt <= 1e-6:
+                continue
+            tested += 1
+            z0 = float(out[py, px])
+            if abs(z0 - z_tgt) > max_delta_m:
+                continue
+            z_new = (1.0 - wt) * z0 + wt * z_tgt
+            if abs(z_new - z0) < 1e-4:
+                continue
+            out[py, px] = z_new
+            changed += 1
+            max_abs = max(max_abs, abs(z_new - z0))
+    return tested, changed, max_abs
+
+
+def _gallery_edge_polylines(
+    nodes: list[dict],
+    *,
+    open_side: str,
+    overhang_m: float,
+    open_extra_m: float,
+    width_extra_m: float,
+    foundation_m: float,
+    only_open: bool,
+    step_m: float = 0.5,
+) -> tuple[list[tuple[float, float, float]], list[tuple[float, float, float]]]:
+    """Dense (x,y,z) polylines for lower (road) and upper (roof) lips."""
+    if len(nodes) < 1:
+        return [], []
+    # Resample along s at ~step_m
+    by_s = sorted(nodes, key=lambda n: float(n["s"]))
+    samples: list[dict] = [by_s[0]]
+    for n in by_s[1:]:
+        prev = samples[-1]
+        ds = abs(float(n["s"]) - float(prev["s"]))
+        if ds < 1e-6:
+            samples[-1] = n
+            continue
+        n_seg = max(1, int(math.ceil(ds / max(step_m, 0.25))))
+        for k in range(1, n_seg + 1):
+            t = k / n_seg
+            samples.append(
+                {
+                    "x": float(prev["x"]) + t * (float(n["x"]) - float(prev["x"])),
+                    "y": float(prev["y"]) + t * (float(n["y"]) - float(prev["y"])),
+                    "tx": float(n.get("tx") or prev.get("tx") or 1.0),
+                    "ty": float(n.get("ty") or prev.get("ty") or 0.0),
+                    "width": float(prev.get("width") or 7.0)
+                    + t * (float(n.get("width") or 7.0) - float(prev.get("width") or 7.0)),
+                    "z_road": float(prev["z_road"])
+                    + t * (float(n["z_road"]) - float(prev["z_road"])),
+                    "z_roof_outer": float(
+                        prev["z_roof_outer"]
+                        if prev.get("z_roof_outer") is not None
+                        else prev["z_road"]
+                    )
+                    + t
+                    * (
+                        float(
+                            n["z_roof_outer"]
+                            if n.get("z_roof_outer") is not None
+                            else n["z_road"]
+                        )
+                        - float(
+                            prev["z_roof_outer"]
+                            if prev.get("z_roof_outer") is not None
+                            else prev["z_road"]
+                        )
+                    ),
+                    "s": float(prev["s"]) + t * (float(n["s"]) - float(prev["s"])),
+                }
+            )
+
+    lower: list[tuple[float, float, float]] = []
+    upper: list[tuple[float, float, float]] = []
+    side = (open_side or "left").lower().strip()
+    want_left = (side in ("left", "both")) if only_open else True
+    want_right = (side in ("right", "both")) if only_open else True
+
+    for n in samples:
+        tx = float(n.get("tx") or 1.0)
+        ty = float(n.get("ty") or 0.0)
+        left_u, right_u = bb.left_right_unit(tx, ty)
+        half = 0.5 * float(n.get("width") or 7.0) + 0.5 * width_extra_m
+        z_bot = float(n["z_road"]) - foundation_m
+        z_top = float(n.get("z_roof_outer") if n.get("z_roof_outer") is not None else n["z_road"])
+        x = float(n["x"])
+        y = float(n["y"])
+
+        def _add(u: tuple[float, float], bot_lat: float, top_lat: float) -> None:
+            # Road edge
+            lower.append((x + bot_lat * u[0], y + bot_lat * u[1], z_bot))
+            # Forefield midline (foundation band center) for Vorfeld planieren
+            if foundation_m > 1e-6:
+                mid = bot_lat + 0.5 * foundation_m
+                lower.append((x + mid * u[0], y + mid * u[1], z_bot))
+                outer = bot_lat + foundation_m
+                lower.append((x + outer * u[0], y + outer * u[1], z_bot))
+            upper.append((x + top_lat * u[0], y + top_lat * u[1], z_top))
+
+        if want_left:
+            if side in ("left", "both"):
+                _add(left_u, half + open_extra_m, half + max(overhang_m, open_extra_m))
+            else:
+                _add(left_u, half, half + overhang_m)
+        if want_right:
+            if side in ("right", "both"):
+                _add(right_u, half + open_extra_m, half + max(overhang_m, open_extra_m))
+            else:
+                _add(right_u, half, half + overhang_m)
+    return lower, upper
+
+
+def _portal_face_polylines(
+    node: dict,
+    *,
+    into_sign: float,
+    out_m: float,
+    open_extra_m: float,
+    width_extra_m: float,
+    foundation_m: float,
+    overhang_m: float,
+    n_lat: int = 17,
+) -> tuple[list[tuple[float, float, float]], list[tuple[float, float, float]]]:
+    """Cross-road polylines just outside a portal (lower floor + upper lintel)."""
+    x = float(node["x"])
+    y = float(node["y"])
+    tx = float(node.get("tx") or 1.0)
+    ty = float(node.get("ty") or 0.0)
+    horiz = math.hypot(tx, ty) or 1.0
+    fx, fy = tx / horiz, ty / horiz
+    left_u, _ = bb.left_right_unit(tx, ty)
+    half = 0.5 * float(node.get("width") or 7.0) + 0.5 * width_extra_m
+    z_bot = float(node["z_road"]) - foundation_m
+    z_top = float(
+        node["z_roof_outer"]
+        if node.get("z_roof_outer") is not None
+        else node["z_road"]
+    )
+    ox = x + into_sign * out_m * fx
+    oy = y + into_sign * out_m * fy
+    ux = x - into_sign * 0.35 * out_m * fx
+    uy = y - into_sign * 0.35 * out_m * fy
+    span = half + max(open_extra_m, overhang_m) + foundation_m
+    lower: list[tuple[float, float, float]] = []
+    upper: list[tuple[float, float, float]] = []
+    for i in range(max(3, n_lat)):
+        t = -1.0 + 2.0 * i / max(n_lat - 1, 1)
+        lat = t * span
+        lower.append((ox + lat * left_u[0], oy + lat * left_u[1], z_bot))
+        upper.append((ux + lat * left_u[0], uy + lat * left_u[1], z_top))
+    return lower, upper
+
+
+def _roof_edge_polylines(
+    nodes: list[dict],
+    *,
+    open_side: str,
+    overhang_m: float,
+    open_extra_m: float,
+    width_extra_m: float,
+    only_open: bool,
+    step_m: float = 0.5,
+    foundation_m: float = 1.0,
+    inset_m: float = 1.0,
+) -> list[list[tuple[float, float, float]]]:
+    """Roof lip XY/Z — inset toward centerline vs green; Z = z_roof_outer."""
+    return [
+        [(p[0], p[1], p[2]) for p in line]
+        for line in _roof_edge_polylines_n(
+            nodes,
+            open_side=open_side,
+            overhang_m=overhang_m,
+            open_extra_m=open_extra_m,
+            width_extra_m=width_extra_m,
+            only_open=only_open,
+            step_m=step_m,
+            foundation_m=foundation_m,
+            inset_m=inset_m,
+        )
+    ]
+
+
+def _roof_edge_polylines_n(
+    nodes: list[dict],
+    *,
+    open_side: str,
+    overhang_m: float,
+    open_extra_m: float,
+    width_extra_m: float,
+    only_open: bool,
+    step_m: float = 0.5,
+    foundation_m: float = 1.0,
+    inset_m: float = 1.0,
+) -> list[list[tuple[float, float, float, float, float]]]:
+    """Roof lip (x,y,z,nx,ny); hangward normals; inset toward centerline vs green.
+
+    Green station = bot_lat + foundation_m. Magenta = that minus inset_m (>=1 cell)
+    so hangward upper cannot cover the lower valley half-plane. Z = z_roof_outer.
+    """
+    _ = overhang_m
+    if len(nodes) < 1:
+        return []
+    by_s = sorted(nodes, key=lambda n: float(n["s"]))
+    samples: list[dict] = [by_s[0]]
+    for n in by_s[1:]:
+        prev = samples[-1]
+        ds = abs(float(n["s"]) - float(prev["s"]))
+        if ds < 1e-6:
+            samples[-1] = n
+            continue
+        n_seg = max(1, int(math.ceil(ds / max(step_m, 0.25))))
+        for k in range(1, n_seg + 1):
+            t = k / n_seg
+            z0 = float(
+                prev["z_roof_outer"]
+                if prev.get("z_roof_outer") is not None
+                else prev["z_road"]
+            )
+            z1 = float(
+                n["z_roof_outer"] if n.get("z_roof_outer") is not None else n["z_road"]
+            )
+            samples.append(
+                {
+                    "x": float(prev["x"]) + t * (float(n["x"]) - float(prev["x"])),
+                    "y": float(prev["y"]) + t * (float(n["y"]) - float(prev["y"])),
+                    "tx": float(n.get("tx") or prev.get("tx") or 1.0),
+                    "ty": float(n.get("ty") or prev.get("ty") or 0.0),
+                    "width": float(prev.get("width") or 7.0)
+                    + t * (float(n.get("width") or 7.0) - float(prev.get("width") or 7.0)),
+                    "z_roof_outer": z0 + t * (z1 - z0),
+                    "s": float(prev["s"]) + t * (float(n["s"]) - float(prev["s"])),
+                }
+            )
+    side = (open_side or "left").lower().strip()
+    want_left = (side in ("left", "both")) if only_open else True
+    want_right = (side in ("right", "both")) if only_open else True
+    inset = max(0.0, float(inset_m))
+    out_lines: list[list[tuple[float, float, float, float, float]]] = []
+    for want, u_name in ((want_left, "left"), (want_right, "right")):
+        if not want:
+            continue
+        line: list[tuple[float, float, float, float, float]] = []
+        for n in samples:
+            tx = float(n.get("tx") or 1.0)
+            ty = float(n.get("ty") or 0.0)
+            left_u, right_u = bb.left_right_unit(tx, ty)
+            u_out = left_u if u_name == "left" else right_u
+            nx, ny = -float(u_out[0]), -float(u_out[1])
+            half = 0.5 * float(n.get("width") or 7.0) + 0.5 * width_extra_m
+            if side in (u_name, "both"):
+                bot_lat = half + open_extra_m
+            else:
+                bot_lat = half
+            green_lat = bot_lat + max(0.0, foundation_m)
+            lat = max(0.0, green_lat - inset)
+            z_top = float(
+                n["z_roof_outer"]
+                if n.get("z_roof_outer") is not None
+                else n.get("z_road") or 0.0
+            )
+            line.append(
+                (
+                    float(n["x"]) + lat * u_out[0],
+                    float(n["y"]) + lat * u_out[1],
+                    z_top,
+                    nx,
+                    ny,
+                )
+            )
+        if len(line) >= 2:
+            out_lines.append(line)
+    return out_lines
+
+
+def _portal_face_upper_polyline_n(
+    node: dict,
+    *,
+    into_sign: float,
+    out_m: float,
+    open_extra_m: float,
+    width_extra_m: float,
+    foundation_m: float,
+    overhang_m: float,
+    n_lat: int = 17,
+    inset_frac: float = 0.35,
+    lat_span_m: float | None = None,
+) -> list[tuple[float, float, float, float, float]]:
+    """Portal-front upper lip with outward normal (out of gallery along road).
+
+    Station is inset toward gallery interior vs lower (``inset_frac * out_m``).
+    Bake with ``out_core=0``, ``in_core=upper`` so influence is gallery-inward only.
+    ``lat_span_m`` — see ``_portal_face_polyline_n``.
+    """
+    x = float(node["x"])
+    y = float(node["y"])
+    tx = float(node.get("tx") or 1.0)
+    ty = float(node.get("ty") or 0.0)
+    horiz = math.hypot(tx, ty) or 1.0
+    fx, fy = tx / horiz, ty / horiz
+    # Same outward normal as lower face; sided bake uses the inward half-plane.
+    nx, ny = into_sign * fx, into_sign * fy
+    left_u, _ = bb.left_right_unit(tx, ty)
+    half = 0.5 * float(node.get("width") or 7.0) + 0.5 * width_extra_m
+    z_top = float(
+        node["z_roof_outer"]
+        if node.get("z_roof_outer") is not None
+        else node["z_road"]
+    )
+    ux = x - into_sign * float(inset_frac) * out_m * fx
+    uy = y - into_sign * float(inset_frac) * out_m * fy
+    if lat_span_m is not None:
+        span = max(0.5, float(lat_span_m))
+    else:
+        span = half + max(open_extra_m, overhang_m) + foundation_m
+    upper: list[tuple[float, float, float, float, float]] = []
+    for i in range(max(3, n_lat)):
+        t = -1.0 + 2.0 * i / max(n_lat - 1, 1)
+        lat = t * span
+        upper.append(
+            (
+                ux + lat * left_u[0],
+                uy + lat * left_u[1],
+                z_top,
+                nx,
+                ny,
+            )
+        )
+    return upper
+
+
+def _portal_face_upper_polyline(
+    node: dict,
+    *,
+    into_sign: float,
+    out_m: float,
+    open_extra_m: float,
+    width_extra_m: float,
+    foundation_m: float,
+    overhang_m: float,
+    n_lat: int = 17,
+) -> list[tuple[float, float, float]]:
+    """Portal lintel lip XY/Z (debug) — see ``_portal_face_upper_polyline_n``."""
+    return [
+        (p[0], p[1], p[2])
+        for p in _portal_face_upper_polyline_n(
+            node,
+            into_sign=into_sign,
+            out_m=out_m,
+            open_extra_m=open_extra_m,
+            width_extra_m=width_extra_m,
+            foundation_m=foundation_m,
+            overhang_m=overhang_m,
+            n_lat=n_lat,
+        )
+    ]
+
+
+def _foundation_edge_polylines(
+    nodes: list[dict],
+    *,
+    open_side: str,
+    open_extra_m: float,
+    width_extra_m: float,
+    foundation_m: float,
+    only_open: bool,
+    step_m: float = 0.5,
+) -> list[list[tuple[float, float, float]]]:
+    """One polyline per side: road edge + foundation outward (z = z_road − foundation).
+
+    This is the line terrain_embed pulls to foundation height (Vorfeld outer).
+    """
+    if len(nodes) < 1:
+        return []
+    by_s = sorted(nodes, key=lambda n: float(n["s"]))
+    samples: list[dict] = [by_s[0]]
+    for n in by_s[1:]:
+        prev = samples[-1]
+        ds = abs(float(n["s"]) - float(prev["s"]))
+        if ds < 1e-6:
+            samples[-1] = n
+            continue
+        n_seg = max(1, int(math.ceil(ds / max(step_m, 0.25))))
+        for k in range(1, n_seg + 1):
+            t = k / n_seg
+            samples.append(
+                {
+                    "x": float(prev["x"]) + t * (float(n["x"]) - float(prev["x"])),
+                    "y": float(prev["y"]) + t * (float(n["y"]) - float(prev["y"])),
+                    "tx": float(n.get("tx") or prev.get("tx") or 1.0),
+                    "ty": float(n.get("ty") or prev.get("ty") or 0.0),
+                    "width": float(prev.get("width") or 7.0)
+                    + t * (float(n.get("width") or 7.0) - float(prev.get("width") or 7.0)),
+                    "z_road": float(prev["z_road"])
+                    + t * (float(n["z_road"]) - float(prev["z_road"])),
+                    "s": float(prev["s"]) + t * (float(n["s"]) - float(prev["s"])),
+                }
+            )
+    side = (open_side or "left").lower().strip()
+    want_left = (side in ("left", "both")) if only_open else True
+    want_right = (side in ("right", "both")) if only_open else True
+    lines: list[list[tuple[float, float, float]]] = []
+    for want, u_name in ((want_left, "left"), (want_right, "right")):
+        if not want:
+            continue
+        line: list[tuple[float, float, float]] = []
+        for n in samples:
+            tx = float(n.get("tx") or 1.0)
+            ty = float(n.get("ty") or 0.0)
+            left_u, right_u = bb.left_right_unit(tx, ty)
+            u = left_u if u_name == "left" else right_u
+            half = 0.5 * float(n.get("width") or 7.0) + 0.5 * width_extra_m
+            if side in (u_name, "both"):
+                bot_lat = half + open_extra_m
+            else:
+                bot_lat = half
+            lat = bot_lat + max(0.0, foundation_m)
+            z_bot = float(n["z_road"]) - foundation_m
+            line.append(
+                (
+                    float(n["x"]) + lat * u[0],
+                    float(n["y"]) + lat * u[1],
+                    z_bot,
+                )
+            )
+        if len(line) >= 2:
+            lines.append(line)
+    return lines
+
+
+def _bake_lip_field(
+    out: np.ndarray,
+    *,
+    size: int,
+    extent: float,
+    poly: list[tuple[float, float, float]],
+    core_m: float,
+    soft_m: float,
+    max_delta_m: float,
+    curve: str,
+) -> tuple[int, int, float]:
+    """Bake a continuous lip band around a dense edge polyline.
+
+    Uses a temporary weight buffer over the local bbox and dense samples
+    along the polyline (no sparse disk gaps). Falloff via ``_smooth_weight``.
+    """
+    if len(poly) < 1 or (core_m + soft_m) < 1e-9:
+        return 0, 0, 0.0
+    xs = [p[0] for p in poly]
+    ys = [p[1] for p in poly]
+    margin = core_m + soft_m + 1.5
+    px0, py0 = _to_px_beamng(min(xs) - margin, max(ys) + margin, size, extent)
+    px1, py1 = _to_px_beamng(max(xs) + margin, min(ys) - margin, size, extent)
+    c0 = max(0, int(math.floor(min(px0, px1))))
+    c1 = min(size - 1, int(math.ceil(max(px0, px1))))
+    r0 = max(0, int(math.floor(min(py0, py1))))
+    r1 = min(size - 1, int(math.ceil(max(py0, py1))))
+    if c1 < c0 or r1 < r0:
+        return 0, 0, 0.0
+
+    h = r1 - r0 + 1
+    w = c1 - c0 + 1
+    best_w = np.zeros((h, w), dtype=np.float32)
+    best_z = np.zeros((h, w), dtype=np.float64)
+    radius = core_m + soft_m
+    rad_px = int(math.ceil(radius / max(extent / max(size - 1, 1), 1e-6))) + 2
+
+    # Dense samples: keep poly as-is (already ~0.5 m) — paint each sample disk
+    for x, y, z_tgt in poly:
+        pc, pr = _to_px_beamng(x, y, size, extent)
+        pc_i, pr_i = int(round(pc)), int(round(pr))
+        for py in range(max(r0, pr_i - rad_px), min(r1, pr_i + rad_px) + 1):
+            for px in range(max(c0, pc_i - rad_px), min(c1, pc_i + rad_px) + 1):
+                bx, by = _from_px_beamng(float(px), float(py), size, extent)
+                dist = math.hypot(bx - x, by - y)
+                wt = _smooth_weight(dist, core_m, soft_m, curve)
+                if wt <= 1e-6:
+                    continue
+                li = py - r0
+                lj = px - c0
+                if wt > best_w[li, lj]:
+                    best_w[li, lj] = wt
+                    best_z[li, lj] = z_tgt
+
+    tested = 0
+    changed = 0
+    max_abs = 0.0
+    for li in range(h):
+        for lj in range(w):
+            wt = float(best_w[li, lj])
+            if wt <= 1e-6:
+                continue
+            tested += 1
+            py = r0 + li
+            px = c0 + lj
+            z0 = float(out[py, px])
+            z_tgt = float(best_z[li, lj])
+            if abs(z0 - z_tgt) > max_delta_m:
+                continue
+            z_new = (1.0 - wt) * z0 + wt * z_tgt
+            if abs(z_new - z0) < 1e-4:
+                continue
+            out[py, px] = z_new
+            changed += 1
+            max_abs = max(max_abs, abs(z_new - z0))
+    return tested, changed, max_abs
+
+
+
+def _stamp_embed_strip_holes(
+    hole: np.ndarray,
+    *,
+    size: int,
+    extent: float,
+    lo_n: list[tuple[float, float, float, float, float]],
+    up_n: list[tuple[float, float, float, float, float]],
+    inset_m: float = 0.0,
+) -> int:
+    """Mark holemap cells whose *centers* lie strictly between lower/upper lips.
+
+    No expansion past the lips — ``inset_m`` shrinks the strip from both edges
+    so lip-touching neighbour cells stay solid (Stirn and open flank).
+    """
+    n = min(len(lo_n), len(up_n))
+    if n < 2 or hole is None:
+        return 0
+    inset = max(0.0, float(inset_m))
+    xs = [float(lo_n[i][0]) for i in range(n)] + [float(up_n[i][0]) for i in range(n)]
+    ys = [float(lo_n[i][1]) for i in range(n)] + [float(up_n[i][1]) for i in range(n)]
+    # Tight bbox — no pad (neighbour spill was the bug)
+    px0, py0 = _to_px_beamng(min(xs), max(ys), size, extent)
+    px1, py1 = _to_px_beamng(max(xs), min(ys), size, extent)
+    c0 = max(0, int(math.floor(min(px0, px1))))
+    c1 = min(size - 1, int(math.ceil(max(px0, px1))))
+    r0 = max(0, int(math.floor(min(py0, py1))))
+    r1 = min(size - 1, int(math.ceil(max(py0, py1))))
+    if c1 < c0 or r1 < r0:
+        return 0
+
+    before = int((hole > 0).sum())
+    for py in range(r0, r1 + 1):
+        for px in range(c0, c1 + 1):
+            if hole[py, px] > 0:
+                continue
+            bx, by = _from_px_beamng(float(px), float(py), size, extent)
+            inside = False
+            for i in range(n - 1):
+                lx0, ly0 = float(lo_n[i][0]), float(lo_n[i][1])
+                lx1, ly1 = float(lo_n[i + 1][0]), float(lo_n[i + 1][1])
+                ux0, uy0 = float(up_n[i][0]), float(up_n[i][1])
+                ux1, uy1 = float(up_n[i + 1][0]), float(up_n[i + 1][1])
+                mx0 = 0.5 * (lx0 + ux0)
+                my0 = 0.5 * (ly0 + uy0)
+                mx1 = 0.5 * (lx1 + ux1)
+                my1 = 0.5 * (ly1 + uy1)
+                mdx, mdy = mx1 - mx0, my1 - my0
+                mseg2 = mdx * mdx + mdy * mdy
+                if mseg2 < 1e-12:
+                    t = 0.0
+                    tb = 0.0
+                else:
+                    tb = ((bx - mx0) * mdx + (by - my0) * mdy) / mseg2
+                    if tb < -1e-3 or tb > 1.0 + 1e-3:
+                        continue
+                    t = max(0.0, min(1.0, tb))
+                lx = lx0 + t * (lx1 - lx0)
+                ly = ly0 + t * (ly1 - ly0)
+                ux = ux0 + t * (ux1 - ux0)
+                uy = uy0 + t * (uy1 - uy0)
+                sx, sy = lx - ux, ly - uy
+                sep = math.hypot(sx, sy)
+                if sep < 1e-6:
+                    continue
+                # Distance from upper lip toward lower along the connector
+                along = ((bx - ux) * sx + (by - uy) * sy) / sep
+                if along <= inset or along >= sep - inset:
+                    continue
+                inside = True
+                break
+            if inside:
+                hole[py, px] = 255
+    return int((hole > 0).sum()) - before
+
+
+# Back-compat alias
+_stamp_portal_face_holes = _stamp_embed_strip_holes
+
+
+def embed_terrain_lips_heightmap(
+    galleries: list[dict],
+    span_infos: list[dict],
+    *,
+    size: int,
+    extent: float,
+    defaults: dict,
+    elev: np.ndarray,
+    hole: np.ndarray | None = None,
+) -> tuple[np.ndarray, dict]:
+    """Planieren portal/opening lips via distance field + smooth falloff.
+
+    Lower lip → ``z_road - foundation`` (Vorfeld / free hole tiles).
+    Upper lip → ``z_roof_outer``.
+    Optional: holemap strip between portal green/magenta faces.
+    """
+    out = elev.astype(np.float64).copy()
+    info_by_oid = {info.get("objectid"): info for info in span_infos}
+    interior_ends = _interior_portal_ends(span_infos)
+    mpp = extent / max(size - 1, 1)
+    tested = 0
+    changed = 0
+    max_abs = 0.0
+    n_gal = 0
+    hole_px = 0
+    debug_lines: list[dict] = []
+
+    def _acc(t: int, c: int, m: float) -> None:
+        nonlocal tested, changed, max_abs
+        tested += t
+        changed += c
+        max_abs = max(max_abs, m)
+
+    for g in galleries:
+        if not _gallery_flag(g, defaults, "terrain_embed", False):
+            continue
+        nodes = g.get("nodes") or []
+        if len(nodes) < 2:
+            continue
+        n_gal += 1
+        info = info_by_oid.get(g.get("objectid")) or {}
+        upper_core, out_core, in_core, soft_m, foundation, lower_z = _embed_lip_radii(
+            g, defaults, mpp=mpp
+        )
+        inset_raw = g.get("terrain_embed_upper_inset_m")
+        if inset_raw is None:
+            inset_raw = defaults.get("terrain_embed_upper_inset_m")
+        upper_inset = float(inset_raw) if inset_raw is not None else float(mpp)
+        upper_inset = max(float(mpp), upper_inset)  # at least one terrain cell
+        max_delta = _gallery_num(g, defaults, "terrain_embed_max_delta_m", 12.0)
+        do_open = _gallery_flag(g, defaults, "terrain_embed_open_side", True)
+        do_portal_face = _gallery_flag(g, defaults, "terrain_embed_portal_face", False)
+        do_portal_face_upper = _gallery_flag(
+            g, defaults, "terrain_embed_portal_face_upper", False
+        )
+        do_portal_holes = _gallery_flag(g, defaults, "terrain_embed_portal_holes", False)
+        do_upper = _gallery_flag(g, defaults, "terrain_embed_upper", False)
+        if upper_core <= 1e-9:
+            do_upper = False
+        curve = str(
+            g.get("terrain_embed_curve")
+            or defaults.get("terrain_embed_curve")
+            or "smoothstep"
+        )
+        overhang = _gallery_num(g, defaults, "overhang_m", 0.6)
+        if g.get("overhang_m") is None and info.get("overhang_m") is not None:
+            overhang = float(info["overhang_m"])
+        open_extra = _gallery_num(g, defaults, "deck_open_extra_m", 0.8)
+        width_extra = _gallery_num(g, defaults, "deck_width_extra_m", 0.0)
+        open_side = str(
+            g.get("open_side") or info.get("open_side") or defaults.get("open_side") or "left"
+        ).lower().strip()
+        portal_len = _gallery_num(g, defaults, "hole_portal_length_m", 4.0)
+        out_bite = _gallery_num(g, defaults, "hole_out_bite_m", 2.0)
+
+        portal_s = info.get("portal_s") or g.get("portal_s") or []
+        if len(portal_s) >= 2:
+            s_p0, s_p1 = float(portal_s[0]), float(portal_s[1])
+        else:
+            s_p0, s_p1 = float(nodes[0]["s"]), float(nodes[-1]["s"])
+        if s_p1 < s_p0:
+            s_p0, s_p1 = s_p1, s_p0
+
+        # Longitudinal lips: open flank only — never hang/mountain side.
+        # kind: portal_door = open side at portals (hole strip); open_mid = lookout.
+        bands: list[tuple[list[dict], bool, str]] = []
+        if open_side in ("left", "right", "both"):
+            door = _portal_doorway_bands(
+                nodes,
+                {**info, "portal_s": [s_p0, s_p1]},
+                mode="portals",
+                portal_len=portal_len,
+                out_bite=out_bite,
+            )
+            if not any(len(b) >= 1 for b in door):
+                door = [
+                    _nodes_in_s_window(nodes, s_p0 - out_bite, s_p0 + portal_len),
+                    _nodes_in_s_window(nodes, s_p1 - portal_len, s_p1 + out_bite),
+                ]
+            for b in door:
+                if len(b) >= 1:
+                    bands.append((b, True, "portal_door"))
+            if do_open:
+                mid = _nodes_in_s_window(nodes, s_p0, s_p1)
+                if len(mid) >= 2:
+                    bands.append((mid, True, "open_mid"))
+
+        oid = g.get("objectid")
+        slug = bb._slug(str(g.get("name") or "gallery"))
+        for bi, (band, only_open, band_kind) in enumerate(bands):
+            found_lines = list(
+                _foundation_edge_polylines_n(
+                    band,
+                    open_side=open_side,
+                    open_extra_m=open_extra,
+                    width_extra_m=width_extra,
+                    foundation_m=foundation,
+                    only_open=only_open,
+                    step_m=1.0 if only_open else min(0.5, mpp),
+                    z_offset_m=lower_z,
+                )
+            )
+            roof_lines = list(
+                _roof_edge_polylines_n(
+                    band,
+                    open_side=open_side,
+                    overhang_m=overhang,
+                    open_extra_m=open_extra,
+                    width_extra_m=width_extra,
+                    only_open=only_open,
+                    step_m=1.0 if only_open else min(0.5, mpp),
+                    foundation_m=foundation,
+                    inset_m=upper_inset,
+                )
+            )
+            for li, line_n in enumerate(found_lines):
+                _acc(
+                    *_bake_lip_field_sided(
+                        out,
+                        size=size,
+                        extent=extent,
+                        poly=line_n,
+                        out_core_m=out_core,
+                        in_core_m=in_core,
+                        soft_m=soft_m,
+                        max_delta_m=max_delta,
+                        curve=curve,
+                    )
+                )
+                debug_lines.append(
+                    {
+                        "name": f"embed_found_{slug}_{oid}_b{bi}_s{li}",
+                        "objectid": oid,
+                        "kind": "foundation_outer",
+                        "points": [(p[0], p[1], p[2]) for p in line_n],
+                    }
+                )
+            for li, roof_n in enumerate(roof_lines):
+                debug_lines.append(
+                    {
+                        "name": f"embed_roof_{slug}_{oid}_b{bi}_s{li}",
+                        "objectid": oid,
+                        "kind": "roof_outer",
+                        "points": [(p[0], p[1], p[2]) for p in roof_n],
+                    }
+                )
+                if do_upper:
+                    _acc(
+                        *_bake_lip_field_sided(
+                            out,
+                            size=size,
+                            extent=extent,
+                            poly=roof_n,
+                            out_core_m=upper_core,
+                            in_core_m=0.0,
+                            soft_m=soft_m,
+                            max_delta_m=max_delta,
+                            curve=curve,
+                        )
+                    )
+            # Open flank: hole strip between green/magenta along full lookout
+            # (portal_door + open_mid). Hang side never.
+            if (
+                do_portal_holes
+                and hole is not None
+                and band_kind in ("portal_door", "open_mid")
+            ):
+                for lo_n, up_n in zip(found_lines, roof_lines):
+                    hole_px += _stamp_embed_strip_holes(
+                        hole,
+                        size=size,
+                        extent=extent,
+                        lo_n=lo_n,
+                        up_n=up_n,
+                        inset_m=0.05 * mpp,
+                    )
+
+        # Portal faces (cross-road lintel) — opt-in; default off
+        if do_portal_face:
+            for s_p, into, end_tag in (
+                (s_p0, -1.0, "s0"),
+                (s_p1, +1.0, "s1"),
+            ):
+                if (oid, end_tag) in interior_ends:
+                    continue
+                n = _node_nearest_s(nodes, s_p)
+                face_out = max(out_bite * 0.5, out_core * 0.5, mpp)
+                lo_n = _portal_face_polyline_n(
+                    n,
+                    into_sign=into,
+                    out_m=face_out,
+                    open_extra_m=open_extra,
+                    width_extra_m=width_extra,
+                    foundation_m=foundation,
+                    overhang_m=overhang,
+                    z_offset_m=lower_z,
+                )
+                _acc(
+                    *_bake_lip_field_sided(
+                        out,
+                        size=size,
+                        extent=extent,
+                        poly=lo_n,
+                        out_core_m=out_core,
+                        in_core_m=in_core,
+                        soft_m=soft_m,
+                        max_delta_m=max_delta,
+                        curve=curve,
+                    )
+                )
+                debug_lines.append(
+                    {
+                        "name": f"embed_found_{slug}_{oid}_face{'0' if into < 0 else '1'}",
+                        "objectid": oid,
+                        "kind": "foundation_portal_face",
+                        "points": [(p[0], p[1], p[2]) for p in lo_n],
+                    }
+                )
+                need_up = (do_portal_face_upper and do_upper and upper_core > 1e-9) or (
+                    do_portal_holes and hole is not None
+                )
+                up_n = None
+                if need_up:
+                    up_n = _portal_face_upper_polyline_n(
+                        n,
+                        into_sign=into,
+                        out_m=face_out,
+                        open_extra_m=open_extra,
+                        width_extra_m=width_extra,
+                        foundation_m=foundation,
+                        overhang_m=overhang,
+                    )
+                if do_portal_face_upper and do_upper and upper_core > 1e-9 and up_n:
+                    debug_lines.append(
+                        {
+                            "name": f"embed_roof_{slug}_{oid}_face{'0' if into < 0 else '1'}",
+                            "objectid": oid,
+                            "kind": "roof_portal_face",
+                            "points": [(p[0], p[1], p[2]) for p in up_n],
+                        }
+                    )
+                    _acc(
+                        *_bake_lip_field_sided(
+                            out,
+                            size=size,
+                            extent=extent,
+                            poly=up_n,
+                            out_core_m=0.0,
+                            in_core_m=upper_core,
+                            soft_m=soft_m,
+                            max_delta_m=max_delta,
+                            curve=curve,
+                        )
+                    )
+                if do_portal_holes and hole is not None:
+                    # Carriageway-only span: bake/debug lips reach into the hillside
+                    # (foundation+overhang); punching that full strip deleted slope
+                    # cells that appear "above" the visible upper lip.
+                    half_road = (
+                        0.5 * float(n.get("width") or 7.0) + 0.5 * width_extra
+                    )
+                    hole_lat = half_road + 0.5 * mpp
+                    lo_h = _portal_face_polyline_n(
+                        n,
+                        into_sign=into,
+                        out_m=face_out,
+                        open_extra_m=0.0,
+                        width_extra_m=width_extra,
+                        foundation_m=foundation,
+                        overhang_m=0.0,
+                        z_offset_m=lower_z,
+                        lat_span_m=hole_lat,
+                    )
+                    up_h = _portal_face_upper_polyline_n(
+                        n,
+                        into_sign=into,
+                        out_m=face_out,
+                        open_extra_m=0.0,
+                        width_extra_m=width_extra,
+                        foundation_m=foundation,
+                        overhang_m=0.0,
+                        lat_span_m=hole_lat,
+                    )
+                    hole_px += _stamp_embed_strip_holes(
+                        hole,
+                        size=size,
+                        extent=extent,
+                        lo_n=lo_h,
+                        up_n=up_h,
+                        inset_m=0.35 * mpp,
+                    )
+
+    stats = {
+        "galleries": n_gal,
+        "tested": tested,
+        "changed": changed,
+        "max_delta_m": round(max_abs, 3),
+        "method": "terrain_embed_distance_field",
+        "curve": str(defaults.get("terrain_embed_curve") or "smoothstep"),
+        "upper_enabled": bool(defaults.get("terrain_embed_upper", False)),
+        "portal_face": bool(defaults.get("terrain_embed_portal_face", False)),
+        "portal_face_upper": bool(
+            defaults.get("terrain_embed_portal_face_upper", False)
+        ),
+        "portal_holes": bool(defaults.get("terrain_embed_portal_holes", False)),
+        "portal_hole_pixels": int(hole_px),
+        "upper_m": defaults.get("terrain_embed_upper_m"),
+        "lower_m": defaults.get("terrain_embed_lower_m"),
+        "in_m": defaults.get("terrain_embed_in_m"),
+        "soft_m": float(defaults.get("terrain_embed_soft_m") or 1.0),
+        "rings": int(defaults.get("terrain_embed_rings") or 2),
+        "foundation_m": float(defaults.get("terrain_embed_foundation_m") or 1.0),
+        "lower_z_m": float(defaults.get("terrain_embed_lower_z_m") or 0.0),
+        "debug_foundation_lines": debug_lines,
+    }
+    if n_gal:
+        in_show = defaults.get("terrain_embed_in_m")
+        in_lbl = in_show if in_show is not None else "≈foundation"
+        hole_note = f", portal_holes={hole_px}px" if hole_px else ""
+        print(
+            f"Terrain embed: galleries={n_gal} tested={tested} changed={changed} "
+            f"max_delta={max_abs:.3f}m (lower out={defaults.get('terrain_embed_lower_m')} "
+            f"in={in_lbl}"
+            f"{'+upper' if defaults.get('terrain_embed_upper') else ''}"
+            f"{hole_note}, "
+            f"curve={stats['curve']})"
+        )
+    return out, stats
+
+
+def write_terrain_embed_assets(
+    proc: Path,
+    level_name: str,
+    *,
+    elev: np.ndarray,
+    max_height_m: float,
+    hole: np.ndarray | None = None,
+    tag: str = "gallery_embed",
+) -> Path:
+    """Write lip-baked heightmap and sync BeamNG import/."""
+    size = int(elev.shape[0])
+    u16 = np.clip(
+        np.round(elev / max(max_height_m, 1e-6) * 65535.0),
+        0,
+        65535,
+    ).astype(np.uint16)
+    carved_name = f"heightmap_{size}_{tag}.png"
+    Image.fromarray(u16, mode="I;16").save(proc / carved_name)
+
+    preset_path = proc / "terrainPreset.json"
+    preset: dict = {}
+    if preset_path.is_file():
+        try:
+            preset = json.loads(preset_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            preset = {}
+    preset.setdefault("type", "TerrainData")
+    preset.setdefault("name", "theTerrain")
+    preset["heightScale"] = float(max_height_m)
+    preset["heightMapPath"] = f"/levels/{level_name}/import/heightmap_{size}.png"
+    preset["holeMapPath"] = f"/levels/{level_name}/import/theTerrain_holemap.png"
+    preset_path.write_text(json.dumps(preset, indent=2), encoding="utf-8")
+
+    user_import = USER_LEVELS / level_name / "import"
+    if user_import.parent.is_dir():
+        user_import.mkdir(parents=True, exist_ok=True)
+        Image.fromarray(u16, mode="I;16").save(user_import / f"heightmap_{size}.png")
+        (user_import / "terrainPreset.json").write_text(
+            json.dumps(preset, indent=2), encoding="utf-8"
+        )
+        if hole is not None:
+            Image.fromarray(hole, mode="L").save(user_import / "theTerrain_holemap.png")
+            Image.fromarray(hole, mode="L").save(user_import / "holeMap.png")
+        print(f"Synced terrain-embed heightmap -> {user_import}")
+        print("Re-import terrainPreset.json in World Editor (heightmap changed).")
+    return proc / carved_name
+
+
 def load_terrain_z_slope(site: dict):
     """Return (z_at(bx,by), slope_deg_at(bx,by)) from processed heightmap."""
     from PIL import Image
@@ -3136,6 +4598,295 @@ def ensure_debug_centerline_material(user_level: Path, level_name: str) -> None:
     mats_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 
 
+def make_embed_debug_meshroad(
+    name: str,
+    points: list[tuple[float, float, float]],
+    *,
+    material: str,
+    lift_m: float = 0.0,
+    width_m: float = 0.25,
+) -> dict:
+    """Thin MeshRoad debug lip. Parent: gallery_embed_debug. lift_m must stay 0."""
+    mesh_nodes = []
+    for i, (x, y, z) in enumerate(points):
+        if i + 1 < len(points):
+            tx = points[i + 1][0] - x
+            ty = points[i + 1][1] - y
+        elif i > 0:
+            tx = x - points[i - 1][0]
+            ty = y - points[i - 1][1]
+        else:
+            tx, ty = 1.0, 0.0
+        _ = (tx, ty)
+        mesh_nodes.append(
+            [
+                round(float(x), 3),
+                round(float(y), 3),
+                round(float(z) + lift_m, 3),
+                round(width_m, 2),
+                0.05,
+                0.0,
+                0.0,
+                1.0,
+            ]
+        )
+    return {
+        "name": name,
+        "class": "MeshRoad",
+        "__parent": "gallery_embed_debug",
+        "topMaterial": material,
+        "bottomMaterial": material,
+        "sideMaterial": material,
+        "textureLength": 4,
+        "breakAngle": 3,
+        "widthSubdivisions": 0,
+        "nodes": mesh_nodes,
+    }
+
+
+def make_embed_foundation_meshroad(
+    name: str,
+    points: list[tuple[float, float, float]],
+    *,
+    lift_m: float = 0.0,
+    width_m: float = 0.25,
+) -> dict:
+    """Thin green MeshRoad on the foundation outer lip (debug)."""
+    return make_embed_debug_meshroad(
+        name, points, material="GalleryEmbedFound", lift_m=lift_m, width_m=width_m
+    )
+
+
+def ensure_embed_debug_materials(user_level: Path, level_name: str) -> None:
+    mats_path = user_level / "art" / "road" / "main.materials.json"
+    mats_path.parent.mkdir(parents=True, exist_ok=True)
+    data: dict = {}
+    if mats_path.is_file() and mats_path.stat().st_size:
+        try:
+            data = json.loads(mats_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            data = {}
+    data["GalleryEmbedFound"] = {
+        "name": "GalleryEmbedFound",
+        "mapTo": "GalleryEmbedFound",
+        "class": "Material",
+        "persistentId": "eeb06c11-0000-4e1e-9c11-0000eeb06c11",
+        "Stages": [
+            {
+                "baseColorFactor": [0.1, 1.0, 0.25, 1.0],
+                "roughnessFactor": 0.6,
+                "emissiveFactor": [0.05, 0.45, 0.1],
+            },
+            {},
+            {},
+            {},
+        ],
+        "materialTag0": "RoadAndPath",
+        "materialTag1": "beamng",
+        "version": 1.5,
+    }
+    # Magenta — roof outer lip (upper bake target); strong emissive for WE visibility
+    data["GalleryEmbedRoof"] = {
+        "name": "GalleryEmbedRoof",
+        "mapTo": "GalleryEmbedRoof",
+        "class": "Material",
+        "persistentId": "eeb06c22-0000-4e1e-9c22-0000eeb06c22",
+        "Stages": [
+            {
+                "baseColorFactor": [1.0, 0.0, 1.0, 1.0],
+                "roughnessFactor": 0.4,
+                "emissiveFactor": [1.0, 0.0, 0.9],
+            },
+            {},
+            {},
+            {},
+        ],
+        "materialTag0": "RoadAndPath",
+        "materialTag1": "beamng",
+        "version": 1.5,
+    }
+    mats_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+
+def ensure_embed_foundation_material(user_level: Path, level_name: str) -> None:
+    ensure_embed_debug_materials(user_level, level_name)
+
+# Core + optional child folders under level_objects; used to heal wiped NDJSON lists.
+_LEVEL_OBJECTS_CORE = (
+    ("terrain", {"name": "terrain", "class": "SimGroup", "__parent": "level_objects"}),
+    (
+        "vegetation",
+        {
+            "name": "vegetation",
+            "class": "SimGroup",
+            "persistentId": "c520cc7b-0b9e-4ac5-8afb-6999aada3e25",
+            "__parent": "level_objects",
+        },
+    ),
+    (
+        "Water",
+        {
+            "name": "Water",
+            "class": "SimGroup",
+            "persistentId": "c1f4830d-6f16-4679-955e-6def276090ed",
+            "__parent": "level_objects",
+        },
+    ),
+    (
+        "sky_and_sun",
+        {
+            "name": "sky_and_sun",
+            "class": "SimGroup",
+            "persistentId": "ac783c6a-45b2-46eb-9db2-2320356db9a9",
+            "__parent": "level_objects",
+        },
+    ),
+)
+
+
+def _register_level_objects_simgroup(user_level: Path, name: str) -> None:
+    """Ensure a SimGroup entry exists in level_objects/items.level.json (NDJSON)."""
+    lo_dir = user_level / "main" / "MissionGroup" / "level_objects"
+    lo_items = lo_dir / "items.level.json"
+    lines: list[str] = []
+    if lo_items.is_file() and lo_items.stat().st_size:
+        lines = [ln for ln in lo_items.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    names: set[str | None] = set()
+    kept: list[str] = []
+    for ln in lines:
+        try:
+            obj = json.loads(ln)
+        except json.JSONDecodeError:
+            # Drop leftover pretty-print / array fragments from older broken writes.
+            continue
+        if not isinstance(obj, dict):
+            continue
+        n = obj.get("name")
+        if n in names:
+            continue
+        names.add(n)
+        kept.append(json.dumps(obj, separators=(",", ":")))
+
+    # Heal missing core groups if their folders exist (previous buggy writes wiped them).
+    for folder, obj in _LEVEL_OBJECTS_CORE:
+        if obj["name"] in names:
+            continue
+        if (lo_dir / folder).is_dir():
+            kept.insert(
+                0 if folder == "terrain" else len(kept),
+                json.dumps(obj, separators=(",", ":")),
+            )
+            names.add(obj["name"])
+            print(f"Restored SimGroup {obj['name']} under level_objects")
+
+    for folder in ("bridges", "roads", "guardrails", "galleries"):
+        if folder in names:
+            continue
+        if (lo_dir / folder).is_dir():
+            kept.append(
+                json.dumps(
+                    {
+                        "name": folder,
+                        "class": "SimGroup",
+                        "__parent": "level_objects",
+                        "enabled": "1",
+                    },
+                    separators=(",", ":"),
+                )
+            )
+            names.add(folder)
+            print(f"Restored SimGroup {folder} under level_objects")
+
+    if name not in names:
+        kept.append(
+            json.dumps(
+                {
+                    "name": name,
+                    "class": "SimGroup",
+                    "__parent": "level_objects",
+                    "enabled": "1",
+                },
+                separators=(",", ":"),
+            )
+        )
+        print(f"Registered SimGroup {name} under level_objects")
+    lo_items.parent.mkdir(parents=True, exist_ok=True)
+    with lo_items.open("w", encoding="utf-8", newline="\n") as f:
+        for ln in kept:
+            f.write(ln + "\n")
+
+
+def clear_embed_foundation_debug(level_name: str) -> None:
+    """Remove previous foundation-lip debug MeshRoads (SimGroup gallery_embed_debug)."""
+    user_level = USER_LEVELS / level_name
+    group_dir = (
+        user_level / "main" / "MissionGroup" / "level_objects" / "gallery_embed_debug"
+    )
+    items = group_dir / "items.level.json"
+    if items.is_file():
+        items.write_text("", encoding="utf-8")
+        print(f"Cleared gallery_embed_debug -> {items}")
+
+
+def inject_embed_foundation_debug(
+    level_name: str,
+    lines: list[dict],
+) -> Path | None:
+    """Write/replace embed lip debug MeshRoads under gallery_embed_debug.
+
+    kind foundation_outer → green; roof_outer / roof_portal_face → magenta.
+    Z is exact bake target (lift_m=0).
+    """
+    user_level = USER_LEVELS / level_name
+    if not user_level.is_dir():
+        return None
+    group_dir = (
+        user_level / "main" / "MissionGroup" / "level_objects" / "gallery_embed_debug"
+    )
+    group_dir.mkdir(parents=True, exist_ok=True)
+    items_path = group_dir / "items.level.json"
+    if not lines:
+        items_path.write_text("", encoding="utf-8")
+        print("gallery_embed_debug: no lines (cleared)")
+        return items_path
+
+    ensure_embed_debug_materials(user_level, level_name)
+    entries = []
+    n_found = 0
+    n_roof = 0
+    n_face = 0
+    for line in lines:
+        pts = line.get("points") or []
+        if len(pts) < 2:
+            continue
+        kind = str(line.get("kind") or "foundation_outer")
+        if "portal_face" in kind or "_face" in str(line.get("name") or ""):
+            n_face += 1
+        if kind.startswith("roof"):
+            mat = "GalleryEmbedRoof"
+            width = 0.8  # thicker — often coplanar above green / near shell
+            n_roof += 1
+        else:
+            mat = "GalleryEmbedFound"
+            width = 0.3
+            n_found += 1
+        entries.append(
+            make_embed_debug_meshroad(
+                str(line["name"]), pts, material=mat, lift_m=0.0, width_m=width
+            )
+        )
+    with items_path.open("w", encoding="utf-8", newline="\n") as f:
+        for e in entries:
+            f.write(json.dumps(e, separators=(",", ":")) + "\n")
+
+    _register_level_objects_simgroup(user_level, "gallery_embed_debug")
+    print(
+        f"Injected {len(entries)} embed debug MeshRoads "
+        f"(green={n_found}, magenta={n_roof}, portal_face≈{n_face}) -> {items_path}"
+    )
+    return items_path
+
+
 def inject_debug_centerlines(level_name: str, centerlines: list[dict]) -> Path | None:
     user_level = USER_LEVELS / level_name
     if not user_level.is_dir():
@@ -3237,6 +4988,11 @@ def main() -> None:
         action="store_true",
         help="Only rebuild hole map / meta (skip DAE + TSStatic inject)",
     )
+    ap.add_argument(
+        "--skip-holemap",
+        action="store_true",
+        help="Do not read/write/sync holemap (keep existing BeamNG import hole maps)",
+    )
     args = ap.parse_args()
 
     site = load_site()
@@ -3330,6 +5086,7 @@ def main() -> None:
         if cfg.get("enabled") is False:
             print(f"skip oid={feat.get('objectid')} (enabled: false)")
             continue
+        feat = apply_gallery_span_trims(feat, cfg, site, sc)
         if feat["kind"] == "tunnel" and cfg.get("open_side") == defaults.get("open_side"):
             if not any(
                 _match_objectid((it.get("match") or {}).get("objectid"), feat)
@@ -3632,6 +5389,28 @@ def main() -> None:
                 "approach_conform_pad_m": cfg.get("approach_conform_pad_m"),
                 "approach_conform_falloff_m": cfg.get("approach_conform_falloff_m"),
                 "approach_conform_sink_m": cfg.get("approach_conform_sink_m"),
+                "terrain_embed": cfg.get("terrain_embed"),
+                "terrain_embed_rings": cfg.get("terrain_embed_rings"),
+                "terrain_embed_upper_m": cfg.get("terrain_embed_upper_m"),
+                "terrain_embed_upper_inset_m": cfg.get("terrain_embed_upper_inset_m"),
+                "terrain_embed_lower_m": cfg.get("terrain_embed_lower_m"),
+                "terrain_embed_in_m": cfg.get("terrain_embed_in_m"),
+                "terrain_embed_soft_m": cfg.get("terrain_embed_soft_m"),
+                "terrain_embed_curve": cfg.get("terrain_embed_curve"),
+                "terrain_embed_foundation_m": cfg.get("terrain_embed_foundation_m"),
+                "terrain_embed_lower_z_m": cfg.get("terrain_embed_lower_z_m"),
+                "terrain_embed_max_delta_m": cfg.get("terrain_embed_max_delta_m"),
+                "terrain_embed_open_side": cfg.get("terrain_embed_open_side"),
+                "terrain_embed_portal_face": cfg.get("terrain_embed_portal_face"),
+                "terrain_embed_portal_face_upper": cfg.get(
+                    "terrain_embed_portal_face_upper"
+                ),
+                "terrain_embed_portal_holes": cfg.get("terrain_embed_portal_holes"),
+                "terrain_embed_debug": cfg.get("terrain_embed_debug"),
+                "terrain_embed_upper": cfg.get("terrain_embed_upper"),
+                "overhang_m": cfg.get("overhang_m"),
+                "deck_open_extra_m": cfg.get("deck_open_extra_m"),
+                "roof_thickness_m": cfg.get("roof_thickness_m"),
                 "profile": info.get("profile") or info.get("z_profile"),
                 "shape": shape_vfs,
                 "origin": [round(origin[0], 3), round(origin[1], 3), round(origin[2], 3)],
@@ -3663,56 +5442,107 @@ def main() -> None:
     size = int(bng.get("mask_size") or 512)
     extent = float(sc.terrain_extent)
     _ = (extent, z_terrain, slope_at)
-    # Preserve manual holemap if present; otherwise keep empty.
+    # Holemap: portal-face auto holes always start from fully visible terrain.
+    # Manual/existing maps are ignored while terrain_embed_portal_holes is on.
     hole_path = proc / "theTerrain_holemap.png"
     manual = proc / "theTerrain_holemap_manual.png"
-    if manual.is_file():
-        hole = np.asarray(Image.open(manual), dtype=np.uint8)
+    hole: np.ndarray | None = None
+    want_portal_holes = bool(defaults.get("terrain_embed_portal_holes"))
+    if want_portal_holes:
+        hole = np.zeros((size, size), dtype=np.uint8)
+        print(
+            "Portal holes: empty holemap (fully visible terrain); "
+            "ignoring manual/existing hole maps"
+        )
+    elif args.skip_holemap:
+        print("Skipping holemap read/write (--skip-holemap)")
+    elif manual.is_file():
+        hole = np.asarray(Image.open(manual), dtype=np.uint8).copy()
         if hole.ndim == 3:
-            hole = hole[..., 0]
+            hole = hole[..., 0].copy()
         print(f"Keeping manual holemap ({int((hole > 0).sum())} holes) from {manual.name}")
     elif hole_path.is_file():
-        hole = np.asarray(Image.open(hole_path), dtype=np.uint8)
+        hole = np.asarray(Image.open(hole_path), dtype=np.uint8).copy()
         if hole.ndim == 3:
-            hole = hole[..., 0]
+            hole = hole[..., 0].copy()
         if int((hole > 0).sum()) == 0:
             hole = np.zeros((size, size), dtype=np.uint8)
         else:
             print(f"Keeping existing holemap ({int((hole > 0).sum())} holes)")
     else:
         hole = np.zeros((size, size), dtype=np.uint8)
-    if hole.shape[0] != size or hole.shape[1] != size:
+    if hole is not None and (hole.shape[0] != size or hole.shape[1] != size):
         hole = np.zeros((size, size), dtype=np.uint8)
-    hole_path = write_hole_assets(proc, level_name, hole)
-    # Optional: bake approach heightmap to MeshRoad Z (flush seam, no 2–5cm lips)
+    elif hole is not None and (not hole.flags.writeable):
+        hole = np.array(hole, dtype=np.uint8, copy=True)
+    if hole is not None and (want_portal_holes or not args.skip_holemap):
+        t_hole = time.perf_counter()
+        hole_path = write_hole_assets(proc, level_name, hole)
+        print(f"Holemap sync {time.perf_counter() - t_hole:.2f}s -> {hole_path}")
+    # Optional heightmap bakes: approach conform (lips) then terrain_embed (portal free tiles)
     any_conform = any(
-        bool(g.get("approach_conform", defaults.get("approach_conform")))
-        for g in centerlines
+        _gallery_flag(g, defaults, "approach_conform", False) for g in centerlines
     ) or bool(defaults.get("approach_conform"))
-    if any_conform and centerlines:
+    any_embed = any(
+        _gallery_flag(g, defaults, "terrain_embed", False) for g in centerlines
+    ) or bool(defaults.get("terrain_embed"))
+    conf_stats = None
+    embed_stats = None
+    if (any_conform or any_embed) and centerlines:
         hm_path = proc / f"heightmap_{size}.png"
         meta_hm = json.loads((proc / "heightmap_meta.json").read_text(encoding="utf-8"))
         max_h = float(meta_hm["max_height_m"])
-        elev0 = np.asarray(Image.open(hm_path), dtype=np.float64) / 65535.0 * max_h
-        elev1, conf_stats = conform_approach_heightmap(
-            centerlines,
-            span_infos,
-            size=size,
-            extent=extent,
-            defaults=defaults,
-            elev=elev0,
-        )
-        conf_path = write_approach_conform_assets(
+        elev = np.asarray(Image.open(hm_path), dtype=np.float64) / 65535.0 * max_h
+        if any_conform:
+            t0 = time.perf_counter()
+            elev, conf_stats = conform_approach_heightmap(
+                centerlines,
+                span_infos,
+                size=size,
+                extent=extent,
+                defaults=defaults,
+                elev=elev,
+            )
+            print(f"approach_conform bake {time.perf_counter() - t0:.2f}s")
+        if any_embed:
+            t0 = time.perf_counter()
+            elev, embed_stats = embed_terrain_lips_heightmap(
+                centerlines,
+                span_infos,
+                size=size,
+                extent=extent,
+                defaults=defaults,
+                elev=elev,
+                hole=hole,
+            )
+            print(f"terrain_embed bake {time.perf_counter() - t0:.2f}s")
+            dbg_lines = list(embed_stats.pop("debug_foundation_lines", []) or [])
+            if _gallery_flag({}, defaults, "terrain_embed_debug", False) or any(
+                _gallery_flag(g, defaults, "terrain_embed_debug", False) for g in centerlines
+            ):
+                inject_embed_foundation_debug(level_name, dbg_lines)
+            else:
+                clear_embed_foundation_debug(level_name)
+            embed_stats["debug_foundation_line_count"] = len(dbg_lines)
+            if hole is not None and want_portal_holes:
+                hole_path = write_hole_assets(proc, level_name, hole)
+                n_h = int((hole > 0).sum())
+                print(
+                    f"Portal-face holemap: +{embed_stats.get('portal_hole_pixels', 0)} px "
+                    f"(total {n_h}) -> {hole_path}"
+                )
+        tag = "gallery_embed" if any_embed else "gallery_approach"
+        baked_path = write_terrain_embed_assets(
             proc,
             level_name,
-            elev=elev1,
+            elev=elev,
             max_height_m=max_h,
             hole=hole,
+            tag=tag,
         )
-        print(f"Wrote {conf_path}")
+        print(f"Wrote {baked_path}")
     else:
-        conf_stats = None
-        # Restore pristine DGM heightmap (undo prior approach_conform bake).
+        # Restore pristine DGM heightmap (undo prior approach_conform / embed bake).
         hm_src = proc / f"heightmap_{size}.png"
         user_import = USER_LEVELS / level_name / "import"
         if hm_src.is_file() and user_import.parent.is_dir():
@@ -3720,26 +5550,37 @@ def main() -> None:
             shutil.copy2(hm_src, user_import / f"heightmap_{size}.png")
             print(
                 f"Restored DGM heightmap -> {user_import / f'heightmap_{size}.png'} "
-                "(re-import terrainPreset.json if previous conform was loaded)"
+                "(re-import terrainPreset.json if previous bake was loaded)"
             )
-    coverage = float(hole.mean()) / 255.0 * 100.0
-    print(f"Wrote {hole_path} coverage={coverage:.3f}% (manual/preserve workflow)")
+        clear_embed_foundation_debug(level_name)
+    if hole is not None:
+        coverage = float(hole.mean()) / 255.0 * 100.0
+        print(f"Wrote {hole_path} coverage={coverage:.3f}% (manual/preserve workflow)")
+    else:
+        coverage = None
+        print("Holemap not updated (--skip-holemap)")
 
     meta = {
         "count": len(centerlines),
         "level": level_name,
-        "defaults": {k: defaults[k] for k in GALLERY_SCALAR_KEYS},
+        "defaults": {k: defaults[k] for k in GALLERY_SCALAR_KEYS if k in defaults},
         "style_defaults": defaults["style"],
         "materials_defaults": defaults["materials"],
         "spans": span_infos,
         "centerlines_file": str(cl_path.relative_to(ROOT)).replace("\\", "/"),
-        "holemap": str(hole_path.relative_to(ROOT)).replace("\\", "/"),
-        "hole_coverage_pct": round(coverage, 3),
+        "holemap": (
+            str(hole_path.relative_to(ROOT)).replace("\\", "/")
+            if hole is not None
+            else None
+        ),
+        "hole_coverage_pct": round(coverage, 3) if coverage is not None else None,
+        "skip_holemap": bool(args.skip_holemap),
         "approach_conform": conf_stats,
+        "terrain_embed": embed_stats,
         "note": (
-            "approach_mode=marry: MeshRoad follows DGM outside portals "
-            "(skinned to terrain); Hermite only inside + short portal_ease. "
-            "Holemap preserved. Re-import terrainPreset if heightmap was restored."
+            "terrain_embed: portal/opening lip bake for free holemap tiles; "
+            "approach_conform: MeshRoad approach flush. "
+            "Re-import terrainPreset if heightmap was baked/restored."
         ),
     }
     meta_path = proc / "galleries_meta.json"

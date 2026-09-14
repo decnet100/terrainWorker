@@ -60,6 +60,10 @@ BRIDGE_SCALAR_KEYS = (
     "approach_conform_falloff_m",
     "approach_conform_sink_m",
     "approach_conform_max_delta_m",  # skip gorge / cliffs (|ΔZ| larger than this)
+    "terrain_embed",  # reserved: abutment lip bake (galleries implement first)
+    "terrain_embed_rings",
+    "terrain_embed_foundation_m",
+    "terrain_embed_max_delta_m",
     "profile",  # hermite (legacy) | road_spline
     "centerline",  # osm | strassennetz
     "solid_run_m",
@@ -71,15 +75,22 @@ BRIDGE_SCALAR_KEYS = (
 
 
 def _structure_kind(props: dict) -> str | None:
+    """Classify Kunstbaute; honors YAML gip_extra override when present."""
+    extra = str(props.get("_autoroad_gip_extra_kind") or "").strip().lower()
+    if extra in {"bridge", "gallery", "tunnel", "culvert", "structure"}:
+        return extra
     name = str(props.get("KUNSTBAUTEN") or "").strip()
     bez = str(props.get("OBJEKTBEZEICHNUNG") or "").lower()
     if not name or name.lower() == "none":
         return None
-    if "galerie" in name.lower() or "tunnel" in bez:
-        return "gallery" if "galerie" in name.lower() else "tunnel"
-    if "brücke" in name.lower() or "bruecke" in name.lower() or "brücke" in bez or "bruecke" in bez:
+    nl = name.lower()
+    if "galerie" in nl:
+        return "gallery"
+    if "tunnel" in nl or "unterführung" in nl or "unterfuehrung" in nl or "tunnel" in bez:
+        return "tunnel"
+    if "brücke" in nl or "bruecke" in nl or "brücke" in bez or "bruecke" in bez:
         return "bridge"
-    if "durchlass" in name.lower():
+    if "durchlass" in nl:
         return "culvert"
     return "structure"
 
@@ -1356,6 +1367,18 @@ def default_bridge_cfg(bng: dict) -> tuple[dict, list]:
             raw.get("approach_conform_max_delta_m")
             if raw.get("approach_conform_max_delta_m") is not None
             else 1.0
+        ),
+        "terrain_embed": bool(raw.get("terrain_embed", False)),
+        "terrain_embed_rings": int(raw.get("terrain_embed_rings") or 2),
+        "terrain_embed_foundation_m": float(
+            raw.get("terrain_embed_foundation_m")
+            if raw.get("terrain_embed_foundation_m") is not None
+            else 1.0
+        ),
+        "terrain_embed_max_delta_m": float(
+            raw.get("terrain_embed_max_delta_m")
+            if raw.get("terrain_embed_max_delta_m") is not None
+            else 12.0
         ),
         "profile": str(raw.get("profile") or "hermite"),
         "centerline": str(raw.get("centerline") or "osm"),

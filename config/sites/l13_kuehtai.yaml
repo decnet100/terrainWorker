@@ -159,6 +159,7 @@ beamng:
       portal_collar_rings: 4
       debug_centerline: false    # MeshRoad hat immer Collision — nur bei Bedarf + hoch gehoben
       blend_open_dgm: true
+      terrain_embed_lower_z_m: 2.0
       style:
         shell: gallery
         columns: rect          # none | rect — Brüstung + Säulen offene Seite
