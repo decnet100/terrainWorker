@@ -53,6 +53,14 @@ def _cfg(bng: dict) -> dict:
             )
         ],
         "min_length_m": float(defaults.get("min_length_m") or 8.0),
+        # Merge OSM way stubs that touch end-to-end (degree-2 only) so short
+        # connectors below min_length_m do not leave asphalt gaps.
+        "stitch_abutting": bool(defaults.get("stitch_abutting", True)),
+        "stitch_tol_m": float(
+            defaults.get("stitch_tol_m")
+            if defaults.get("stitch_tol_m") is not None
+            else 1.25
+        ),
         # Cap chord length before DecalRoad (OSM often has 50–80 m straights into
         # curves; improvedSpline then tears mid-ribbon). 0 = no densify.
         "densify_max_step_m": float(
@@ -287,6 +295,156 @@ def _slice_nodes(
     return cleaned if len(cleaned) >= 2 else []
 
 
+def _xy(n) -> tuple[float, float]:
+    return float(n[0]), float(n[1])
+
+
+def stitch_abutting_roads(roads: list[dict], cfg: dict) -> list[dict]:
+    """Merge degree-2 end-to-end OSM fragments of the same highway class.
+
+    OSM often inserts 3–6 m connector ways between longer primary segments.
+    Those fall under ``min_length_m`` and leave visible asphalt gaps (e.g. GIP
+    2169 / Fernpass Rast). Only merge when each endpoint has a unique partner
+    within ``stitch_tol_m`` (skips T-junctions / crossings).
+    """
+    if not cfg.get("stitch_abutting", True):
+        return roads
+    tol = max(0.0, float(cfg.get("stitch_tol_m") or 0.0))
+    if tol <= 0:
+        return roads
+    hwy_ok = {str(h).lower() for h in (cfg.get("highways") or [])}
+    tol2 = tol * tol
+
+    # Work list: mutable polylines eligible for asphalt.
+    work: list[dict] = []
+    passthrough: list[dict] = []
+    for r in roads:
+        hwy = str(r.get("highway") or "").lower()
+        pts = list(r.get("pts") or r.get("nodes") or [])
+        if hwy_ok and hwy not in hwy_ok:
+            passthrough.append(r)
+            continue
+        if len(pts) < 2:
+            passthrough.append(r)
+            continue
+        work.append(
+            {
+                "id": r.get("id"),
+                "name": r.get("name"),
+                "highway": r.get("highway"),
+                "pts": [[float(p[0]), float(p[1]), float(p[2]), float(p[3])] for p in pts],
+                "osm_ids": [r.get("id")],
+            }
+        )
+
+    def ends(poly: dict) -> list[tuple[str, tuple[float, float]]]:
+        pts = poly["pts"]
+        return [("s", _xy(pts[0])), ("e", _xy(pts[-1]))]
+
+    merges = 0
+    changed = True
+    while changed:
+        changed = False
+        # endpoint -> list of (poly_idx, which)
+        buckets: dict[tuple[int, int], list[tuple[int, str]]] = {}
+        coords: list[tuple[int, str, float, float]] = []
+        for pi, poly in enumerate(work):
+            for which, (x, y) in ends(poly):
+                coords.append((pi, which, x, y))
+                key = (int(round(x / tol)), int(round(y / tol)))
+                buckets.setdefault(key, []).append((pi, which))
+
+        # For each endpoint, collect unique partners within tol
+        partners: dict[tuple[int, str], tuple[int, str]] = {}
+        degree: dict[tuple[int, str], int] = {}
+        for pi, which, x, y in coords:
+            near: list[tuple[int, str]] = []
+            gx, gy = int(round(x / tol)), int(round(y / tol))
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    for qj, qw in buckets.get((gx + dx, gy + dy), []):
+                        if qj == pi:
+                            continue
+                        qx, qy = _xy(
+                            work[qj]["pts"][0] if qw == "s" else work[qj]["pts"][-1]
+                        )
+                        if (x - qx) * (x - qx) + (y - qy) * (y - qy) <= tol2:
+                            near.append((qj, qw))
+            # unique by poly index
+            uniq = list({n[0]: n for n in near}.values())
+            degree[(pi, which)] = len(uniq)
+            if len(uniq) == 1:
+                partners[(pi, which)] = uniq[0]
+
+        used: set[int] = set()
+        new_work: list[dict] = []
+        for pi, poly in enumerate(work):
+            if pi in used:
+                continue
+            # try merge at start or end with mutual unique partner
+            merged_any = False
+            for which in ("e", "s"):
+                key = (pi, which)
+                if key not in partners:
+                    continue
+                qj, qw = partners[key]
+                if qj in used or pi in used:
+                    continue
+                # reciprocal + degree-2 both ends
+                if partners.get((qj, qw)) != (pi, which):
+                    continue
+                if degree.get(key, 0) != 1 or degree.get((qj, qw), 0) != 1:
+                    continue
+                other = work[qj]
+                if str(poly.get("highway") or "").lower() != str(
+                    other.get("highway") or ""
+                ).lower():
+                    continue
+                a = poly["pts"]
+                b = other["pts"]
+                # Orient so a end touches b start
+                if which == "e" and qw == "s":
+                    chain = a + b[1:]
+                elif which == "e" and qw == "e":
+                    chain = a + list(reversed(b))[1:]
+                elif which == "s" and qw == "e":
+                    chain = b + a[1:]
+                elif which == "s" and qw == "s":
+                    chain = list(reversed(b)) + a[1:]
+                else:
+                    continue
+                if len(chain) < 2:
+                    continue
+                used.add(pi)
+                used.add(qj)
+                new_work.append(
+                    {
+                        "id": poly.get("id") or other.get("id"),
+                        "name": poly.get("name") or other.get("name"),
+                        "highway": poly.get("highway"),
+                        "pts": chain,
+                        "osm_ids": list(poly.get("osm_ids") or [])
+                        + list(other.get("osm_ids") or []),
+                    }
+                )
+                merges += 1
+                merged_any = True
+                changed = True
+                break
+            if not merged_any and pi not in used:
+                new_work.append(poly)
+                used.add(pi)
+        work = new_work
+
+    out = passthrough + work
+    if merges:
+        print(
+            f"Decal stitch: {merges} abutting merge(s) "
+            f"(tol={tol}m, asphalt roads now {len(work)})"
+        )
+    return out
+
+
 def _dashed_runs(
     nodes: list[list[float]], dash_m: float, gap_m: float
 ) -> list[list[list[float]]]:
@@ -309,6 +467,12 @@ def _dashed_runs(
     return runs
 
 
+def _gallery_keeps_surface_road(gal: dict) -> bool:
+    """Underpass / surface-first roofs: DecalRoad above must not be clipped away."""
+    mode = str(gal.get("terrain_roof") or "rock").lower().strip()
+    return mode in ("keep_asphalt", "under_asphalt", "surface_first", "asphalt")
+
+
 def _load_gallery_corridors(proc: Path, cfg: dict) -> list[tuple[list[tuple[float, float]], float]]:
     if not cfg["clip_galleries"]:
         return []
@@ -322,7 +486,11 @@ def _load_gallery_corridors(proc: Path, cfg: dict) -> list[tuple[list[tuple[floa
     stop = max(0.0, cfg["stop_before_gallery_m"])
     pad = max(0.0, cfg["gallery_clip_pad_m"])
     corridors: list[tuple[list[tuple[float, float]], float]] = []
+    skipped_keep = 0
     for g in data.get("galleries") or []:
+        if _gallery_keeps_surface_road(g):
+            skipped_keep += 1
+            continue
         nodes = g.get("nodes") or []
         if len(nodes) < 2:
             continue
@@ -341,6 +509,11 @@ def _load_gallery_corridors(proc: Path, cfg: dict) -> list[tuple[list[tuple[floa
         xy = [(float(n["x"]), float(n["y"])) for n in band]
         half = 0.5 * max(float(n.get("width") or 7.0) for n in band) + pad
         corridors.append((xy, half))
+    if skipped_keep:
+        print(
+            f"Decal gallery-clip: skipped {skipped_keep} keep_asphalt "
+            f"(surface DecalRoad preserved); {len(corridors)} corridors active"
+        )
     return corridors
 
 
@@ -1131,6 +1304,7 @@ def main() -> None:
     roads = bb.load_road_polylines(proc)
     if not roads:
         raise SystemExit(f"Missing {proc / 'roads_beamng.json'}")
+    roads = stitch_abutting_roads(roads, cfg)
 
     size = int(bng.get("mask_size") or 512)
     meta_path = proc / "heightmap_meta.json"

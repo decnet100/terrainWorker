@@ -61,19 +61,54 @@ Hand-Korrektur in QGIS bleibt möglich (offene Galerie-Seite, Portale).
 
 `beamng.bridges.defaults` + `beamng.bridges.items[]` (Match über `objectid` / `name`):
 
-- Deck-XY folgt der **OSM-Straßenachse** (Enden liegen auf der geraden Road-Geometrie)
-- Z / Neigung / Breite: **Portal-Querprofile** der Straße, dazwischen Hermite (Z) + Lerp (Breite); Normal aus Achstangente + Pitch
-- `extend_before_m` / `extend_after_m`: Verlängerung entlang der Straße (oft 0.5, manchmal ~3) — nur MeshRoad
-- `under_inset_m`: Fels-Maske unter der Brücke = Gap **ohne** Extends, zusätzlich um diesen Betrag nach innen verkürzt (Asphalt bleibt auf Auflagern)
-- `materials.texture_length`: MeshRoad-UV in m/Repeat (kleiner = feiner; Default ~2.5)
-- `width_from_road: true`: Portalbreiten aus OSM; `step_m` dichter → folgt Kurve besser
-- `style.understructure` / `style.edge`: Platzhalter (slab/piers/guardrail/curb …) für spätere Builds
-- `materials.top/bottom/side`: MeshRoad-Materials (echte `Material`-Einträge in `art/road/`, nicht Terrain-Paint-Namen). Default `Asphalt`/`Concrete` werden aus den Terrain-Texturen des Levels angelegt.
+- **`profile: road_spline`** + **`centerline: strassennetz`**: Deck = 4 MeshRoad-Streifen aus `road_span_profile` (Fernpass-Mega / L13-Splining). Legacy: `hermite` + OSM.
+- `extend_before_m` / `extend_after_m`: Verlängerung über die Widerlager hinaus (nur Mesh + Conform-Band)
+- `under_inset_m`: Fels-Maske unter der Brücke = Gap **ohne** Extends, zusätzlich nach innen verkürzt
+- `portal_z_offset_m: [dz_s0, dz_s1]`: Seite höher/tiefer; Grade dazwischen passt sich an
+- `approach_conform_*` / `max_raise_m` / `max_cut_m`: Heightmap an Deck; Raise klein halten → Schlucht nicht zuschütten
+- `materials.*` / `style.*`: wie bisher (MeshRoad-Materials in `art/road/`)
 - `bridges_decks.json`: `under_nodes_xyw` → `build_terrain_masks.py` malt darunter **rock**
+
+#### `abutment_s` — Widerlager manuell (DGM-Kerben / Schwellen)
+
+Wenn das **Original-DGM** unter der GIP-Brücke eine Kerbe/Schlucht hat (Fahrbahn-Z bleibt hoch, Terrain fällt ab), setzt Auto-Span die Portale oft zu weit in den Absturz. Dann sitzt das Deck falsch oder Conform/Road-Bed erzeugen Schwellen auf der Auffahrt.
+
+**Lösung:** Widerlager auf die letzte/feste Stelle **vor** bzw. **nach** der Kerbe pinnen (Station der aktiven Centerline — bei Spline: **Strassennetz-Meter**, nicht OSM):
+
+```yaml
+- match: { objectid: 3852, name: Brücke 3852 }
+  abutment_s: [13408.0, 13425.0]   # s0/s1 aus bridges_meta / DGM-vs-Netz-Check
+  free_span: linear
+  approach_conform_max_raise_m: 0.8   # Kerbe nicht füllen
+  approach_conform_max_cut_m: 12.0    # nur Cliff-Lippen
+```
+
+Werte: entlang der Centerline sampeln (Netz-Z ≈ DGM), Kerbe meiden. Danach `build_bridges` als **letzter** Heightmap-Schritt + Terrain-Reimport; Road-Bed danach kann die Auffahrt wieder zerstören.
+
+```powershell
+cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE='config/sites/fernpass_mega.yaml'; python tools\build_bridges.py
+```
 
 ```powershell
 cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE='config/sites/l13_kuehtai.yaml'; python tools\build_bridges.py; python tools\build_terrain_masks.py
 ```
+
+#### Galerie-/Tunnel-Dach auf dem Terrain (`terrain_roof`)
+
+Top-down malt `build_terrain_masks` standardmäßig **Fels** über dem Galerie-/Tunnel-Grundriss (sonst bliebe OSM-Asphalt der untertunnelnden Achse auf dem Berg).
+
+| Wert | Bedeutung |
+|------|-----------|
+| `rock` (Default) | Fels gewinnt — typischer Bergtunnel |
+| `keep_asphalt` | Fels nur wo **keine** Straßen-Asphalt-Maske; Straße **darüber** (z. B. Fernpass über Unterführung 8082) bleibt Asphalt. Zusätzlich: `build_decal_roads` clippt DecalRoads an diesem Korridor **nicht** weg. |
+| `none` | kein Dach-Fels für dieses Objekt |
+
+```yaml
+- match: { objectid: 8082 }
+  terrain_roof: keep_asphalt
+```
+
+Danach: `build_galleries` (schreibt Flag in `galleries_centerlines.json`) → `build_terrain_masks` → `build_decal_roads` → Terrain-Texturmaps / Level neu laden.
 
 ### Galerien-Config (Site-YAML)
 

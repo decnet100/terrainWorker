@@ -101,6 +101,8 @@ GALLERY_SCALAR_KEYS = (
     "approach_conform_falloff_m",
     "approach_conform_sink_m",  # terrain slightly under MeshRoad (anti z-fight)
     "approach_conform_max_delta_m",  # skip mountain cells (|Δz| too large)
+    # Terrain paint above structure: rock (default) | keep_asphalt | none
+    "terrain_roof",
     # Portal/opening lip bake so holemap has free 1×1 tiles at edges
     "terrain_embed",
     "terrain_embed_upper",  # bake roof lip (default off until roof edge is solid)
@@ -230,6 +232,9 @@ def default_gallery_cfg(bng: dict) -> tuple[dict, list]:
         "approach_conform_max_delta_m": float(
             raw.get("approach_conform_max_delta_m") or 0.35
         ),
+        # rock = Fels über Struktur (Asphalt weg); keep_asphalt = Fels nur wo keine Straße;
+        # none = Dach nicht als Fels malen (Straße darüber bleibt).
+        "terrain_roof": str(raw.get("terrain_roof") or "rock").lower(),
         "terrain_embed": bool(raw.get("terrain_embed", False)),
         "terrain_embed_upper": bool(raw.get("terrain_embed_upper", False)),
         "terrain_embed_rings": int(raw.get("terrain_embed_rings") or 2),
@@ -5389,6 +5394,7 @@ def main() -> None:
                 "approach_conform_pad_m": cfg.get("approach_conform_pad_m"),
                 "approach_conform_falloff_m": cfg.get("approach_conform_falloff_m"),
                 "approach_conform_sink_m": cfg.get("approach_conform_sink_m"),
+                "terrain_roof": cfg.get("terrain_roof") or "rock",
                 "terrain_embed": cfg.get("terrain_embed"),
                 "terrain_embed_rings": cfg.get("terrain_embed_rings"),
                 "terrain_embed_upper_m": cfg.get("terrain_embed_upper_m"),

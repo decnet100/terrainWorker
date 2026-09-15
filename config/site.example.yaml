@@ -71,9 +71,15 @@ beamng:
   shoulder_m: 0.2                # Dirt-Bankett je Seite (m)
   guardrails:
     enabled: true
-    shape: "/art/shapes/objects/italy_guardrails_common_section.dae"
+    # posts (default) = Leitpoller every spacing_m; sections = Italy rail mesh
+    style: posts
+    spacing_m: 25.0
+    shape: reflector
+    post_scale: 0.7              # native ~1.43 m → ≈1.0 m
+    # style: sections + italy mesh for continuous rails:
+    # shape: "/art/shapes/objects/italy_guardrails_common_section.dae"
     mesh_length_m: 3.1
-    section_length_m: 4.2        # AT look via joint spacing / scale.x
+    section_length_m: 4.2        # AT look via joint spacing / scale.x (sections only)
     curve_r15_m: 15.0
     curve_r10_m: 10.0
     curve_step_r15_m: 2.8

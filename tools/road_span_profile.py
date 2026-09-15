@@ -354,6 +354,7 @@ def build_span_profile(
     extend_before_m: float = 0.0,
     extend_after_m: float = 0.0,
     deck_lift_m: float = 0.0,
+    portal_z_offset_m: tuple[float, float] | list[float] | None = None,
     abutment_s: tuple[float, float] | list[float] | None = None,
     free_span: str = "linear",  # linear | pchip_ends (no sag default = linear)
     corner_up_m: float = 0.25,
@@ -389,6 +390,18 @@ def build_span_profile(
         s_vals.append(s1)
 
     lift = float(deck_lift_m)
+    if portal_z_offset_m is None:
+        dz0, dz1 = 0.0, 0.0
+    elif isinstance(portal_z_offset_m, (int, float)):
+        dz0 = dz1 = float(portal_z_offset_m)
+    else:
+        seq = list(portal_z_offset_m)
+        if not seq:
+            dz0 = dz1 = 0.0
+        elif len(seq) == 1:
+            dz0 = dz1 = float(seq[0])
+        else:
+            dz0, dz1 = float(seq[0]), float(seq[1])
     max_cf = 0.12
     corner_up = float(corner_up_m)
     corner_down = float(corner_down_m)
@@ -412,6 +425,10 @@ def build_span_profile(
     # Abutment cross-profiles: planar inner lanes + soft corner match
     z5_a0, zc_a0, cf_a0 = profile_at(abut0)
     z5_a1, zc_a1, cf_a1 = profile_at(abut1)
+    zc_a0 = float(zc_a0) + dz0
+    zc_a1 = float(zc_a1) + dz1
+    z5_a0 = np.asarray(z5_a0, dtype=float) + dz0
+    z5_a1 = np.asarray(z5_a1, dtype=float) + dz1
     off_a0 = z5_a0 - zc_a0
     off_a1 = z5_a1 - zc_a1
 
@@ -440,9 +457,10 @@ def build_span_profile(
         xy.append((x, y))
         if s <= abut0 + 1e-9 or s >= abut1 - 1e-9:
             z5, zc, cf = profile_at(s)
-            zc = float(zc) + lift
+            side_dz = dz0 if s <= abut0 + 1e-9 else dz1
+            zc = float(zc) + lift + side_dz
             z_center.append(zc)
-            z_lateral.append([float(v) + lift for v in z5])
+            z_lateral.append([float(v) + lift + side_dz for v in z5])
             crossfalls.append(cf)
         else:
             t = (s - abut0) / span_len
@@ -520,6 +538,7 @@ def build_span_profile(
         "span_len_m": round(s1 - s0, 2),
         "gap_len_m": round(abut1 - abut0, 2),
         "deck_lift_m": lift,
+        "portal_z_offset_m": [round(dz0, 3), round(dz1, 3)],
         "abut": abut_info,
         "nodes": len(s_vals),
         "strips": len(strips),

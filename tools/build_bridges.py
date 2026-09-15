@@ -55,11 +55,15 @@ BRIDGE_SCALAR_KEYS = (
     "abut_run_m",  # consecutive meters of flat required
     "abut_search_m",  # outward search from gap (default: span_search_m)
     "abut_snap_z",  # portal Z = max(roadZ, terrainZ) so cut abutments meet Decal
+    "portal_z_offset_m",  # [dz_s0, dz_s1] add to portal Z; grade adapts between
+    "portal_dz_ds",  # optional [m0, m1] Hermite end slopes; [0,0]=straight grade
     "approach_conform",  # bake heightmap to MeshRoad Z under deck (flush lips)
     "approach_conform_pad_m",
     "approach_conform_falloff_m",
     "approach_conform_sink_m",
-    "approach_conform_max_delta_m",  # skip gorge / cliffs (|ΔZ| larger than this)
+    "approach_conform_max_delta_m",  # legacy symmetric limit (fallback for raise/cut)
+    "approach_conform_max_raise_m",  # max terrain raise toward deck (keep gorge open)
+    "approach_conform_max_cut_m",  # max terrain cut down to deck (flush cliffs)
     "terrain_embed",  # reserved: abutment lip bake (galleries implement first)
     "terrain_embed_rings",
     "terrain_embed_foundation_m",
@@ -69,8 +73,12 @@ BRIDGE_SCALAR_KEYS = (
     "solid_run_m",
     "free_span",  # linear | pchip_ends
     "abutment_s",  # optional [s0, s1] override along centerline
+    "corner_up_m",
+    "corner_down_m",
+    "corner_band",
     "step_m",
     "crossfall_max",
+    "enabled",  # false → skip this bridge
 )
 
 
@@ -508,6 +516,40 @@ def normal_from_pitch_crossfall(
     return float(normal[0]), float(normal[1]), float(normal[2])
 
 
+def portal_z_offsets(cfg: dict) -> tuple[float, float]:
+    """Per-portal Z nudge (m) at span s0 / s1. Scalar → both sides; default 0."""
+    raw = cfg.get("portal_z_offset_m")
+    if raw is None:
+        return 0.0, 0.0
+    if isinstance(raw, (int, float)):
+        v = float(raw)
+        return v, v
+    seq = list(raw)
+    if not seq:
+        return 0.0, 0.0
+    if len(seq) == 1:
+        v = float(seq[0])
+        return v, v
+    return float(seq[0]), float(seq[1])
+
+
+def portal_dz_ds_override(cfg: dict) -> tuple[float, float] | None:
+    """Optional Hermite end slopes (dz/ds) at s0 / s1. None → use road tangent."""
+    raw = cfg.get("portal_dz_ds")
+    if raw is None:
+        return None
+    if isinstance(raw, (int, float)):
+        v = float(raw)
+        return v, v
+    seq = list(raw)
+    if not seq:
+        return None
+    if len(seq) == 1:
+        v = float(seq[0])
+        return v, v
+    return float(seq[0]), float(seq[1])
+
+
 def resolve_bridge_cfg(defaults: dict, items: list, feat: dict) -> dict:
     """Merge defaults with first matching items[] entry."""
     cfg = dict(defaults)
@@ -576,8 +618,9 @@ def build_span_on_road(
     abut_search = float(cfg.get("abut_search_m") or search_m)
     abut_snap_z = bool(cfg.get("abut_snap_z", True))
     step = float(cfg.get("step_m") or 1.0)
-    # Optional clamp so ditch edges don't invent crazy banking
-    cf_max = float(cfg.get("crossfall_max") or 0.12)  # ~7 deg
+    # Optional clamp so ditch edges don't invent crazy banking.
+    # Use `is not None` so crossfall_max: 0 (flat deck) is honored.
+    cf_max = float(cfg["crossfall_max"]) if cfg.get("crossfall_max") is not None else 0.12
 
     s_ends = [project_on_road(road, x, y)[0] for x, y in (xy_gip[0], xy_gip[-1])]
     s_g0, s_g1 = min(s_ends), max(s_ends)
@@ -614,29 +657,43 @@ def build_span_on_road(
         s_gap0, s_gap1 = s_g0, s_g1
         max_dip = None
 
-    # Portals on real abutments (road ≈ terrain), not on cut/gorge samples at gap edges.
-    abut0, abut0_why, abut0_dip = find_flat_abutment(
-        road,
-        z_terrain,
-        s_gap0,
-        -1.0,
-        tol_m=abut_tol,
-        run_m=abut_run,
-        search_m=abut_search,
-        step=step,
-    )
-    abut1, abut1_why, abut1_dip = find_flat_abutment(
-        road,
-        z_terrain,
-        s_gap1,
-        +1.0,
-        tol_m=abut_tol,
-        run_m=abut_run,
-        search_m=abut_search,
-        step=step,
-    )
-    abut0 = min(abut0, s_gap0)
-    abut1 = max(abut1, s_gap1)
+    abut_ov = cfg.get("abutment_s")
+    if abut_ov is not None and len(list(abut_ov)) >= 2:
+        abut0 = float(abut_ov[0])
+        abut1 = float(abut_ov[1])
+        if abut1 < abut0:
+            abut0, abut1 = abut1, abut0
+        abut0 = max(0.0, min(float(road["length"]), abut0))
+        abut1 = max(0.0, min(float(road["length"]), abut1))
+        abut0_why, abut1_why = "override", "override"
+        _d0, _rz0, _tc0 = road_terrain_dip(road, z_terrain, abut0)
+        _d1, _rz1, _tc1 = road_terrain_dip(road, z_terrain, abut1)
+        abut0_dip, abut1_dip = _d0, _d1
+        s_gap0, s_gap1 = abut0, abut1
+    else:
+        # Portals on real abutments (road ≈ terrain), not on cut/gorge samples at gap edges.
+        abut0, abut0_why, abut0_dip = find_flat_abutment(
+            road,
+            z_terrain,
+            s_gap0,
+            -1.0,
+            tol_m=abut_tol,
+            run_m=abut_run,
+            search_m=abut_search,
+            step=step,
+        )
+        abut1, abut1_why, abut1_dip = find_flat_abutment(
+            road,
+            z_terrain,
+            s_gap1,
+            +1.0,
+            tol_m=abut_tol,
+            run_m=abut_run,
+            search_m=abut_search,
+            step=step,
+        )
+        abut0 = min(abut0, s_gap0)
+        abut1 = max(abut1, s_gap1)
 
     if forward:
         s0 = max(0.0, abut0 - ext_b)
@@ -661,8 +718,14 @@ def build_span_on_road(
     else:
         z0 = z0r + lift
         z1 = z1r + lift
+    dz0, dz1 = portal_z_offsets(cfg)
+    z0 += dz0
+    z1 += dz1
     m0 = slope_ds(tx0, ty0, tz0)
     m1 = slope_ds(tx1, ty1, tz1)
+    m_ov = portal_dz_ds_override(cfg)
+    if m_ov is not None:
+        m0, m1 = m_ov
     length = s1 - s0 or 1.0
 
     cf0, zl0, zc0, zr0 = sample_crossfall(z_terrain, x0, y0, tx0, ty0, 0.5 * w0)
@@ -738,6 +801,7 @@ def build_span_on_road(
         "width_from_road": width_from_road,
         "portal_width_m": [round(w0, 2), round(w1, 2)],
         "portal_z": [round(z0, 3), round(z1, 3)],
+        "portal_z_offset_m": [round(dz0, 3), round(dz1, 3)],
         "portal_dz_ds": [round(m0, 4), round(m1, 4)],
         "portal_crossfall": [round(cf0, 4), round(cf1, 4)],
         "portal_crossfall_deg": [
@@ -906,6 +970,7 @@ def build_bridge_entries_road_spline(
         extend_before_m=float(cfg.get("extend_before_m") or 0.0),
         extend_after_m=float(cfg.get("extend_after_m") or 0.0),
         deck_lift_m=float(cfg.get("deck_lift_m") or 0.0),
+        portal_z_offset_m=portal_z_offsets(cfg),
         abutment_s=abut,
         free_span=str(cfg.get("free_span") or "linear"),
         corner_up_m=float(cfg.get("corner_up_m") if cfg.get("corner_up_m") is not None else 0.25),
@@ -985,7 +1050,7 @@ def _project_xy_to_nodes(
     by: float,
     nodes: list[dict],
 ) -> tuple[float, float, float] | None:
-    """Nearest point on deck polyline → (dist_m, z_surf, half_width)."""
+    """Nearest point on deck polyline -> (dist_m, z_surf, half_width)."""
     if len(nodes) < 1:
         return None
     best: tuple[float, float, float] | None = None
@@ -1033,10 +1098,10 @@ def conform_bridge_heightmap(
     extent: float,
     elev: np.ndarray,
 ) -> tuple[np.ndarray, dict]:
-    """Bake heightmap to MeshRoad surface under each deck ribbon.
+    """Bake heightmap toward MeshRoad surface under each deck ribbon.
 
-    Only cells with |terrain − deck| ≤ max_delta are touched, so gorge air
-    gaps stay intact while abutment lips / cut mismatches flush to the deck.
+    Asymmetric limits: cut cliffs down to the deck, but barely raise terrain so
+    gorge air gaps are not filled (unlike a single large max_delta).
     """
     out = elev.astype(np.float64).copy()
     tested = 0
@@ -1067,6 +1132,10 @@ def conform_bridge_heightmap(
             if cfg.get("approach_conform_max_delta_m") is not None
             else 1.0
         )
+        max_raise = cfg.get("approach_conform_max_raise_m")
+        max_cut = cfg.get("approach_conform_max_cut_m")
+        max_raise = float(max_raise) if max_raise is not None else max_delta
+        max_cut = float(max_cut) if max_cut is not None else max_delta
         half_ref = 0.5 * max(float(n["width"]) for n in nodes)
         xs = [float(n["x"]) for n in nodes]
         ys = [float(n["y"]) for n in nodes]
@@ -1092,7 +1161,8 @@ def conform_bridge_heightmap(
                 tested += 1
                 target = float(z_deck) - sink
                 z0 = float(out[py, px])
-                if abs(z0 - target) > max_delta:
+                need = target - z0  # +raise terrain / -cut
+                if need > max_raise + 1e-9 or need < -(max_cut + 1e-9):
                     continue
                 if dist <= half:
                     w = 1.0
@@ -1116,7 +1186,7 @@ def conform_bridge_heightmap(
     if any_on:
         print(
             f"Bridge approach conform: tested={tested} changed={changed} "
-            f"max_delta={max_abs:.3f}m (heightmap → MeshRoad Z)"
+            f"max_delta={max_abs:.3f}m (heightmap -> MeshRoad Z)"
         )
     return out, stats
 
@@ -1286,7 +1356,7 @@ def ensure_meshroad_materials(user_level: Path, level_name: str, materials: dict
     mats_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     print(
         f"MeshRoad materials in {mats_path.name}: {', '.join(sorted(set(wanted)))} "
-        f"(detail_scale={detail_scale}, asphalt≈terrain base+02)"
+        f"(detail_scale={detail_scale}, asphalt~terrain base+02)"
     )
 
 
@@ -1347,6 +1417,16 @@ def default_bridge_cfg(bng: dict) -> tuple[dict, list]:
             float(raw["abut_search_m"]) if raw.get("abut_search_m") is not None else None
         ),
         "abut_snap_z": bool(raw.get("abut_snap_z", True)),
+        "portal_z_offset_m": (
+            [float(x) for x in raw["portal_z_offset_m"]]
+            if isinstance(raw.get("portal_z_offset_m"), (list, tuple))
+            and len(raw.get("portal_z_offset_m") or []) >= 1
+            else (
+                [float(raw["portal_z_offset_m"]), float(raw["portal_z_offset_m"])]
+                if isinstance(raw.get("portal_z_offset_m"), (int, float))
+                else [0.0, 0.0]
+            )
+        ),
         "approach_conform": bool(raw.get("approach_conform", False)),
         "approach_conform_pad_m": float(
             raw.get("approach_conform_pad_m")
@@ -1368,6 +1448,16 @@ def default_bridge_cfg(bng: dict) -> tuple[dict, list]:
             if raw.get("approach_conform_max_delta_m") is not None
             else 1.0
         ),
+        "approach_conform_max_raise_m": (
+            float(raw["approach_conform_max_raise_m"])
+            if raw.get("approach_conform_max_raise_m") is not None
+            else None
+        ),
+        "approach_conform_max_cut_m": (
+            float(raw["approach_conform_max_cut_m"])
+            if raw.get("approach_conform_max_cut_m") is not None
+            else None
+        ),
         "terrain_embed": bool(raw.get("terrain_embed", False)),
         "terrain_embed_rings": int(raw.get("terrain_embed_rings") or 2),
         "terrain_embed_foundation_m": float(
@@ -1385,8 +1475,17 @@ def default_bridge_cfg(bng: dict) -> tuple[dict, list]:
         "solid_run_m": float(raw.get("solid_run_m") if raw.get("solid_run_m") is not None else 3.0),
         "free_span": str(raw.get("free_span") or "linear"),
         "abutment_s": raw.get("abutment_s"),
+        "portal_dz_ds": raw.get("portal_dz_ds"),
+        "corner_up_m": float(raw.get("corner_up_m") if raw.get("corner_up_m") is not None else 0.25),
+        "corner_down_m": float(
+            raw.get("corner_down_m") if raw.get("corner_down_m") is not None else 0.06
+        ),
+        "corner_band": float(raw.get("corner_band") if raw.get("corner_band") is not None else 0.2),
         "step_m": float(raw.get("step_m") or 1.0),
-        "crossfall_max": float(raw.get("crossfall_max") or 0.12),
+        "crossfall_max": float(
+            raw["crossfall_max"] if raw.get("crossfall_max") is not None else 0.12
+        ),
+        "enabled": True,
         "style": {
             "understructure": "none",  # none | slab | piers | walls
             "edge": "none",  # none | guardrail | curb | wall
@@ -1462,6 +1561,9 @@ def main() -> None:
     bridge_cfgs = []
     for feat in feats:
         cfg = resolve_bridge_cfg(defaults, items, feat)
+        if cfg.get("enabled") is False:
+            print(f"skip oid={feat.get('objectid')} (enabled: false)")
+            continue
         bridge_cfgs.append(cfg)
         if str(cfg.get("profile") or "hermite") == "road_spline":
             road = net_road if net_road is not None else load_strassennetz_road(proc)
@@ -1570,7 +1672,7 @@ def main() -> None:
     size = int(bng.get("mask_size") or 512)
     extent = float(bng.get("meters_per_pixel") or 1.0) * float(size)
     any_conform = any(bool(c.get("approach_conform")) for c in bridge_cfgs)
-    if any_conform and not use_spline:
+    if any_conform:
         from PIL import Image
 
         hm_path = proc / f"heightmap_{size}.png"
@@ -1580,8 +1682,25 @@ def main() -> None:
         elev0 = np.asarray(Image.open(hm_path), dtype=np.float64)
         max_h = float(json.loads(meta_hm_path.read_text(encoding="utf-8"))["max_height_m"])
         elev_m = elev0 / 65535.0 * max_h
+        # road_spline: 4 MeshRoad strips per span — expand infos/cfgs to match entries
+        conf_entries = entries
+        conf_infos = span_infos
+        conf_cfgs = bridge_cfgs
+        if use_spline:
+            conf_infos = []
+            conf_cfgs = []
+            ei = 0
+            for info, cfg in zip(span_infos, bridge_cfgs):
+                n_strips = int(info.get("strips") or 4)
+                for _ in range(n_strips):
+                    if ei >= len(entries):
+                        break
+                    conf_infos.append(info)
+                    conf_cfgs.append(cfg)
+                    ei += 1
+            conf_entries = entries[:ei]
         elev1, conf_stats = conform_bridge_heightmap(
-            entries, span_infos, bridge_cfgs, size=size, extent=extent, elev=elev_m
+            conf_entries, conf_infos, conf_cfgs, size=size, extent=extent, elev=elev_m
         )
         carved = write_bridge_conform_heightmap(
             proc, level_name, elev=elev1, max_height_m=max_h

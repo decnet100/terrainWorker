@@ -28,6 +28,11 @@ sources:
     url: "https://dservices3.arcgis.com/hG7UfxX49PQ8XkXh/arcgis/services/Verkehrswege/WFSServer"
     type_name: "Verkehrswege:Verkehrswege"
     str_code: B179
+  strassennetz:
+    type: wfs
+    url: "https://dservices3.arcgis.com/hG7UfxX49PQ8XkXh/arcgis/services/Strassennetz/WFSServer"
+    type_name: "Strassennetz:Strassennetz"
+    str_code: B179
   landuse:
     type: featureserver
     layers:
@@ -46,14 +51,16 @@ beamng:
   slope_rock_open_px: 1
   road_width_scale: 0.9
   # Option 2: no terrain Asphalt — gravel bed/bankett; DecalRoad = Fahrbahn.
-  road_terrain: gravel
+  road_terrain: asphalt
   dirt_material: gravel
   shoulder_m: 3.0
 
   bridges:
     defaults:
+      profile: road_spline          # road_span_profile → 4 MeshRoad strips
+      centerline: strassennetz
       width_m: 7.0
-      width_from_road: true
+      width_from_road: false        # Strassennetz has no width attr
       depth_m: 0.4
       node_z_is_top: true
       extend_before_m: 0.0
@@ -63,6 +70,11 @@ beamng:
       auto_span: true
       span_dip_m: 0.45
       span_search_m: 40.0
+      solid_run_m: 3.0
+      free_span: linear             # no Hermite sag
+      corner_up_m: 0.25
+      corner_down_m: 0.06
+      corner_band: 0.2
       abut_tol_m: 0.25
       abut_run_m: 3.0
       abut_search_m: 40.0
@@ -86,8 +98,6 @@ beamng:
     # Kunstbauten ohne KUNSTBAUTEN-Feld nachtragen (FeatureServer OBJECTID).
     # Default-Name: "Brücke {oid}" / "Tunnel {oid}" (oder name: …).
     gip_extra:
-      - objectid: 101710
-        name: Brücke 101710
       - objectid: 3992
         name: Brücke 3992
       - objectid: 2304
@@ -103,14 +113,40 @@ beamng:
         kind: tunnel
         name: Tunnel 8082
     items:
+      - match: { objectid: 101710 }
+        enabled: false              # falsch gesnappt — raus
       - match: { objectid: 3168, name: Fernsteinbrücke }
       - match: { objectid: 4103, name: Kriegerbachbrücke }
       - match: { objectid: 3992, name: Brücke 3992 }
       - match: { objectid: 2304, name: Brücke 2304 }
-      - match: { objectid: 101710, name: Brücke 101710 }
       - match: { objectid: 3836, name: Brücke 3836 }
       - match: { objectid: 3844, name: Brücke 3844 }
+        extend_before_m: 1.0
+        extend_after_m: 1.0
+        abut_snap_z: false          # kein Hochziehen auf den Tunnelhügel
+        auto_span: false            # nur GIP-Länge, nicht 40 m Dip-Suche
+        gip_pad_m: 2.0
+        abut_search_m: 8.0
+        # Seite höher/tiefer (m) an Span-s0 / s1 (= Reihenfolge portal_z in bridges_meta);
+        # Grade dazwischen passt sich an. Beispiel: portal_z_offset_m: [0.0, -1.2]
+        portal_z_offset_m: [0.0, 0.0]
+        crossfall_max: 0.0             # kein Roll aus HM-Querprofil (Tunnelböschung)
+        approach_conform: true
+        approach_conform_pad_m: 4.0          # breiter hart ums Deck
+        approach_conform_falloff_m: 8.0      # weicher Auslauf in die Hügel
+        approach_conform_max_delta_m: 10.0   # sonst: |Hügel−Deck| > 3 m → unberührt
+        approach_conform_sink_m: 0.02        # Sinking in Tiefe (0.01 = 1 cm, default 0.02 cm)    
       - match: { objectid: 3852, name: Brücke 3852 }
+        abutment_s: [13408.0, 13425.0] #s, north
+        width_m: 8.0
+        # Deck muss über die Schwellen-Zone vor der Kerbe reichen
+        extend_before_m: 25.0
+        extend_after_m: 12.0
+        free_span: linear
+        approach_conform: true
+        approach_conform_max_cut_m: 12.0
+        approach_conform_max_raise_m: 0.8
+        
   galleries:
     merge_abutting: true
     merge_tol_m: 15.0
@@ -165,6 +201,8 @@ beamng:
         extend_before_m: 1.0
         extend_after_m: 1.0
         deck_extend_m: 4.0
+        # Unterführung: Dach nicht als Fels über Fernpass-Asphalt; Asphalt + Decal bleiben.
+        terrain_roof: keep_asphalt
       # Lermooser: Portal/Eingang separat (Gebäude) — vorerst nicht als Tunnel mesh’en.
       - match: { name: Lermooser Tunnel }
         enabled: false
@@ -173,7 +211,13 @@ beamng:
 
   guardrails:
     enabled: true
-    shape: "/art/shapes/objects/italy_guardrails_common_section.dae"
+    # Default: Leitpoller (driver_training reflector), not continuous Italy rails.
+    style: posts                  # posts | sections
+    spacing_m: 25.0               # 25 or 50 m typical AT
+    # Native mesh ~1.43 m; 0.7 ≈ 1.0 m. Materials vendored into level on build.
+    shape: reflector
+    post_scale: 0.7
+    # Legacy section-rail knobs (used only when style: sections):
     mesh_length_m: 3.1
     section_length_m: 4.2
     curve_r15_m: 15.0
@@ -279,6 +323,10 @@ beamng:
     over_objects: false
     # 0 = no fade at ends (default 2+2m caused visible gaps at every OSM-way joint).
     start_end_fade: [0.0, 0.0]
+    # OSM inserts 3–6 m connector ways (e.g. GIP 2169 / Fernpass Rast); stitch them
+    # before min_length_m drops the stubs and leaves asphalt gaps.
+    stitch_abutting: true
+    stitch_tol_m: 1.25
     # Long single DecalRoads (e.g. OSM 731 ~700m) often lose asphalt geometry in BeamNG.
     max_decal_length_m: 300.0
     clip_galleries: true

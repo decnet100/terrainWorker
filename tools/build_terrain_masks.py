@@ -1,9 +1,17 @@
-"""Build BeamNG terrain layer masks from OSM landuse + DGM slope + road buffer."""
+"""Build BeamNG terrain layer masks from OSM landuse + DGM slope + road buffer.
+
+Heavy steps (Tirol landcover raster @ mask_size, DGM slope) are cached under
+``processed/<site>/cache/terrain_masks/`` and reused when inputs are unchanged.
+Road / bridge / gallery masks always recompute (cheap). Use ``--force`` to
+ignore caches.
+"""
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import requests
@@ -70,6 +78,80 @@ GROUNDMODELS = {
     "Concrete": "CONCRETE",
 }
 GROUNDMODELS.setdefault(DIRT_MATERIAL, "DIRT")
+
+
+def _file_sig(path: Path | None) -> dict[str, Any]:
+    if path is None or not Path(path).is_file():
+        return {"path": str(path) if path else None, "missing": True}
+    p = Path(path)
+    st = p.stat()
+    return {
+        "path": str(p.resolve()).replace("\\", "/"),
+        "mtime_ns": int(st.st_mtime_ns),
+        "size": int(st.st_size),
+    }
+
+
+def _cache_dir() -> Path:
+    d = PROC / "cache" / "terrain_masks"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _load_cached_npz(
+    name: str, fingerprint: dict, *, force: bool
+) -> dict[str, np.ndarray] | None:
+    if force:
+        return None
+    base = _cache_dir() / name
+    npz_path = base.with_suffix(".npz")
+    meta_path = base.with_suffix(".json")
+    if not npz_path.is_file() or not meta_path.is_file():
+        return None
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
+    if meta.get("fingerprint") != fingerprint:
+        return None
+    data = np.load(npz_path, allow_pickle=False)
+    out = {k: data[k] for k in data.files}
+    print(f"Cache hit: {npz_path.name}")
+    return out
+
+
+def _save_cached_npz(name: str, fingerprint: dict, arrays: dict[str, np.ndarray]) -> None:
+    base = _cache_dir() / name
+    npz_path = base.with_suffix(".npz")
+    meta_path = base.with_suffix(".json")
+    np.savez_compressed(npz_path, **arrays)
+    meta_path.write_text(
+        json.dumps({"fingerprint": fingerprint, "arrays": sorted(arrays.keys())}, indent=2),
+        encoding="utf-8",
+    )
+    print(f"Cache write: {npz_path.name}")
+
+
+def _landcover_source_sigs() -> dict[str, Any]:
+    index_path = PROC / "landcover_index.json"
+    sig: dict[str, Any] = {
+        "index": _file_sig(index_path),
+        "size": OUT_SIZE,
+        "crs": CRS,
+        "bbox": [XMIN, YMIN, XMAX, YMAX],
+    }
+    if index_path.is_file():
+        try:
+            index = json.loads(index_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            index = {}
+        for key in ("landnutzung", "waldflaeche"):
+            rel = index.get(key)
+            path = None
+            if rel:
+                path = Path(rel) if Path(rel).is_absolute() else ROOT / rel
+            sig[key] = _file_sig(path)
+    return sig
 
 
 def _local_xy(lon: float, lat: float, to_local: Transformer) -> tuple[float, float]:
@@ -226,15 +308,52 @@ def _tirol_wald_kind(props: dict) -> str | None:
     return None
 
 
-def rasterize_tirol_landcover(size: int) -> tuple[np.ndarray, dict[str, np.ndarray], str]:
+def rasterize_tirol_landcover(
+    size: int, *, force: bool = False
+) -> tuple[np.ndarray, dict[str, np.ndarray], str]:
     """Rasterize Landnutzung (+ optional Waldfläche).
 
     Returns (class_grid [-1 unset], extra_masks, source_note).
     Extra masks: forest_high, forest_scrub, water (bool arrays as uint8 0/255 later).
+    Cached when landcover GeoJSON / bbox / size are unchanged.
     """
     index_path = PROC / "landcover_index.json"
     if not index_path.is_file():
         return np.full((size, size), -1, dtype=np.int8), {}, "none"
+
+    fingerprint = {
+        "schema": "tirol_landcover_v1",
+        **_landcover_source_sigs(),
+        "size": size,
+        "classes": {
+            "grass": CLASS_GRASS,
+            "dirt": CLASS_DIRT,
+            "forest": CLASS_FOREST,
+            "water": CLASS_WATER,
+            "concrete": CLASS_CONCRETE,
+        },
+    }
+    cached = _load_cached_npz("tirol_landcover", fingerprint, force=force)
+    if cached is not None:
+        landuse = cached["landuse"].astype(np.int8, copy=False)
+        extras = {
+            "forest_high": cached["forest_high"].astype(bool, copy=False),
+            "forest_scrub": cached["forest_scrub"].astype(bool, copy=False),
+            "water": cached["water"].astype(bool, copy=False),
+        }
+        if "note" in cached:
+            raw_note = cached["note"]
+            note = str(raw_note.item() if getattr(raw_note, "shape", None) == () else raw_note)
+        else:
+            note = "tirol_landcover_cached"
+        print(
+            f"Tirol landcover (cached): "
+            f"grass={(landuse == CLASS_GRASS).mean()*100:.2f}% "
+            f"forest={(landuse == CLASS_FOREST).mean()*100:.2f}% "
+            f"water={(landuse == CLASS_WATER).mean()*100:.2f}% "
+            f"concrete={(landuse == CLASS_CONCRETE).mean()*100:.2f}%"
+        )
+        return landuse, extras, note
 
     index = json.loads(index_path.read_text(encoding="utf-8"))
     ln = _load_landcover_geojson(index.get("landnutzung"))
@@ -305,7 +424,56 @@ def rasterize_tirol_landcover(size: int) -> tuple[np.ndarray, dict[str, np.ndarr
         f"water={(landuse == CLASS_WATER).mean()*100:.2f}% "
         f"concrete={(landuse == CLASS_CONCRETE).mean()*100:.2f}%"
     )
+    _save_cached_npz(
+        "tirol_landcover",
+        fingerprint,
+        {
+            "landuse": landuse.astype(np.int8, copy=False),
+            "forest_high": forest_high.astype(np.uint8),
+            "forest_scrub": forest_scrub.astype(np.uint8),
+            "water": water.astype(np.uint8),
+            "note": np.array(note),
+        },
+    )
     return landuse, extras, note
+
+
+def compute_slope_cached(*, force: bool = False) -> np.ndarray:
+    """DGM → elev grid → slope degrees; cached on DGM + grid geometry."""
+    dgm_path = dgm_cache_path(SITE)
+    if not dgm_path.exists():
+        legacy = RAW / "dgm_wcs10.tif"
+        if legacy.exists() and SLUG.startswith("tirol-m28"):
+            dgm_path = legacy
+        else:
+            raise SystemExit(f"Missing {dgm_path} — run tools/fetch_dgm.py first")
+
+    fingerprint = {
+        "schema": "slope_v1",
+        "dgm": _file_sig(dgm_path),
+        "size": OUT_SIZE,
+        "crs": CRS,
+        "bbox": [XMIN, YMIN, XMAX, YMAX],
+        "mpp": MPP,
+    }
+    cached = _load_cached_npz("slope", fingerprint, force=force)
+    if cached is not None:
+        slope = cached["slope"].astype(np.float32, copy=False)
+        print(
+            f"Slope deg (cached): min={slope.min():.1f} max={slope.max():.1f} "
+            f"rock_threshold={SLOPE_ROCK_DEG} open_px={SLOPE_ROCK_OPEN_PX}"
+        )
+        return slope
+
+    elev = np.asarray(tiff.imread(dgm_path), dtype=np.float64)
+    elev_g = elev_to_grid(elev, OUT_SIZE)
+    slope = slope_degrees(elev_g).astype(np.float32)
+    print(
+        f"Slope deg: min={slope.min():.1f} max={slope.max():.1f} "
+        f"rock_threshold={SLOPE_ROCK_DEG} open_px={SLOPE_ROCK_OPEN_PX}"
+    )
+    _save_cached_npz("slope", fingerprint, {"slope": slope})
+    return slope
 
 
 def _tag_class(tags: dict) -> int | None:
@@ -471,28 +639,39 @@ def bridge_under_mask(size: int, margin_m: float = 0.5) -> np.ndarray:
     mask = np.array(img, dtype=np.uint8) > 0
     print(
         f"Bridge under-mask: decks={n_decks} "
-        f"coverage={(mask.mean() * 100):.3f}% (margin={margin_m}m, gap−inset)"
+        f"coverage={(mask.mean() * 100):.3f}% (margin={margin_m}m, gap-inset)"
     )
     return mask
 
 
-def gallery_roof_mask(size: int, margin_m: float = 1.5) -> np.ndarray:
-    """Gallery roof footprint → rock (OSM asphalt must not paint the roof).
+def gallery_roof_mask(size: int, margin_m: float = 1.5) -> tuple[np.ndarray, np.ndarray]:
+    """Gallery roof footprints for terrain paint.
 
-    Road centerlines still run through galleries, so without this carve the
-    terrain *above* the structure stays Asphalt. Carriageway is MeshRoad.
-    Uses portal-span nodes from galleries_centerlines.json when present.
+    Returns ``(rock_force, rock_under_asphalt)``:
+    - ``rock_force``: classic — rock wins over road asphalt (mountain tunnel).
+    - ``rock_under_asphalt``: rock only where no road asphalt (underpass with
+      surface road above; ``terrain_roof: keep_asphalt``).
+    Galleries with ``terrain_roof: none`` are skipped.
     """
     path = PROC / "galleries_centerlines.json"
-    img = Image.new("L", (size, size), 0)
+    empty = np.zeros((size, size), dtype=bool)
     if not path.exists():
-        return np.zeros((size, size), dtype=bool)
+        return empty, empty
 
     m_per_px = TERRAIN_EXTENT / max(size - 1, 1)
-    draw = ImageDraw.Draw(img)
+    img_force = Image.new("L", (size, size), 0)
+    img_keep = Image.new("L", (size, size), 0)
+    draw_f = ImageDraw.Draw(img_force)
+    draw_k = ImageDraw.Draw(img_keep)
     data = json.loads(path.read_text(encoding="utf-8"))
-    n_gals = 0
+    n_force = 0
+    n_keep = 0
+    n_skip = 0
     for gal in data.get("galleries") or []:
+        mode = str(gal.get("terrain_roof") or "rock").lower().strip()
+        if mode in ("none", "off", "false", "0"):
+            n_skip += 1
+            continue
         nodes = gal.get("nodes") or []
         if len(nodes) < 2:
             continue
@@ -506,20 +685,26 @@ def gallery_roof_mask(size: int, margin_m: float = 1.5) -> np.ndarray:
                 nodes = span
         widths = [float(n.get("width") or 7.0) for n in nodes]
         width_m = max(widths) if widths else 7.0
-        # Cover roof + closed-side overhang a bit past the road ribbon.
         stroke = max(2, int(round((width_m + 2.0 * margin_m) / m_per_px)))
         pts = [_to_px_beamng(float(n["x"]), float(n["y"]), size) for n in nodes]
+        keep = mode in ("keep_asphalt", "under_asphalt", "surface_first", "asphalt")
+        draw = draw_k if keep else draw_f
         draw.line(pts, fill=255, width=stroke, joint="curve")
         r = max(1, stroke // 2)
         for px, py in (pts[0], pts[-1]):
             draw.ellipse((px - r, py - r, px + r, py + r), fill=255)
-        n_gals += 1
-    mask = np.array(img, dtype=np.uint8) > 0
+        if keep:
+            n_keep += 1
+        else:
+            n_force += 1
+    force = np.array(img_force, dtype=np.uint8) > 0
+    keep_m = np.array(img_keep, dtype=np.uint8) > 0
     print(
-        f"Gallery roof-mask: galleries={n_gals} "
-        f"coverage={(mask.mean() * 100):.3f}% (margin={margin_m}m → rock)"
+        f"Gallery roof-mask: force_rock={n_force} keep_asphalt={n_keep} "
+        f"skip={n_skip} coverage_force={(force.mean() * 100):.3f}% "
+        f"coverage_keep={(keep_m.mean() * 100):.3f}% (margin={margin_m}m)"
     )
-    return mask
+    return force, keep_m
 
 
 def slope_rock_mask(slope: np.ndarray, threshold_deg: float, open_px: int) -> np.ndarray:
@@ -548,12 +733,15 @@ def classify(
     shoulder: np.ndarray,
     bridge_under: np.ndarray | None = None,
     gallery_roof: np.ndarray | None = None,
+    gallery_roof_keep_asphalt: np.ndarray | None = None,
 ) -> np.ndarray:
     """Exclusive material class per pixel.
 
     Priority: road bed > Concrete > Water > Rock > Forest > Grass > Dirt.
     road_terrain=asphalt → carriageway CLASS_ASPHALT; gravel → CLASS_DIRT
-    (DecalRoad supplies the asphalt look). Bridge/gallery roofs stay rock.
+    (DecalRoad supplies the asphalt look). Bridge unders / forced gallery roofs
+    stay rock; ``gallery_roof_keep_asphalt`` is rock only where no road asphalt
+    (surface road above an underpass wins).
     """
     out = np.full(landuse.shape, CLASS_DIRT, dtype=np.uint8)
     out[landuse == CLASS_GRASS] = CLASS_GRASS
@@ -573,6 +761,9 @@ def classify(
         out[bridge_under] = CLASS_ROCK
     if gallery_roof is not None and gallery_roof.any():
         out[gallery_roof] = CLASS_ROCK
+    # Underpass roof: rock beside/under surface road, but asphalt (Fernpass) stays.
+    if gallery_roof_keep_asphalt is not None and gallery_roof_keep_asphalt.any():
+        out[gallery_roof_keep_asphalt & ~asphalt] = CLASS_ROCK
     return out
 
 
@@ -610,25 +801,22 @@ def write_preview(classes: np.ndarray, path: Path) -> None:
 
 
 def main() -> None:
-    dgm_path = dgm_cache_path(SITE)
-    if not dgm_path.exists():
-        legacy = RAW / "dgm_wcs10.tif"
-        if legacy.exists() and SLUG.startswith("tirol-m28"):
-            dgm_path = legacy
-        else:
-            raise SystemExit(f"Missing {dgm_path} — run tools/fetch_dgm.py first")
+    parser = argparse.ArgumentParser(description="Build BeamNG terrain layer masks")
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Ignore landcover/slope caches and recompute from source data",
+    )
+    args = parser.parse_args()
+    force = bool(args.force)
 
-    elev = np.asarray(tiff.imread(dgm_path), dtype=np.float64)
-    elev_g = elev_to_grid(elev, OUT_SIZE)
-    slope = slope_degrees(elev_g)
-    print(f"Slope deg: min={slope.min():.1f} max={slope.max():.1f} "
-          f"rock_threshold={SLOPE_ROCK_DEG} open_px={SLOPE_ROCK_OPEN_PX}")
+    slope = compute_slope_cached(force=force)
 
     lu_src = str(((SITE.get("sources") or {}).get("landuse") or {}).get("type") or "osm").lower()
     extras: dict[str, np.ndarray] = {}
     source_note = "osm_landuse"
     if lu_src in ("featureserver", "wfs", "tirol", "landcover"):
-        landuse, extras, source_note = rasterize_tirol_landcover(OUT_SIZE)
+        landuse, extras, source_note = rasterize_tirol_landcover(OUT_SIZE, force=force)
         if source_note == "none" or int((landuse >= 0).sum()) == 0:
             print("Tirol landcover missing/empty — falling back to OSM")
             try:
@@ -650,7 +838,8 @@ def main() -> None:
 
     asphalt, shoulder = road_masks(OUT_SIZE)
     bridge_under = bridge_under_mask(OUT_SIZE)
-    gallery_roof = gallery_roof_mask(OUT_SIZE)
+    gallery_roof, gallery_roof_keep = gallery_roof_mask(OUT_SIZE)
+    # Only forced roof rock carves asphalt away; keep_asphalt leaves surface roads.
     structure_rock = bridge_under | gallery_roof
     asphalt_vis = asphalt & ~structure_rock
     shoulder_vis = shoulder & ~structure_rock
@@ -662,7 +851,13 @@ def main() -> None:
         f"bridge/gallery roof carved to rock)"
     )
     classes = classify(
-        landuse, slope, asphalt_vis, shoulder_vis, bridge_under, gallery_roof
+        landuse,
+        slope,
+        asphalt_vis,
+        shoulder_vis,
+        bridge_under,
+        gallery_roof,
+        gallery_roof_keep,
     )
 
     mask_dir = PROC / "terrain_masks"
@@ -697,6 +892,9 @@ def main() -> None:
     Image.fromarray(shoulder_vis.astype(np.uint8) * 255, mode="L").save(PROC / "mask_shoulder.png")
     Image.fromarray(bridge_under.astype(np.uint8) * 255, mode="L").save(PROC / "mask_bridge_under.png")
     Image.fromarray(gallery_roof.astype(np.uint8) * 255, mode="L").save(PROC / "mask_gallery_roof.png")
+    Image.fromarray(gallery_roof_keep.astype(np.uint8) * 255, mode="L").save(
+        PROC / "mask_gallery_roof_keep_asphalt.png"
+    )
     Image.fromarray((classes == CLASS_CONCRETE).astype(np.uint8) * 255, mode="L").save(
         PROC / "mask_settlement.png"
     )
@@ -723,6 +921,7 @@ def main() -> None:
             "forest_high_pct": round(float(forest_high.mean() * 100), 2),
             "forest_scrub_pct": round(float(forest_scrub.mean() * 100), 2),
             "gallery_roof_pct": round(float(gallery_roof.mean() * 100), 2),
+            "gallery_roof_keep_asphalt_pct": round(float(gallery_roof_keep.mean() * 100), 2),
         },
         "sources": [
             source_note,

@@ -119,14 +119,18 @@ cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/l13_kuehtai.yaml"
 ```
 
 Schreibt TSStatics nach  
-`...\levels\<level>\main\MissionGroup\level_objects\guardrails\items.level.json`  
-Mesh: `italy_guardrails_common_section` (Italy-Kit).
+`...\levels\<level>\main\MissionGroup\level_objects\guardrails\items.level.json`
+
+Default: **Leitpoller** (`style: posts`, Mesh `reflector.dae` ≈1.43 m nativ, `post_scale: 0.7` ≈1.0 m, Abstand `spacing_m` 25 oder 50).  
+Build vendored Mesh + `main.materials.json` nach `art/shapes/objects/` (sonst fehlen Materialien bei Cross-Level-Refs).  
+Alternativ kontinuierliche Italy-Schienen: `style: sections` + `italy_guardrails_common_section`.
 
 Level **neu laden**. Config: `beamng.guardrails` + `annotations.guardrail_source` (`auto`|`gpkg`|`heuristic`).
 
 - `auto`: nicht-leerer `guardrail`-Layer → GPKG, sonst OSM-Heuristik
-- `align_pitch` / `snap_to_heightmap` / `section_length_m` / `abut_overlap_m` — siehe Site-YAML
-- `yaw_flip_right` / `face_y_outward` — W-Profil zur Fahrbahn
+- `style` / `spacing_m` / `post_scale` — Leitpoller
+- `align_pitch` / `snap_to_heightmap` / `section_length_m` / `abut_overlap_m` — siehe Site-YAML (`sections`)
+- `yaw_flip_right` / `face_y_outward` — W-Profil / Reflektor zur Fahrbahn
 - Höhe: `pivot_ground_offset_m` / `z_lift_m`; Abstand Heuristik: `lateral_extra_m`
 
 ---

@@ -215,6 +215,7 @@ beamng:
           columns: rect
   guardrails:
     enabled: true
+    style: sections
     shape: "/art/shapes/objects/italy_guardrails_common_section.dae"
     mesh_length_m: 3.1
     section_length_m: 4.2
