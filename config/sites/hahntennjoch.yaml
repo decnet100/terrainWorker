@@ -33,6 +33,8 @@ beamng:
   mask_size: 512
   slope_rock_deg: 38
   road_width_scale: 1.0
+  lane_width_m: 3.75
+  default_lanes: 2
   shoulder_m: 0.2
   guardrails:
     enabled: true

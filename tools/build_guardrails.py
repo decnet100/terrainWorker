@@ -10,6 +10,7 @@ Does NOT write or overwrite the annotations GPKG — use seed_annotations.py --f
 """
 from __future__ import annotations
 
+import argparse
 import json
 import math
 import sys
@@ -503,6 +504,7 @@ def _entries_posts_along_rail(
         if side_name == "right" and YAW_FLIP_RIGHT:
             rot = _yaw180(rot)
         entries.append({
+            "name": _tsstatic_name("post", px, py, pz, side_name),
             "class": "TSStatic",
             "__parent": "guardrails",
             "position": [round(px, 3), round(py, 3), round(pz, 3)],
@@ -515,6 +517,36 @@ def _entries_posts_along_rail(
             "isRenderEnabled": True,
         })
     return entries
+
+
+def _tsstatic_name(kind: str, px: float, py: float, pz: float, side: str) -> str:
+    """Stable unique name so re-inject replaces instead of stacking anonymous objects."""
+    return (
+        f"gr_{kind}_{side}_"
+        f"{int(round(px * 10))}_{int(round(py * 10))}_{int(round(pz * 10))}"
+    )
+
+
+def _dedupe_entries(entries: list[dict], tol_m: float = 0.35) -> list[dict]:
+    """Drop near-identical positions (same side stacked from overlapping runs)."""
+    if tol_m <= 0 or len(entries) < 2:
+        return entries
+    kept: list[dict] = []
+    for e in entries:
+        pos = e.get("position") or [0, 0, 0]
+        px, py = float(pos[0]), float(pos[1])
+        dup = False
+        for k in kept:
+            kp = k.get("position") or [0, 0, 0]
+            if math.hypot(px - float(kp[0]), py - float(kp[1])) <= tol_m:
+                dup = True
+                break
+        if not dup:
+            kept.append(e)
+    dropped = len(entries) - len(kept)
+    if dropped:
+        print(f"Deduped {dropped} near-duplicate placements (tol={tol_m}m)")
+    return kept
 
 
 def _entries_along_rail(
@@ -581,6 +613,7 @@ def _entries_along_rail(
 
         scale_x = length / MESH_LENGTH if MESH_LENGTH > 1e-6 else 1.0
         entries.append({
+            "name": _tsstatic_name("sect", px, py, pz, side_name),
             "class": "TSStatic",
             "__parent": "guardrails",
             "position": [round(px, 3), round(py, 3), round(pz, 3)],
@@ -877,6 +910,54 @@ def build_entries_heuristic(roads: dict) -> list[dict]:
     return entries
 
 
+def clear_level_guardrails(user_level: Path | None = None) -> Path | None:
+    """Wipe SimGroup guardrails/items.level.json (empty group, keep registration)."""
+    if user_level is None:
+        user_level = (
+            Path.home()
+            / "AppData"
+            / "Local"
+            / "BeamNG"
+            / "BeamNG.drive"
+            / "current"
+            / "levels"
+            / LEVEL_NAME
+        )
+    if not user_level.exists():
+        print(f"Level folder missing: {user_level}")
+        return None
+    group_dir = user_level / "main" / "MissionGroup" / "level_objects" / "guardrails"
+    group_dir.mkdir(parents=True, exist_ok=True)
+    items_path = group_dir / "items.level.json"
+    items_path.write_text("", encoding="utf-8")
+    # Ensure SimGroup exists under level_objects
+    lo_items = user_level / "main" / "MissionGroup" / "level_objects" / "items.level.json"
+    lines = []
+    if lo_items.exists():
+        lines = [ln for ln in lo_items.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    names = set()
+    for ln in lines:
+        try:
+            names.add(json.loads(ln).get("name"))
+        except json.JSONDecodeError:
+            pass
+    if "guardrails" not in names:
+        lines.append(
+            json.dumps(
+                {
+                    "name": "guardrails",
+                    "class": "SimGroup",
+                    "__parent": "level_objects",
+                    "enabled": "1",
+                },
+                separators=(",", ":"),
+            )
+        )
+        lo_items.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print(f"Cleared guardrails items: {items_path}")
+    return items_path
+
+
 def write_level_items(entries: list[dict]) -> Path | None:
     user_level = (
         Path.home()
@@ -892,32 +973,15 @@ def write_level_items(entries: list[dict]) -> Path | None:
         print(f"Level folder missing: {user_level}")
         return None
 
+    # Always wipe first so a partial/old editor save cannot leave orphans in this file.
+    clear_level_guardrails(user_level)
+
     group_dir = user_level / "main" / "MissionGroup" / "level_objects" / "guardrails"
-    group_dir.mkdir(parents=True, exist_ok=True)
     items_path = group_dir / "items.level.json"
-    with items_path.open("w", encoding="utf-8") as f:
+    with items_path.open("w", encoding="utf-8", newline="\n") as f:
         for e in entries:
             f.write(json.dumps(e, separators=(",", ":")) + "\n")
-
-    lo_items = user_level / "main" / "MissionGroup" / "level_objects" / "items.level.json"
-    lines = []
-    if lo_items.exists():
-        lines = [ln for ln in lo_items.read_text(encoding="utf-8").splitlines() if ln.strip()]
-    names = set()
-    for ln in lines:
-        try:
-            names.add(json.loads(ln).get("name"))
-        except json.JSONDecodeError:
-            pass
-    if "guardrails" not in names:
-        lines.append(
-            json.dumps(
-                {"name": "guardrails", "class": "SimGroup", "__parent": "level_objects", "enabled": "1"},
-                separators=(",", ":"),
-            )
-        )
-        lo_items.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        print("Registered SimGroup guardrails under level_objects")
+    print(f"Wrote {len(entries)} objects -> {items_path}")
     return items_path
 
 
@@ -949,13 +1013,13 @@ def resolve_entries(roads: dict) -> tuple[list[dict], str]:
 
 def main() -> None:
     global SHAPE
-    if not ENABLED:
-        print("guardrails.enabled=false — skip")
-        return
-
-    roads_path = PROC / "roads_beamng.json"
-    if not roads_path.exists():
-        raise SystemExit(f"Missing {roads_path} — run build_smoke.py first")
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument(
+        "--clear",
+        action="store_true",
+        help="Only wipe level guardrails/items.level.json (no rebuild)",
+    )
+    args = ap.parse_args()
 
     user_level = (
         Path.home()
@@ -967,6 +1031,20 @@ def main() -> None:
         / "levels"
         / LEVEL_NAME
     )
+
+    if args.clear:
+        clear_level_guardrails(user_level if user_level.exists() else None)
+        print("Reload the level in BeamNG (do not Save over old duplicates).")
+        return
+
+    if not ENABLED:
+        print("guardrails.enabled=false — skip")
+        return
+
+    roads_path = PROC / "roads_beamng.json"
+    if not roads_path.exists():
+        raise SystemExit(f"Missing {roads_path} — run build_smoke.py first")
+
     if STYLE == "posts":
         # Always vendor into the level so materials register (cross-level refs don't).
         if not user_level.exists():
@@ -986,6 +1064,7 @@ def main() -> None:
 
     roads = json.loads(roads_path.read_text(encoding="utf-8"))
     entries, source = resolve_entries(roads)
+    entries = _dedupe_entries(entries)
     out_json = PROC / "guardrails_items.level.json"
     with out_json.open("w", encoding="utf-8") as f:
         for e in entries:
@@ -1022,7 +1101,11 @@ def main() -> None:
     level_path = write_level_items(entries)
     if level_path:
         print(f"Injected: {level_path}")
-        print("Reload the level in BeamNG.")
+        print(
+            "Reload the level in BeamNG (File→Load Level). "
+            "If duplicates remain, do NOT Save first — clear with "
+            "`python tools/build_guardrails.py --clear`, reload, then rebuild."
+        )
 
 
 if __name__ == "__main__":

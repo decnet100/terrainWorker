@@ -31,7 +31,7 @@ Deshalb:
 | DGM 0,5 m | Heightmap, Straßenhöhen | WCS / Blattschnitt GeoTIFF |
 | DOM 0,5 m | Artefakt-Erkennung (optional) | WCS |
 | Orthofoto ~20 cm | Textur-/Maskenhilfe | WCS / Download |
-| GIP / OSM | Centerline, Straßentyp → Breite/Surface | OGD / Overpass |
+| GIP / OSM | Centerline; OSM `lanes`×3,75 m → Fahrbahnbreite (Default 2×3,75 = 7,5 m) | OGD / Overpass |
 | Landnutzung Tirol | Wald vs. Fels, grobe Materials | WFS / Download |
 
 Google Earth nur als **visuelle Referenz** beim Annotieren, nicht als Texturquelle (Lizenz).

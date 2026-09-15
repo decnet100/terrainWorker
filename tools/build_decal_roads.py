@@ -23,6 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 from site_coords import load_site, processed_dir  # noqa: E402
 import build_bridges as bb  # noqa: E402
+from road_width import smooth_roads_widths  # noqa: E402
 
 USER_LEVELS = bb.USER_LEVELS
 
@@ -60,6 +61,17 @@ def _cfg(bng: dict) -> dict:
             defaults.get("stitch_tol_m")
             if defaults.get("stitch_tol_m") is not None
             else 1.25
+        ),
+        # After stitch: fill short narrow OSM stubs, then soft-ramp lane steps.
+        "width_fill_dip_m": float(
+            defaults.get("width_fill_dip_m")
+            if defaults.get("width_fill_dip_m") is not None
+            else 40.0
+        ),
+        "width_blend_m": float(
+            defaults.get("width_blend_m")
+            if defaults.get("width_blend_m") is not None
+            else 25.0
         ),
         # Cap chord length before DecalRoad (OSM often has 50–80 m straights into
         # curves; improvedSpline then tears mid-ribbon). 0 = no densify.
@@ -1305,6 +1317,11 @@ def main() -> None:
     if not roads:
         raise SystemExit(f"Missing {proc / 'roads_beamng.json'}")
     roads = stitch_abutting_roads(roads, cfg)
+    fill = float(cfg.get("width_fill_dip_m") or 0.0)
+    blend = float(cfg.get("width_blend_m") or 0.0)
+    if fill > 0 or blend > 0:
+        roads = smooth_roads_widths(roads, fill_dip_m=fill, blend_m=blend)
+        print(f"Decal width smooth: fill_dip_m={fill} blend_m={blend}")
 
     size = int(bng.get("mask_size") or 512)
     meta_path = proc / "heightmap_meta.json"

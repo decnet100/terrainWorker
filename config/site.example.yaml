@@ -67,7 +67,10 @@ beamng:
   level_name: autoroad_test
   mask_size: 512
   slope_rock_deg: 38             # Hangneigung → rock layer
-  road_width_scale: 1.0          # OSM-Breite → Asphalt-Maske
+  road_width_scale: 1.0          # node width → Asphalt-Maske / Decal scale
+  # Fahrbahnbreite = lanes × lane_width_m (Default 2 × 3.75 = 7.5 m).
+  lane_width_m: 3.75
+  default_lanes: 2
   shoulder_m: 0.2                # Dirt-Bankett je Seite (m)
   guardrails:
     enabled: true

@@ -18,6 +18,16 @@ Genauwerte immer aus `data/processed/<site>/heightmap_meta.json` nehmen.
 
 ---
 
+## Fahrbahnbreite (Lanes)
+
+Default-Modell: **`default_lanes` × `lane_width_m` = 2 × 3.75 m = 7.5 m** (`beamng` in Site-YAML).
+
+Details, OSM-Fallen (`lanes` vs. `lanes:backward`), Decal-Übergänge und **Road-Bed**: [ROADS.md](ROADS.md).
+
+Kurz: `tools/build_smoke.py` → `roads_beamng.json` (Node-`width`); danach Decals/Masken neu.
+
+---
+
 ## 1. Level aus Template anlegen (Skript)
 
 **Nicht** File → New Level und **nicht** den alten Expand-Archive-One-Liner — Zip-Struktur und Pfade `/levels/template/...` machen das leicht kaputt.
@@ -125,10 +135,20 @@ Default: **Leitpoller** (`style: posts`, Mesh `reflector.dae` ≈1.43 m nativ,
 Build vendored Mesh + `main.materials.json` nach `art/shapes/objects/` (sonst fehlen Materialien bei Cross-Level-Refs).  
 Alternativ kontinuierliche Italy-Schienen: `style: sections` + `italy_guardrails_common_section`.
 
+**Doppelte entfernen / neu setzen:**
+
+```powershell
+python tools\build_guardrails.py --clear    # leert items.level.json
+# Level neu laden (nicht speichern)
+python tools\build_guardrails.py            # wipe + neu schreiben
+# Level erneut laden
+```
+
 Level **neu laden**. Config: `beamng.guardrails` + `annotations.guardrail_source` (`auto`|`gpkg`|`heuristic`).
 
 - `auto`: nicht-leerer `guardrail`-Layer → GPKG, sonst OSM-Heuristik
 - `style` / `spacing_m` / `post_scale` — Leitpoller
+- `--clear` — nur SimGroup leeren
 - `align_pitch` / `snap_to_heightmap` / `section_length_m` / `abut_overlap_m` — siehe Site-YAML (`sections`)
 - `yaw_flip_right` / `face_y_outward` — W-Profil / Reflektor zur Fahrbahn
 - Höhe: `pivot_ground_offset_m` / `z_lift_m`; Abstand Heuristik: `lateral_extra_m`

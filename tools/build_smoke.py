@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 from site_coords import load_site, processed_dir, site_slug  # noqa: E402
 from fetch_dgm import dgm_cache_path  # noqa: E402
+from road_width import resolve_road_width_m  # noqa: E402
 
 SITE = load_site()
 RAW = ROOT / "data" / "raw"
@@ -27,6 +28,7 @@ XMIN, YMIN, XMAX, YMAX = map(float, BBOX)
 CRS = SITE.get("crs", "EPSG:31254")
 MPP = float(SITE.get("beamng", {}).get("meters_per_pixel", 1.0))
 HM_SIZE = int(SITE.get("beamng", {}).get("mask_size", 512))
+BNG = SITE.get("beamng") or {}
 BW = XMAX - XMIN
 BH = YMAX - YMIN
 SLUG = site_slug(SITE)
@@ -121,39 +123,15 @@ def fetch_osm_roads() -> list[dict]:
             raise RuntimeError(f"Overpass failed: {last_err}")
     to_local = Transformer.from_crs("EPSG:4326", CRS, always_xy=True)
 
-    width_by_class = {
-        "motorway": 12.0,
-        "trunk": 10.0,
-        "primary": 8.0,
-        "secondary": 7.0,
-        "tertiary": 6.0,
-        "unclassified": 5.0,
-        "residential": 5.0,
-        "living_street": 4.5,
-        "service": 4.0,
-        "track": 3.5,
-        "path": 2.0,
-    }
-
     roads = []
+    width_src_counts: dict[str, int] = {}
     for el in data.get("elements", []):
         if el.get("type") != "way" or "geometry" not in el:
             continue
         tags = el.get("tags", {})
         hw = tags.get("highway", "unclassified")
-        raw_w = tags.get("width")
-        if raw_w is None or raw_w == "":
-            width = float(width_by_class.get(hw, 5.0))
-        else:
-            s = str(raw_w).strip().lower().replace("m", "").replace(",", ".")
-            for sep in (";", "|", "/", "-"):
-                if sep in s:
-                    s = s.split(sep)[0].strip()
-                    break
-            try:
-                width = max(1.5, float(s))
-            except ValueError:
-                width = float(width_by_class.get(hw, 5.0))
+        width, lanes, wsrc = resolve_road_width_m(tags=tags, highway=hw, bng=BNG)
+        width_src_counts[wsrc] = width_src_counts.get(wsrc, 0) + 1
         nodes = []
         for g in el["geometry"]:
             x, y = to_local.transform(g["lon"], g["lat"])
@@ -168,9 +146,11 @@ def fetch_osm_roads() -> list[dict]:
                 "id": el["id"],
                 "highway": hw,
                 "name": tags.get("name") or tags.get("ref") or "",
+                "lanes": lanes,
+                "width_source": wsrc,
                 "nodes": nodes,
             })
-    print(f"OSM roads: {len(roads)}")
+    print(f"OSM roads: {len(roads)} width_sources={width_src_counts}")
     return roads
 
 
@@ -229,12 +209,17 @@ def roads_to_beamng_json(roads: list[dict]) -> dict:
     """Format for BeamNG Terrain And Road Importer style."""
     payload = {}
     for i, road in enumerate(roads):
-        payload[str(i)] = {
+        entry = {
             "nodes": road["nodes"],
             "highway": road["highway"],
             "name": road["name"],
             "osm_id": road["id"],
         }
+        if road.get("lanes") is not None:
+            entry["lanes"] = road["lanes"]
+        if road.get("width_source"):
+            entry["width_source"] = road["width_source"]
+        payload[str(i)] = entry
     return payload
 
 

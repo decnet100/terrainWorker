@@ -39,6 +39,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 from site_coords import SiteCoords, load_site, processed_dir  # noqa: E402
 import build_bridges as bb  # noqa: E402
+from road_width import default_carriageway_width_m  # noqa: E402
 
 USER_LEVELS = bb.USER_LEVELS
 
@@ -143,7 +144,11 @@ GALLERY_SCALAR_KEYS = (
 def default_gallery_cfg(bng: dict) -> tuple[dict, list]:
     raw = bng.get("galleries") or {}
     defaults = {
-        "width_m": float(raw.get("width_m") or 7.0),
+        "width_m": (
+            float(raw["width_m"])
+            if raw.get("width_m") is not None
+            else default_carriageway_width_m(bng)
+        ),
         "width_from_road": bool(raw.get("width_from_road", True)),
         "clear_height_m": float(raw.get("clear_height_m") or 3.0),
         "roof_thickness_m": float(raw.get("roof_thickness_m") or 0.5),
@@ -1949,7 +1954,7 @@ def loft_portal_frame(
     tx = float(node.get("tx") or 1.0)
     ty = float(node.get("ty") or 0.0)
     fwd, left = _basis_road(tx, ty, into_sign)
-    half = 0.5 * float(node.get("width") or 7.0)
+    half = 0.5 * float(node.get("width") or 7.5)
     block = max(0.4, float(block_m))
     depth = max(0.6, float(depth_m))
     over = max(0.0, float(overhang_m))
@@ -2055,7 +2060,7 @@ def loft_portal_collar(
     ty = float(node.get("ty") or 0.0)
     fwd, left = _basis_road(tx, ty, into_sign)
     out_xy = (-fwd[0], -fwd[1])
-    half = 0.5 * float(node.get("width") or 7.0)
+    half = 0.5 * float(node.get("width") or 7.5)
     block = max(0.4, float(block_m))
     depth = max(0.6, float(depth_m))
     over = max(0.0, float(overhang_m))
@@ -2301,8 +2306,8 @@ def make_gallery_deck_meshroad(
     if z_terrain is not None and s_p0 is not None:
         n0 = _node_nearest_s(nodes, s_p0)
         n1 = _node_nearest_s(nodes, s_p1)
-        w0 = float(n0.get("width") or 7.0)
-        w1 = float(n1.get("width") or 7.0)
+        w0 = float(n0.get("width") or 7.5)
+        w1 = float(n1.get("width") or 7.5)
         cf0, _zl0, _zc0, _zr0 = bb.sample_crossfall(
             z_terrain,
             float(n0["x"]),
@@ -2326,7 +2331,7 @@ def make_gallery_deck_meshroad(
     mesh_nodes = []
     for i, n in enumerate(nodes):
         z = float(n["z_road"])
-        w = float(n.get("width") or 7.0) + float(width_extra_m) + open_extra
+        w = float(n.get("width") or 7.5) + float(width_extra_m) + open_extra
         tx = float(n.get("tx") or 1.0)
         ty = float(n.get("ty") or 0.0)
         x = float(n["x"])
@@ -2637,7 +2642,7 @@ def _project_point_to_nodes(
     for i, n in enumerate(nodes):
         x0, y0 = float(n["x"]), float(n["y"])
         z0 = _z_of(n)
-        w0 = 0.5 * float(n.get("width") or 7.0)
+        w0 = 0.5 * float(n.get("width") or 7.5)
         if i == len(nodes) - 1:
             d = math.hypot(bx - x0, by - y0)
             cand = (d, z0, w0)
@@ -2645,7 +2650,7 @@ def _project_point_to_nodes(
             n1 = nodes[i + 1]
             x1, y1 = float(n1["x"]), float(n1["y"])
             z1 = _z_of(n1)
-            w1 = 0.5 * float(n1.get("width") or 7.0)
+            w1 = 0.5 * float(n1.get("width") or 7.5)
             dx, dy = x1 - x0, y1 - y0
             seg2 = dx * dx + dy * dy
             if seg2 < 1e-12:
@@ -2747,7 +2752,7 @@ def conform_approach_heightmap(
             bands.append(hi)
 
         for band in bands:
-            half_ref = 0.5 * max(float(n.get("width") or 7.0) for n in band) + 0.5 * width_extra
+            half_ref = 0.5 * max(float(n.get("width") or 7.5) for n in band) + 0.5 * width_extra
             xs = [float(n["x"]) for n in band]
             ys = [float(n["y"]) for n in band]
             margin = half_ref + pad + falloff + 1.0
@@ -2996,8 +3001,8 @@ def _foundation_edge_polylines_n(
                     "y": float(prev["y"]) + t * (float(n["y"]) - float(prev["y"])),
                     "tx": float(n.get("tx") or prev.get("tx") or 1.0),
                     "ty": float(n.get("ty") or prev.get("ty") or 0.0),
-                    "width": float(prev.get("width") or 7.0)
-                    + t * (float(n.get("width") or 7.0) - float(prev.get("width") or 7.0)),
+                    "width": float(prev.get("width") or 7.5)
+                    + t * (float(n.get("width") or 7.5) - float(prev.get("width") or 7.5)),
                     "z_road": float(prev["z_road"])
                     + t * (float(n["z_road"]) - float(prev["z_road"])),
                     "s": float(prev["s"]) + t * (float(n["s"]) - float(prev["s"])),
@@ -3016,7 +3021,7 @@ def _foundation_edge_polylines_n(
             ty = float(n.get("ty") or 0.0)
             left_u, right_u = bb.left_right_unit(tx, ty)
             u = left_u if u_name == "left" else right_u
-            half = 0.5 * float(n.get("width") or 7.0) + 0.5 * width_extra_m
+            half = 0.5 * float(n.get("width") or 7.5) + 0.5 * width_extra_m
             if side in (u_name, "both"):
                 bot_lat = half + open_extra_m
             else:
@@ -3064,7 +3069,7 @@ def _portal_face_polyline_n(
     fx, fy = tx / horiz, ty / horiz
     nx, ny = into_sign * fx, into_sign * fy
     left_u, _ = bb.left_right_unit(tx, ty)
-    half = 0.5 * float(node.get("width") or 7.0) + 0.5 * width_extra_m
+    half = 0.5 * float(node.get("width") or 7.5) + 0.5 * width_extra_m
     z_bot = float(node["z_road"]) - foundation_m + z_offset_m
     ox = x + into_sign * out_m * fx
     oy = y + into_sign * out_m * fy
@@ -3223,8 +3228,8 @@ def _gallery_edge_polylines(
                     "y": float(prev["y"]) + t * (float(n["y"]) - float(prev["y"])),
                     "tx": float(n.get("tx") or prev.get("tx") or 1.0),
                     "ty": float(n.get("ty") or prev.get("ty") or 0.0),
-                    "width": float(prev.get("width") or 7.0)
-                    + t * (float(n.get("width") or 7.0) - float(prev.get("width") or 7.0)),
+                    "width": float(prev.get("width") or 7.5)
+                    + t * (float(n.get("width") or 7.5) - float(prev.get("width") or 7.5)),
                     "z_road": float(prev["z_road"])
                     + t * (float(n["z_road"]) - float(prev["z_road"])),
                     "z_roof_outer": float(
@@ -3259,7 +3264,7 @@ def _gallery_edge_polylines(
         tx = float(n.get("tx") or 1.0)
         ty = float(n.get("ty") or 0.0)
         left_u, right_u = bb.left_right_unit(tx, ty)
-        half = 0.5 * float(n.get("width") or 7.0) + 0.5 * width_extra_m
+        half = 0.5 * float(n.get("width") or 7.5) + 0.5 * width_extra_m
         z_bot = float(n["z_road"]) - foundation_m
         z_top = float(n.get("z_roof_outer") if n.get("z_roof_outer") is not None else n["z_road"])
         x = float(n["x"])
@@ -3308,7 +3313,7 @@ def _portal_face_polylines(
     horiz = math.hypot(tx, ty) or 1.0
     fx, fy = tx / horiz, ty / horiz
     left_u, _ = bb.left_right_unit(tx, ty)
-    half = 0.5 * float(node.get("width") or 7.0) + 0.5 * width_extra_m
+    half = 0.5 * float(node.get("width") or 7.5) + 0.5 * width_extra_m
     z_bot = float(node["z_road"]) - foundation_m
     z_top = float(
         node["z_roof_outer"]
@@ -3404,8 +3409,8 @@ def _roof_edge_polylines_n(
                     "y": float(prev["y"]) + t * (float(n["y"]) - float(prev["y"])),
                     "tx": float(n.get("tx") or prev.get("tx") or 1.0),
                     "ty": float(n.get("ty") or prev.get("ty") or 0.0),
-                    "width": float(prev.get("width") or 7.0)
-                    + t * (float(n.get("width") or 7.0) - float(prev.get("width") or 7.0)),
+                    "width": float(prev.get("width") or 7.5)
+                    + t * (float(n.get("width") or 7.5) - float(prev.get("width") or 7.5)),
                     "z_roof_outer": z0 + t * (z1 - z0),
                     "s": float(prev["s"]) + t * (float(n["s"]) - float(prev["s"])),
                 }
@@ -3425,7 +3430,7 @@ def _roof_edge_polylines_n(
             left_u, right_u = bb.left_right_unit(tx, ty)
             u_out = left_u if u_name == "left" else right_u
             nx, ny = -float(u_out[0]), -float(u_out[1])
-            half = 0.5 * float(n.get("width") or 7.0) + 0.5 * width_extra_m
+            half = 0.5 * float(n.get("width") or 7.5) + 0.5 * width_extra_m
             if side in (u_name, "both"):
                 bot_lat = half + open_extra_m
             else:
@@ -3479,7 +3484,7 @@ def _portal_face_upper_polyline_n(
     # Same outward normal as lower face; sided bake uses the inward half-plane.
     nx, ny = into_sign * fx, into_sign * fy
     left_u, _ = bb.left_right_unit(tx, ty)
-    half = 0.5 * float(node.get("width") or 7.0) + 0.5 * width_extra_m
+    half = 0.5 * float(node.get("width") or 7.5) + 0.5 * width_extra_m
     z_top = float(
         node["z_roof_outer"]
         if node.get("z_roof_outer") is not None
@@ -3567,8 +3572,8 @@ def _foundation_edge_polylines(
                     "y": float(prev["y"]) + t * (float(n["y"]) - float(prev["y"])),
                     "tx": float(n.get("tx") or prev.get("tx") or 1.0),
                     "ty": float(n.get("ty") or prev.get("ty") or 0.0),
-                    "width": float(prev.get("width") or 7.0)
-                    + t * (float(n.get("width") or 7.0) - float(prev.get("width") or 7.0)),
+                    "width": float(prev.get("width") or 7.5)
+                    + t * (float(n.get("width") or 7.5) - float(prev.get("width") or 7.5)),
                     "z_road": float(prev["z_road"])
                     + t * (float(n["z_road"]) - float(prev["z_road"])),
                     "s": float(prev["s"]) + t * (float(n["s"]) - float(prev["s"])),
@@ -3587,7 +3592,7 @@ def _foundation_edge_polylines(
             ty = float(n.get("ty") or 0.0)
             left_u, right_u = bb.left_right_unit(tx, ty)
             u = left_u if u_name == "left" else right_u
-            half = 0.5 * float(n.get("width") or 7.0) + 0.5 * width_extra_m
+            half = 0.5 * float(n.get("width") or 7.5) + 0.5 * width_extra_m
             if side in (u_name, "both"):
                 bot_lat = half + open_extra_m
             else:
@@ -4043,7 +4048,7 @@ def embed_terrain_lips_heightmap(
                     # (foundation+overhang); punching that full strip deleted slope
                     # cells that appear "above" the visible upper lip.
                     half_road = (
-                        0.5 * float(n.get("width") or 7.0) + 0.5 * width_extra
+                        0.5 * float(n.get("width") or 7.5) + 0.5 * width_extra
                     )
                     hole_lat = half_road + 0.5 * mpp
                     lo_h = _portal_face_polyline_n(
@@ -4359,7 +4364,7 @@ def carve_gallery_clearance(
             if len(band) < 1:
                 continue
             half_ref = (
-                0.5 * max(float(n.get("width") or 7.0) for n in band) * width_scale
+                0.5 * max(float(n.get("width") or 7.5) for n in band) * width_scale
             )
             xs = [float(n["x"]) for n in band]
             ys = [float(n["y"]) for n in band]

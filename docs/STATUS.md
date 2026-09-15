@@ -1,43 +1,41 @@
 # Stand und Roadmap
 
 Kurzüberblick nach dem Hahntennjoch-Smoke-Test (BeamNG 0.39).  
-Details: [BEAMNG_IMPORT.md](BEAMNG_IMPORT.md), [ANNOTATIONS.md](ANNOTATIONS.md), [KONZEPT.md](KONZEPT.md).  
+Details: [BEAMNG_IMPORT.md](BEAMNG_IMPORT.md), [ROADS.md](ROADS.md), [ANNOTATIONS.md](ANNOTATIONS.md), [KONZEPT.md](KONZEPT.md), [GIP.md](GIP.md).  
 Spätere Multi-Map-Session (nicht jetzt bauen): [TIROLRUNDE.md](TIROLRUNDE.md).
 
 ## Erledigt
 
 ### Sites
-- **Hahntennjoch** — Default `config/site.yaml` / `config/sites/hahntennjoch.yaml` (Leitplanken/Gelände)
-- **L13 Kühtai** — `config/sites/l13_kuehtai.yaml` (Galerien via GIP); aktiv mit `AUTOROAD_SITE`
+- **Hahntennjoch** — Default `config/site.yaml` / `config/sites/hahntennjoch.yaml`
+- **L13 Kühtai** — `config/sites/l13_kuehtai.yaml` (Galerien via GIP)
+- **Mega-Fernpass 8192** — `config/sites/fernpass_mega.yaml` (B179, Decals, Brücken/Galerien, Leitpoller)
 - Processed getrennt: `data/processed/<site.name>/`
 
-### Terrain / Straße (Hahntennjoch)
-- DGM → 16-bit Heightmap + `roads_beamng.json` (BeamNG-Meter, BBOX gestreckt auf 512²)
-- Terrain-Masken: Grass / dirt_rocky_large / rock / Asphalt (+ Bankett)
+### Terrain / Straße
+- DGM → Heightmap + `roads_beamng.json`
+- **Lanes→Breite** (Default 2×3.75 m): [ROADS.md](ROADS.md)
+- Terrain-Masken + Cache (Landcover/Slope); Decal-Stitch + Width-Smooth; Road-Bed-Conform
 - `terrainPreset.json` → Level-`import/`
 
-### Leitplanken
-- Italy-Mesh, Stoß-an-Stoß; Orientierung `face_y_outward` / `yaw_flip_right: false`
-- `lateral_extra_m: 0.55`, `abut_overlap_m: 0.08`
-- **Zweistufig:** Seed → QGIS → `build_guardrails.py` liest Layer `guardrail` (`annotations.guardrail_source: auto`)
-- Build schreibt **nie** die GPKG; leer/fehlend → OSM-Heuristik
+### Leitplanken / Leitpoller
+- Default: Leitpoller (`style: posts`, vendored `reflector`, `post_scale` ~1 m)
+- `--clear` + eindeutige Namen gegen Doppelte; Italy-Schienen weiter per `style: sections`
+- GPKG-Pfad unverändert — [ANNOTATIONS.md](ANNOTATIONS.md)
 
 ### GIS-Annotationen
 - Schema + Seed + GPKG-Consume für Guardrails — [ANNOTATIONS.md](ANNOTATIONS.md)
-- Smoke-GPKG: `data/annotations/tirol-m28-test-500m.gpkg`
 
 ## Offen / als Nächstes
 
 | Priorität | Thema | Notiz |
 |-----------|--------|--------|
-| 1 | QGIS-Feinschliff / Öffnungen | Lücken in `guardrail` testen |
-| 2 | **Galerien/Brücken aus GIP** | Brücken-MVP: `build_bridges.py` → MeshRoad (Klammbach). Galerien/Hole-Maps offen. Level: `autoroad_galerie_test` |
-| 3 | `road_edge` → Asphalt/Bankett-Masken | analog zweistufig |
-| 4 | **Terrain-Look Alm/Moos** | `t_moss`-Texturen; eigenes TerrainMaterial |
-| 5 | **Geologie / LISA** | Grundfarbe + Vegetations-Bias |
-| 6 | DGM für L13 1024² neu laden | site.yaml bereits auf Kühtai-Quadrat |
-| 7 | DecalRoad, Tunnel-Hermite, Gebäude | |
-| — | **Tirolrunde** (Multi-Map Session) | Vision only — [TIROLRUNDE.md](TIROLRUNDE.md); nach mehreren spielbaren Pässen |
+| 1 | Road-Bed stärker / Re-Import-Check | Micro-Bumps: `road_bed_smooth_m` + Heightmap neu importieren |
+| 2 | QGIS-Feinschliff Guardrails | Lücken in `guardrail` |
+| 3 | Galerien/Brücken Feinschliff | GIP / Strassennetz — [GIP.md](GIP.md) |
+| 4 | `road_edge` → Asphalt/Bankett-Masken | analog zweistufig |
+| 5 | Terrain-Look Alm/Moos | `t_moss` |
+| — | **Tirolrunde** | Vision — [TIROLRUNDE.md](TIROLRUNDE.md) |
 
 ## Bewusst nicht automatisch
 

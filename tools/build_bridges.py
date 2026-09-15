@@ -26,6 +26,7 @@ from pyproj import Transformer
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 from site_coords import SiteCoords, load_site, processed_dir, site_slug  # noqa: E402
+from road_width import default_carriageway_width_m  # noqa: E402
 
 USER_LEVELS = (
     Path.home()
@@ -1057,14 +1058,14 @@ def _project_xy_to_nodes(
     for i, n in enumerate(nodes):
         x0, y0 = float(n["x"]), float(n["y"])
         z0 = float(n["z"])
-        w0 = 0.5 * float(n.get("width") or 7.0)
+        w0 = 0.5 * float(n.get("width") or 7.5)
         if i == len(nodes) - 1:
             cand = (math.hypot(bx - x0, by - y0), z0, w0)
         else:
             n1 = nodes[i + 1]
             x1, y1 = float(n1["x"]), float(n1["y"])
             z1 = float(n1["z"])
-            w1 = 0.5 * float(n1.get("width") or 7.0)
+            w1 = 0.5 * float(n1.get("width") or 7.5)
             dx, dy = x1 - x0, y1 - y0
             seg2 = dx * dx + dy * dy
             t = 0.0 if seg2 < 1e-12 else max(0.0, min(1.0, ((bx - x0) * dx + (by - y0) * dy) / seg2))
@@ -1399,7 +1400,11 @@ def default_bridge_cfg(bng: dict) -> tuple[dict, list]:
     raw = bng.get("bridges") or {}
     # Back-compat: flat keys become defaults
     defaults = {
-        "width_m": float(raw.get("width_m") or 7.0),
+        "width_m": (
+            float(raw["width_m"])
+            if raw.get("width_m") is not None
+            else default_carriageway_width_m(bng)
+        ),
         "width_from_road": bool(raw.get("width_from_road", True)),
         "depth_m": float(raw.get("depth_m") or 0.4),
         "deck_lift_m": float(raw.get("deck_lift_m") or 0.0),

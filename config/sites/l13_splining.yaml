@@ -56,13 +56,15 @@ beamng:
   slope_rock_deg: 43
   slope_rock_open_px: 1
   road_width_scale: 1.0
+  lane_width_m: 3.75
+  default_lanes: 2
   shoulder_m: 0.1
 
   bridges:
     defaults:
       profile: road_spline          # road_span_profile → 4 MeshRoad strips
       centerline: strassennetz
-      width_m: 7.0
+      width_m: 7.5
       width_from_road: false        # Strassennetz has no width attr
       depth_m: 0.4
       deck_lift_m: 0.02
@@ -101,7 +103,7 @@ beamng:
     defaults:
       profile: road_spline          # same deck module as bridges
       centerline: strassennetz
-      width_m: 7.0
+      width_m: 7.5
       width_from_road: false
       clear_height_m: 3.0
       roof_thickness_m: 0.5

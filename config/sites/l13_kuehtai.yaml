@@ -50,11 +50,13 @@ beamng:
   slope_rock_deg: 43
   slope_rock_open_px: 1       # entfernt dünne Konturstreifen; 0 = roh (Zebra)
   road_width_scale: 1.0
+  lane_width_m: 3.75
+  default_lanes: 2
   shoulder_m: 0.1
   bridges:
     # Defaults for all bridges; override per structure in items[]
     defaults:
-      width_m: 7.0
+      width_m: 7.5
       width_from_road: true
       depth_m: 0.4
       deck_lift_m: 0.0
@@ -98,7 +100,7 @@ beamng:
     merge_tol_m: 15.0
     # Optional hard groups if auto-merge misses: merge_groups: [[7236, 10099]]
     defaults:
-      width_m: 7.0
+      width_m: 7.5
       width_from_road: true
       clear_height_m: 3.0      # Fahrraum; Hole nur wo Terrain darüber liegt
       roof_thickness_m: 0.5

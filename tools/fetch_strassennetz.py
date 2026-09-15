@@ -25,6 +25,7 @@ from pyproj import Transformer
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 from site_coords import SiteCoords, load_site, processed_dir, site_slug  # noqa: E402
+from road_width import default_carriageway_width_m  # noqa: E402
 
 SITE = load_site()
 RAW = ROOT / "data" / "raw"
@@ -172,7 +173,12 @@ def write_beamng_roads(features: list[dict], site: dict, out_path: Path) -> dict
     sc = SiteCoords(site)
     to_site = Transformer.from_crs("EPSG:4326", CRS, always_xy=True)
     z_at, _max_h = _load_z_at(site)
-    width_default = float((site.get("beamng") or {}).get("bridges", {}).get("defaults", {}).get("width_m") or 7.0)
+    bng = site.get("beamng") or {}
+    bridges_w = (bng.get("bridges") or {}).get("defaults") or {}
+    if bridges_w.get("width_m") is not None:
+        width_default = float(bridges_w["width_m"])
+    else:
+        width_default = default_carriageway_width_m(bng)
 
     roads = {}
     rid = 0

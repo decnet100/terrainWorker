@@ -50,6 +50,9 @@ beamng:
   slope_rock_deg: 43
   slope_rock_open_px: 1
   road_width_scale: 0.9
+  # Carriageway = lanes × lane_width_m (default 2 × 3.75 = 7.5 m).
+  lane_width_m: 3.75
+  default_lanes: 2
   # Option 2: no terrain Asphalt — gravel bed/bankett; DecalRoad = Fahrbahn.
   road_terrain: asphalt
   dirt_material: gravel
@@ -59,7 +62,7 @@ beamng:
     defaults:
       profile: road_spline          # road_span_profile → 4 MeshRoad strips
       centerline: strassennetz
-      width_m: 7.0
+      width_m: 7.5                  # = default_lanes × lane_width_m
       width_from_road: false        # Strassennetz has no width attr
       depth_m: 0.4
       node_z_is_top: true
@@ -151,7 +154,7 @@ beamng:
     merge_abutting: true
     merge_tol_m: 15.0
     defaults:
-      width_m: 7.0
+      width_m: 7.5
       width_from_road: true
       clear_height_m: 4.5
       roof_thickness_m: 0.5
@@ -327,6 +330,9 @@ beamng:
     # before min_length_m drops the stubs and leaves asphalt gaps.
     stitch_abutting: true
     stitch_tol_m: 1.25
+    # Fill short narrow OSM stubs (2–1–3 pinches); soft-ramp remaining lane steps.
+    width_fill_dip_m: 40.0
+    width_blend_m: 25.0
     # Long single DecalRoads (e.g. OSM 731 ~700m) often lose asphalt geometry in BeamNG.
     max_decal_length_m: 300.0
     clip_galleries: true

@@ -45,11 +45,13 @@ beamng:
   slope_rock_deg: 43
   slope_rock_open_px: 1
   road_width_scale: 0.9
+  lane_width_m: 3.75
+  default_lanes: 2
   shoulder_m: 0.15
 
   bridges:
     defaults:
-      width_m: 7.0
+      width_m: 7.5
       width_from_road: true
       depth_m: 0.4
       node_z_is_top: true
@@ -90,7 +92,7 @@ beamng:
     merge_abutting: true
     merge_tol_m: 15.0
     defaults:
-      width_m: 7.0
+      width_m: 7.5
       width_from_road: true
       clear_height_m: 4.5
       roof_thickness_m: 0.5
