@@ -61,9 +61,9 @@ beamng:
   bridges:
     defaults:
       profile: road_spline          # road_span_profile → 4 MeshRoad strips
-      centerline: strassennetz
+      centerline: gip               # gip | strassennetz | osm
       width_m: 7.5                  # = default_lanes × lane_width_m
-      width_from_road: false        # Strassennetz has no width attr
+      width_from_road: false
       depth_m: 0.4
       node_z_is_top: true
       extend_before_m: 0.0
@@ -87,6 +87,8 @@ beamng:
       approach_conform_falloff_m: 1.5
       approach_conform_sink_m: 0.02
       approach_conform_max_delta_m: 1.0
+      # Unter der Platte Heightmap auf MeshRoad-Z (Decal liegt drauf); Falloff bleibt 1 m.
+      approach_conform_deck_raise_m: 16.0
       step_m: 1.0
       crossfall_max: 0.12
       style:
@@ -122,6 +124,8 @@ beamng:
       - match: { objectid: 4103, name: Kriegerbachbrücke }
       - match: { objectid: 3992, name: Brücke 3992 }
       - match: { objectid: 2304, name: Brücke 2304 }
+        extend_before_m: 1.0
+        extend_after_m: 1.0
       - match: { objectid: 3836, name: Brücke 3836 }
       - match: { objectid: 3844, name: Brücke 3844 }
         extend_before_m: 1.0
@@ -149,11 +153,12 @@ beamng:
         approach_conform: true
         approach_conform_max_cut_m: 12.0
         approach_conform_max_raise_m: 0.8
-        
+
   galleries:
     merge_abutting: true
     merge_tol_m: 15.0
     defaults:
+      centerline: gip               # gip | strassennetz | osm
       width_m: 7.5
       width_from_road: true
       clear_height_m: 4.5
@@ -214,13 +219,12 @@ beamng:
 
   guardrails:
     enabled: true
-    # Default: Leitpoller (driver_training reflector), not continuous Italy rails.
-    style: posts                  # posts | sections
-    spacing_m: 25.0               # 25 or 50 m typical AT
-    # Native mesh ~1.43 m; 0.7 ≈ 1.0 m. Materials vendored into level on build.
-    shape: reflector
+    style: sections               # posts | sections | both
+    spacing_m: 25.0               # 25 or 50 m typical AT (posts)
+    post_shape: reflector
     post_scale: 0.7
-    # Legacy section-rail knobs (used only when style: sections):
+    section_shape: "/art/shapes/objects/italy_guardrails_common_section.dae"
+    # Section-rail knobs (when style includes sections):
     mesh_length_m: 3.1
     section_length_m: 4.2
     curve_r15_m: 15.0
@@ -231,7 +235,19 @@ beamng:
     curvature_window_m: 8.0
     lateral_extra_m: 0.25
     z_sample_inward_m: 0.35
-    sides: both
+    # Brücken: Z = MeshRoad-Deck (nicht DGM-Schlucht); enger an den Fahrbahnrand
+    bridge_deck_z: true
+    bridge_lateral_extra_m: 0.0     # roadside 0.25 → auf Deck an die Kante
+    bridge_match_pad_m: 1.5
+    # steep = DGM-Probe; Achse = GIP Verkehrswege (OBJECTID-Segmente)
+    sides: steep
+    centerline: gip                # gip | strassennetz | osm
+    steep_sides:
+      sample_m: 80
+      look_out_m: 6.0
+      drop_m: 2.5
+      min_hits: 1
+      fallback: both
     highways: [secondary, primary, tertiary, trunk, motorway]
     z_lift_m: 0.05
     pivot_ground_offset_m: 0.0
@@ -242,6 +258,19 @@ beamng:
     clip_galleries: true
     stop_before_gallery_m: 3.0
     gallery_clip_pad_m: 2.0
+    # Cascade: spätere Treffer überschreiben frühere. Match auf osm_id / lanes / highway.
+    rules:
+      # Mehrspurig: Leitpoller / Planken beidseitig (überschreibt steep)
+      - match: { lanes: ">2" }
+        sides: both
+      # Beispiel Mix: bestimmte OIDs mit Italy-Schiene statt/zusätzlich Posts
+      # - match: { ids: [3852, 3993, 4104] }
+      #   style: sections          # oder: both / styles: [posts, sections]
+      # ID-Ketten (Ranges + Einzeln) — bei Bedarf ausfüllen, z.B.:
+      # - match: { ids: [2301-2312, 2315, 2320-2324] }
+      #   sides: left
+      # - match: { ids: 2400-2450 }
+      #   sides: none
 
   water:
     enabled: true
@@ -290,6 +319,7 @@ beamng:
 
   decal_roads:
     enabled: true
+    centerline_source: gip            # gip | strassennetz | osm
     width_scale: 0.9
     # Distinct from TerrainMaterial "Asphalt" (name clash → white/broken Decals).
     material: Road_Asphalt
@@ -338,6 +368,15 @@ beamng:
     clip_galleries: true
     stop_before_gallery_m: 2.0
     gallery_clip_pad_m: 1.0
+    # Terrain-Decal an MeshRoad-Widerlagern abschneiden, dann Decal auf der Platte.
+    clip_bridges: true
+    deck_decals: true
+    deck_decal_overlap_m: 1.0
+    # OSM-Road-bed nicht in den Graben; stattdessen Heightmap auf MeshRoad-Z.
+    road_bed_skip_bridge_unders: true
+    road_bed_conform_bridge_decks: true
+    road_bed_bridge_deck_raise_m: 16.0
+    road_bed_bridge_pad_m: 2.0
     highways: [secondary, primary, tertiary, trunk, motorway, unclassified]
     centerline:
       enabled: true

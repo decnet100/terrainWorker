@@ -416,7 +416,7 @@ def build_entries(site: dict, cfg: dict) -> list[dict]:
                 n_skip += 1
     print(
         f"Water objects: WaterBlock={n_block} River={n_river} "
-        f"skipped={n_skip} wide_flowing→block={n_wide} "
+        f"skipped={n_skip} wide_flowing->block={n_wide} "
         f"(flowing={cfg['flowing']}, standing={cfg['standing']})"
     )
     return entries
@@ -488,30 +488,17 @@ def _standing_rings_px(
 
 
 def _load_elev_m(site: dict, level_name: str) -> tuple[np.ndarray, float, int, float, Path]:
-    """Load meters elev from processed bakes (never import — keeps carve idempotent)."""
-    from PIL import Image
+    """Load DGM meters (proposals compose separately; never stack on a bake)."""
+    import heightmap_layers as hml
 
+    _ = level_name
     proc = processed_dir(site)
     bng = site.get("beamng") or {}
     size = int(bng.get("mask_size") or 512)
     mpp = float(bng.get("meters_per_pixel") or 1.0)
     extent = float(size) * mpp
-    meta = json.loads((proc / "heightmap_meta.json").read_text(encoding="utf-8"))
-    max_h = float(meta["max_height_m"])
-    # Prefer latest structure bake; skip *_water.png so re-runs don't stack -5m.
-    candidates = [
-        proc / f"heightmap_{size}_gallery_embed.png",
-        proc / f"heightmap_{size}_gallery_approach.png",
-        proc / f"heightmap_{size}_gallery.png",
-        proc / f"heightmap_{size}_bridge_conform.png",
-        proc / f"heightmap_{size}.png",
-    ]
-    hm_path = next((p for p in candidates if p.is_file()), None)
-    if hm_path is None:
-        raise SystemExit(f"Missing heightmap — run build_smoke first ({candidates[-1]})")
-    hm = np.asarray(Image.open(hm_path), dtype=np.float64)
-    elev = hm / 65535.0 * max_h
-    return elev, max_h, size, extent, hm_path
+    elev, max_h = hml.load_dgm(proc, size)
+    return elev, max_h, size, extent, proc / f"heightmap_{size}.png"
 
 
 def depress_standing_lakes(
@@ -554,14 +541,12 @@ def depress_standing_lakes(
         print("standing_depress: empty mask — skip")
         return None
 
-    out = elev.astype(np.float64).copy()
-    out -= depress * weight
-    out = np.clip(out, 0.0, max_h)
+    import heightmap_layers as hml
 
-    u16 = np.clip(np.round(out / max(max_h, 1e-6) * 65535.0), 0, 65535).astype(np.uint16)
     proc = processed_dir(site)
-    carved_path = proc / f"heightmap_{size}_water.png"
-    Image.fromarray(u16, mode="I;16").save(carved_path)
+    delta = np.full(weight.shape, -float(depress), dtype=np.float64)
+    hml.write_add_layer(proc, "water", delta, weight, max_h=max_h, size=size)
+    carved_path = hml.compose(proc, size=size, max_h=max_h, level_name=level_name)
 
     # Preview: blue = depressed weight
     preview = np.zeros((size, size, 3), dtype=np.uint8)
@@ -569,29 +554,6 @@ def depress_standing_lakes(
     preview[..., 1] = np.clip(weight * 120, 0, 255).astype(np.uint8)
     preview[..., 2] = np.clip(weight * 255, 0, 255).astype(np.uint8)
     Image.fromarray(preview, mode="RGB").save(proc / "preview_water_depress.png")
-
-    preset_path = proc / "terrainPreset.json"
-    preset: dict = {}
-    if preset_path.is_file():
-        try:
-            preset = json.loads(preset_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            preset = {}
-    preset.setdefault("type", "TerrainData")
-    preset.setdefault("name", "theTerrain")
-    preset["heightScale"] = float(max_h)
-    preset["heightMapPath"] = f"/levels/{level_name}/import/heightmap_{size}.png"
-    preset_path.write_text(json.dumps(preset, indent=2), encoding="utf-8")
-
-    user_import = USER_LEVELS / level_name / "import"
-    if user_import.parent.is_dir():
-        user_import.mkdir(parents=True, exist_ok=True)
-        Image.fromarray(u16, mode="I;16").save(user_import / f"heightmap_{size}.png")
-        (user_import / "terrainPreset.json").write_text(
-            json.dumps(preset, indent=2), encoding="utf-8"
-        )
-        print(f"Synced water-depress heightmap -> {user_import}")
-        print("Re-import terrainPreset.json in World Editor (heightmap changed).")
 
     print(
         f"Standing lake depress: -{depress:.1f}m on {n_core} px "

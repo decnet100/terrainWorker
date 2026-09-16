@@ -21,6 +21,20 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 from site_coords import SiteCoords, annotations_gpkg, load_site, processed_dir  # noqa: E402
 from init_annotations_gpkg import create_gpkg  # noqa: E402
+from road_edge import (  # noqa: E402
+    edge_xy_at_s,
+    prepare_roads_for_edge,
+)
+from guardrail_rules import (  # noqa: E402
+    detect_steep_sides,
+    enrich_prepared_roads,
+    is_steep_sides,
+    resolve_rail_cfg,
+    side_signs as rule_side_signs,
+)
+from PIL import Image
+import numpy as np
+
 
 SITE = load_site()
 PROC = processed_dir(SITE)
@@ -28,6 +42,8 @@ BNG = SITE.get("beamng", {})
 GR = BNG.get("guardrails", {}) or {}
 ANN = SITE.get("annotations") or {}
 COORDS = SiteCoords(SITE)
+_DEC = BNG.get("decal_roads") or {}
+_DEC_DEF = _DEC.get("defaults") if isinstance(_DEC.get("defaults"), dict) else _DEC
 
 CRS = COORDS.crs
 XMIN, YMIN = COORDS.xmin, COORDS.ymin
@@ -44,8 +60,108 @@ HIGHWAYS = set(
 SIDES = GR.get("sides", "both")
 SECTION_LEN = float(GR.get("section_length_m", 4.2))
 SAMPLE_STEP_M = float(ANN.get("seed_sample_step_m", 2.0))
+STITCH_ABUTTING = bool(
+    GR.get("stitch_abutting")
+    if GR.get("stitch_abutting") is not None
+    else _DEC_DEF.get("stitch_abutting", True)
+)
+STITCH_TOL_M = float(
+    GR.get("stitch_tol_m")
+    if GR.get("stitch_tol_m") is not None
+    else (
+        _DEC_DEF.get("stitch_tol_m")
+        if _DEC_DEF.get("stitch_tol_m") is not None
+        else 1.25
+    )
+)
+WIDTH_FILL_DIP_M = float(
+    GR.get("width_fill_dip_m")
+    if GR.get("width_fill_dip_m") is not None
+    else (
+        _DEC_DEF.get("width_fill_dip_m")
+        if _DEC_DEF.get("width_fill_dip_m") is not None
+        else 40.0
+    )
+)
+WIDTH_BLEND_M = float(
+    GR.get("width_blend_m")
+    if GR.get("width_blend_m") is not None
+    else (
+        _DEC_DEF.get("width_blend_m")
+        if _DEC_DEF.get("width_blend_m") is not None
+        else 25.0
+    )
+)
+DENSIFY_MAX_STEP_M = float(
+    GR.get("densify_max_step_m")
+    if GR.get("densify_max_step_m") is not None
+    else (
+        _DEC_DEF.get("densify_max_step_m")
+        if _DEC_DEF.get("densify_max_step_m") is not None
+        else 12.0
+    )
+)
+LANE_WIDTH_M = float(BNG.get("lane_width_m") if BNG.get("lane_width_m") is not None else 3.75)
+RAIL_RULES = list(GR.get("rules") or GR.get("items") or [])
+RAIL_DEFAULTS = {
+    "sides": SIDES,
+    "present": True,
+    "lateral_extra_m": LATERAL_EXTRA,
+    "section_length_m": SECTION_LEN,
+}
+_STEEP_RAW = GR.get("steep_sides") if isinstance(GR.get("steep_sides"), dict) else {}
+STEEP_SAMPLE_M = float(
+    _STEEP_RAW.get("sample_m") if _STEEP_RAW.get("sample_m") is not None else 250.0
+)
+STEEP_LOOK_OUT_M = float(
+    _STEEP_RAW.get("look_out_m") if _STEEP_RAW.get("look_out_m") is not None else 6.0
+)
+STEEP_DROP_M = float(
+    _STEEP_RAW.get("drop_m") if _STEEP_RAW.get("drop_m") is not None else 2.5
+)
+STEEP_MIN_HITS = int(
+    _STEEP_RAW.get("min_hits") if _STEEP_RAW.get("min_hits") is not None else 1
+)
+STEEP_FALLBACK = str(_STEEP_RAW.get("fallback") or "both").lower().strip()
 
 SEED_LAYERS = ("centerline", "road_edge", "guardrail")
+
+
+def _load_heightmap_z() -> tuple[np.ndarray, float] | None:
+    hm_path = PROC / f"heightmap_{int(BNG.get('mask_size', 512))}.png"
+    meta_path = PROC / "heightmap_meta.json"
+    if not hm_path.exists() or not meta_path.exists():
+        return None
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    max_h = float(meta.get("max_height_m", BNG.get("max_height_m", 254.75)))
+    arr = np.array(Image.open(hm_path))
+    if arr.dtype != np.uint16:
+        arr = arr.astype(np.uint16)
+    return arr, max_h
+
+
+def _heightmap_z(hm: np.ndarray, max_h: float, bx: float, by: float) -> float:
+    size = hm.shape[0]
+    px = bx / TERRAIN_EXTENT * (size - 1)
+    py = (1.0 - by / TERRAIN_EXTENT) * (size - 1)
+    x0 = int(math.floor(px))
+    y0 = int(math.floor(py))
+    x1 = min(x0 + 1, size - 1)
+    y1 = min(y0 + 1, size - 1)
+    x0 = max(0, min(x0, size - 1))
+    y0 = max(0, min(y0, size - 1))
+    tx, ty = px - x0, py - y0
+    v00 = float(hm[y0, x0])
+    v10 = float(hm[y0, x1])
+    v01 = float(hm[y1, x0])
+    v11 = float(hm[y1, x1])
+    v = (
+        v00 * (1 - tx) * (1 - ty)
+        + v10 * tx * (1 - ty)
+        + v01 * (1 - tx) * ty
+        + v11 * tx * ty
+    )
+    return (v / 65535.0) * max_h
 
 
 def _gpkg_path() -> Path:
@@ -63,39 +179,6 @@ def _polyline_length_xy(nodes: list[list[float]]) -> float:
     return total
 
 
-def _sample_at(nodes: list[list[float]], dist: float) -> tuple[float, float, float] | None:
-    if len(nodes) < 2:
-        return None
-    acc = 0.0
-    for i in range(len(nodes) - 1):
-        x0, y0, z0 = nodes[i][0], nodes[i][1], nodes[i][2]
-        x1, y1, z1 = nodes[i + 1][0], nodes[i + 1][1], nodes[i + 1][2]
-        dx, dy = x1 - x0, y1 - y0
-        length = math.hypot(dx, dy)
-        if length < 1e-9:
-            continue
-        if dist <= acc + length + 1e-9:
-            t = max(0.0, min(1.0, (dist - acc) / length))
-            return (x0 + dx * t, y0 + dy * t, z0 + (z1 - z0) * t)
-        acc += length
-    return (nodes[-1][0], nodes[-1][1], nodes[-1][2])
-
-
-def _tangent_xy(nodes: list[list[float]], dist: float) -> tuple[float, float]:
-    total = _polyline_length_xy(nodes)
-    d0 = max(0.0, dist - 0.5)
-    d1 = min(total, dist + 0.5)
-    p0 = _sample_at(nodes, d0)
-    p1 = _sample_at(nodes, d1)
-    if not p0 or not p1:
-        return (1.0, 0.0)
-    dx, dy = p1[0] - p0[0], p1[1] - p0[1]
-    L = math.hypot(dx, dy)
-    if L < 1e-12:
-        return (1.0, 0.0)
-    return (dx / L, dy / L)
-
-
 def _sample_dists(total: float, step: float) -> list[float]:
     if total < step:
         return [0.0, total] if total >= 0.5 else []
@@ -110,29 +193,33 @@ def _sample_dists(total: float, step: float) -> list[float]:
 
 
 def _side_signs() -> list[tuple[str, float]]:
-    if SIDES == "left":
-        return [("left", 1.0)]
-    if SIDES == "right":
-        return [("right", -1.0)]
-    return [("left", 1.0), ("right", -1.0)]
+    return rule_side_signs(SIDES)
 
 
 def _offset_line_crs(
-    nodes: list[list[float]], sign: float, offset_m: float, step: float
+    nodes: list[list[float]],
+    sign: float,
+    step: float,
+    *,
+    lateral_extra_m: float,
 ) -> LineString | None:
+    """Offset polyline using width-at-s (lane ramps) + optional lateral_extra."""
     total = _polyline_length_xy(nodes)
     dists = _sample_dists(total, step)
     if len(dists) < 2:
         return None
     coords = []
     for dist in dists:
-        p = _sample_at(nodes, dist)
-        if not p:
+        edge = edge_xy_at_s(
+            nodes,
+            dist,
+            sign,
+            road_width_scale=ROAD_WIDTH_SCALE,
+            lateral_extra_m=lateral_extra_m,
+        )
+        if not edge:
             continue
-        tx, ty = _tangent_xy(nodes, dist)
-        lnx, lny = -ty, tx
-        bx = p[0] + lnx * sign * offset_m
-        by = p[1] + lny * sign * offset_m
+        bx, by = edge[0], edge[1]
         coords.append(_beamng_to_crs(bx, by))
     if len(coords) < 2:
         return None
@@ -171,33 +258,76 @@ def build_frames(roads: dict) -> dict[str, gpd.GeoDataFrame]:
     edge_rows: list[dict] = []
     rail_rows: list[dict] = []
 
-    for road_key, road in roads.items():
-        hw = road.get("highway", "")
-        if hw not in HIGHWAYS:
-            continue
+    prepared = prepare_roads_for_edge(
+        roads,
+        highways=HIGHWAYS,
+        stitch_abutting=STITCH_ABUTTING,
+        stitch_tol_m=STITCH_TOL_M,
+        width_fill_dip_m=WIDTH_FILL_DIP_M,
+        width_blend_m=WIDTH_BLEND_M,
+        densify_max_step_m=DENSIFY_MAX_STEP_M,
+    )
+    prepared = enrich_prepared_roads(prepared, roads, lane_width_m=LANE_WIDTH_M)
+    hm_pack = _load_heightmap_z() if is_steep_sides(SIDES) else None
+
+    def _z_at(bx: float, by: float) -> float:
+        assert hm_pack is not None
+        hm, max_h = hm_pack
+        return _heightmap_z(hm, max_h, bx, by)
+
+    for road in prepared:
         nodes = road.get("nodes") or []
         if len(nodes) < 2:
             continue
+        cfg = resolve_rail_cfg(
+            road,
+            defaults=RAIL_DEFAULTS,
+            rules=RAIL_RULES,
+            lane_width_m=LANE_WIDTH_M,
+        )
+        sides_mode = str(cfg.get("sides") or SIDES)
+        if is_steep_sides(sides_mode):
+            if hm_pack is None:
+                sides_mode = STEEP_FALLBACK
+            else:
+                sides_mode = detect_steep_sides(
+                    nodes,
+                    _z_at,
+                    sample_m=STEEP_SAMPLE_M,
+                    look_out_m=STEEP_LOOK_OUT_M,
+                    drop_m=STEEP_DROP_M,
+                    road_width_scale=ROAD_WIDTH_SCALE,
+                    min_hits=STEEP_MIN_HITS,
+                )
+            cfg = dict(cfg)
+            cfg["sides"] = sides_mode
+
+        hw = road.get("highway", "")
         osm_id = road.get("osm_id")
-        road_ref = str(osm_id) if osm_id is not None else str(road_key)
-        width = float(nodes[0][3]) if len(nodes[0]) > 3 else 6.0
-        half = width * ROAD_WIDTH_SCALE * 0.5
-        rail_off = half + LATERAL_EXTRA
+        road_ref = str(osm_id) if osm_id is not None else "road"
+        # Attribute: mean width after blend (geometry uses per-s width).
+        widths = [float(n[3]) for n in nodes if len(n) > 3]
+        width_attr = (
+            sum(widths) / len(widths) if widths else 6.0
+        ) * ROAD_WIDTH_SCALE
 
         cl = _centerline_crs(nodes)
         if cl is not None:
             center_rows.append(
                 {
                     "id": f"cl_{road_ref}",
-                    "width_m": width * ROAD_WIDTH_SCALE,
+                    "width_m": width_attr,
                     "highway": hw,
-                    "notes": "seed:heuristic",
+                    "notes": "seed:heuristic edge_at_s",
                     "geometry": cl,
                 }
             )
 
-        for side_name, sign in _side_signs():
-            edge = _offset_line_crs(nodes, sign, half, SAMPLE_STEP_M)
+        # road_edge: always both sides (asphalt edge), independent of rail sides
+        for side_name, sign in rule_side_signs("both"):
+            edge = _offset_line_crs(
+                nodes, sign, SAMPLE_STEP_M, lateral_extra_m=0.0
+            )
             if edge is not None:
                 edge_rows.append(
                     {
@@ -205,11 +335,23 @@ def build_frames(roads: dict) -> dict[str, gpd.GeoDataFrame]:
                         "side": side_name,
                         "road_ref": road_ref,
                         "source": "derived",
-                        "notes": "seed:heuristic width/2",
+                        "notes": "seed:heuristic width(s)/2",
                         "geometry": edge,
                     }
                 )
-            rail = _offset_line_crs(nodes, sign, rail_off, SAMPLE_STEP_M)
+
+        if cfg.get("present") is False or cfg.get("sides") == "none":
+            continue
+        lat = float(
+            cfg["lateral_extra_m"]
+            if cfg.get("lateral_extra_m") is not None
+            else LATERAL_EXTRA
+        )
+        section = float(cfg.get("section_length_m") or SECTION_LEN)
+        for side_name, sign in rule_side_signs(cfg.get("sides") or SIDES):
+            rail = _offset_line_crs(
+                nodes, sign, SAMPLE_STEP_M, lateral_extra_m=lat
+            )
             if rail is not None:
                 rail_rows.append(
                     {
@@ -219,8 +361,8 @@ def build_frames(roads: dict) -> dict[str, gpd.GeoDataFrame]:
                         "kind": "wbeam",
                         "gap_reason": None,
                         "road_ref": road_ref,
-                        "section_m": SECTION_LEN,
-                        "notes": "seed:heuristic width/2+lateral_extra",
+                        "section_m": section,
+                        "notes": f"seed:heuristic sides={cfg.get('sides')}",
                         "geometry": rail,
                     }
                 )
@@ -277,7 +419,8 @@ def main() -> None:
     print(f"Seeded {out}")
     print(
         f"CRS={CRS} sample_step_m={SAMPLE_STEP_M} "
-        f"lateral_extra_m={LATERAL_EXTRA} (guardrail only)"
+        f"lateral_extra_m={LATERAL_EXTRA} (guardrail only) "
+        f"width_blend_m={WIDTH_BLEND_M}"
     )
     print(
         "Edit in QGIS. Normal builds never call this seed "

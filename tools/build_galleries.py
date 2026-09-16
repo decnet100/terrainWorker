@@ -56,7 +56,7 @@ GALLERY_SCALAR_KEYS = (
     "open_side",
     "z_profile",  # hermite (default) | road | road_spline
     "profile",  # alias: road_spline | hermite (bridges naming)
-    "centerline",  # osm | strassennetz
+    "centerline",  # osm | strassennetz | gip
     "free_span",  # linear | pchip_ends
     "solid_run_m",
     "span_dip_m",
@@ -441,7 +441,7 @@ def apply_gallery_span_trims(
         if tm > 0:
             before = _poly_len_xy(xy)
             xy = _trim_polyline_m(xy, tm, from_start=from_start)
-            notes.append(f"{key}={tm:.1f} ({before:.1f}→{_poly_len_xy(xy):.1f}m)")
+            notes.append(f"{key}={tm:.1f} ({before:.1f}->{_poly_len_xy(xy):.1f}m)")
     if not notes:
         return feat
     out = dict(feat)
@@ -601,7 +601,7 @@ def merge_abutting_gallery_features(
         out.append(merged)
         print(
             f"merged gallery '{merged['name']}' objectids={oids} "
-            f"→ primary={merged['objectid']} span≈{_poly_len_xy(xy):.1f}m"
+            f"-> primary={merged['objectid']} span~{_poly_len_xy(xy):.1f}m"
         )
     return out
 
@@ -2800,7 +2800,7 @@ def conform_approach_heightmap(
     }
     print(
         f"Approach conform: tested={tested} changed={changed} "
-        f"max_delta={max_abs:.3f}m (heightmap → MeshRoad Z, soft shoulders)"
+            f"max_delta={max_abs:.3f}m (heightmap -> MeshRoad Z, soft shoulders)"
     )
     return out, stats
 
@@ -4106,7 +4106,7 @@ def embed_terrain_lips_heightmap(
     }
     if n_gal:
         in_show = defaults.get("terrain_embed_in_m")
-        in_lbl = in_show if in_show is not None else "≈foundation"
+        in_lbl = in_show if in_show is not None else "~foundation"
         hole_note = f", portal_holes={hole_px}px" if hole_px else ""
         print(
             f"Terrain embed: galleries={n_gal} tested={tested} changed={changed} "
@@ -4124,47 +4124,23 @@ def write_terrain_embed_assets(
     level_name: str,
     *,
     elev: np.ndarray,
+    dgm: np.ndarray,
     max_height_m: float,
     hole: np.ndarray | None = None,
     tag: str = "gallery_embed",
 ) -> Path:
-    """Write lip-baked heightmap and sync BeamNG import/."""
+    """Write gallery replace layer from bake-vs-DGM, compose, sync holemap."""
+    import heightmap_layers as hml
+
+    _ = tag
     size = int(elev.shape[0])
-    u16 = np.clip(
-        np.round(elev / max(max_height_m, 1e-6) * 65535.0),
-        0,
-        65535,
-    ).astype(np.uint16)
-    carved_name = f"heightmap_{size}_{tag}.png"
-    Image.fromarray(u16, mode="I;16").save(proc / carved_name)
+    z_tgt, weight = hml.proposal_from_diff(dgm, elev)
+    hml.write_span_part(proc, "gallery", z_tgt, weight, max_h=max_height_m, size=size)
+    carved = hml.compose(proc, size=size, max_h=max_height_m, level_name=level_name)
 
-    preset_path = proc / "terrainPreset.json"
-    preset: dict = {}
-    if preset_path.is_file():
-        try:
-            preset = json.loads(preset_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            preset = {}
-    preset.setdefault("type", "TerrainData")
-    preset.setdefault("name", "theTerrain")
-    preset["heightScale"] = float(max_height_m)
-    preset["heightMapPath"] = f"/levels/{level_name}/import/heightmap_{size}.png"
-    preset["holeMapPath"] = f"/levels/{level_name}/import/theTerrain_holemap.png"
-    preset_path.write_text(json.dumps(preset, indent=2), encoding="utf-8")
-
-    user_import = USER_LEVELS / level_name / "import"
-    if user_import.parent.is_dir():
-        user_import.mkdir(parents=True, exist_ok=True)
-        Image.fromarray(u16, mode="I;16").save(user_import / f"heightmap_{size}.png")
-        (user_import / "terrainPreset.json").write_text(
-            json.dumps(preset, indent=2), encoding="utf-8"
-        )
-        if hole is not None:
-            Image.fromarray(hole, mode="L").save(user_import / "theTerrain_holemap.png")
-            Image.fromarray(hole, mode="L").save(user_import / "holeMap.png")
-        print(f"Synced terrain-embed heightmap -> {user_import}")
-        print("Re-import terrainPreset.json in World Editor (heightmap changed).")
-    return proc / carved_name
+    if hole is not None:
+        write_hole_assets(proc, level_name, hole)
+    return carved
 
 
 def load_terrain_z_slope(site: dict):
@@ -4892,7 +4868,7 @@ def inject_embed_foundation_debug(
     _register_level_objects_simgroup(user_level, "gallery_embed_debug")
     print(
         f"Injected {len(entries)} embed debug MeshRoads "
-        f"(green={n_found}, magenta={n_roof}, portal_face≈{n_face}) -> {items_path}"
+        f"(green={n_found}, magenta={n_roof}, portal_face~{n_face}) -> {items_path}"
     )
     return items_path
 
@@ -5048,22 +5024,39 @@ def main() -> None:
             raise SystemExit(f"No features matched --only {sorted(only_ids)}")
 
     use_spline_default = _gallery_uses_road_spline(defaults)
-    use_net = use_spline_default or str(defaults.get("centerline") or "").lower() == "strassennetz"
-    if not use_net:
+    cl = str(defaults.get("centerline") or "").lower().strip()
+    use_gip_cl = cl in ("gip", "verkehrswege", "objectid", "oid")
+    need_spline_road = use_spline_default
+    if not need_spline_road or not use_gip_cl:
         for it in items:
+            it_cl = str(it.get("centerline") or "").lower()
+            if it_cl in ("gip", "verkehrswege", "objectid", "oid"):
+                use_gip_cl = True
             if str(it.get("profile") or it.get("z_profile") or "").lower() == "road_spline":
-                use_net = True
-                break
-            if str(it.get("centerline") or "").lower() == "strassennetz":
-                use_net = True
-                break
-    net_road = None
-    if use_net:
-        net_road = bb.load_strassennetz_road(proc)
-        print(
-            f"Centerline Strassennetz: {net_road.get('name')!r} "
-            f"len={net_road['length']:.1f}m nodes={len(net_road['pts'])}"
+                need_spline_road = True
+            if it_cl and _gallery_uses_road_spline(it):
+                need_spline_road = True
+
+    if use_gip_cl:
+        from gip_road_segments import (
+            load_gip_polylines_for_decals,
+            load_gip_stitched_span_road,
         )
+
+        roads = load_gip_polylines_for_decals(site)
+        print(f"Gallery roads centerline=gip segments={len(roads)}")
+
+    net_road = None
+    if need_spline_road:
+        if use_gip_cl:
+            net_road = load_gip_stitched_span_road(site)
+        else:
+            # road_spline historically defaults to Strassennetz when centerline unset/osm
+            net_road = bb.load_strassennetz_road(proc)
+            print(
+                f"Centerline Strassennetz: {net_road.get('name')!r} "
+                f"len={net_road['length']:.1f}m nodes={len(net_road['pts'])}"
+            )
     elif not roads:
         raise SystemExit(f"Missing {proc / 'roads_beamng.json'}")
 
@@ -5109,7 +5102,16 @@ def main() -> None:
         spline = _gallery_uses_road_spline(cfg)
         strip_entries: list[dict] = []
         if spline:
-            road = net_road if net_road is not None else bb.load_strassennetz_road(proc)
+            if net_road is not None:
+                road = net_road
+            else:
+                cl_f = str(cfg.get("centerline") or defaults.get("centerline") or "osm").lower()
+                if cl_f in ("gip", "verkehrswege", "objectid", "oid"):
+                    from gip_road_segments import load_gip_stitched_span_road
+
+                    road = load_gip_stitched_span_road(site)
+                else:
+                    road = bb.load_strassennetz_road(proc)
             nodes, strip_entries, info = build_gallery_road_spline(
                 feat, road, z_terrain, cfg
             )
@@ -5503,7 +5505,8 @@ def main() -> None:
         hm_path = proc / f"heightmap_{size}.png"
         meta_hm = json.loads((proc / "heightmap_meta.json").read_text(encoding="utf-8"))
         max_h = float(meta_hm["max_height_m"])
-        elev = np.asarray(Image.open(hm_path), dtype=np.float64) / 65535.0 * max_h
+        dgm = np.asarray(Image.open(hm_path), dtype=np.float64) / 65535.0 * max_h
+        elev = dgm.copy()
         if any_conform:
             t0 = time.perf_counter()
             elev, conf_stats = conform_approach_heightmap(
@@ -5547,22 +5550,24 @@ def main() -> None:
             proc,
             level_name,
             elev=elev,
+            dgm=dgm,
             max_height_m=max_h,
             hole=hole,
             tag=tag,
         )
         print(f"Wrote {baked_path}")
     else:
-        # Restore pristine DGM heightmap (undo prior approach_conform / embed bake).
+        import heightmap_layers as hml
+
+        hml.drop_span_part(proc, "gallery")
         hm_src = proc / f"heightmap_{size}.png"
-        user_import = USER_LEVELS / level_name / "import"
-        if hm_src.is_file() and user_import.parent.is_dir():
-            user_import.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(hm_src, user_import / f"heightmap_{size}.png")
-            print(
-                f"Restored DGM heightmap -> {user_import / f'heightmap_{size}.png'} "
-                "(re-import terrainPreset.json if previous bake was loaded)"
+        if hm_src.is_file():
+            max_h = float(
+                json.loads((proc / "heightmap_meta.json").read_text(encoding="utf-8"))[
+                    "max_height_m"
+                ]
             )
+            hml.compose(proc, size=size, max_h=max_h, level_name=level_name)
         clear_embed_foundation_debug(level_name)
     if hole is not None:
         coverage = float(hole.mean()) / 255.0 * 100.0

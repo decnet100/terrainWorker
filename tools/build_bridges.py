@@ -63,14 +63,15 @@ BRIDGE_SCALAR_KEYS = (
     "approach_conform_falloff_m",
     "approach_conform_sink_m",
     "approach_conform_max_delta_m",  # legacy symmetric limit (fallback for raise/cut)
-    "approach_conform_max_raise_m",  # max terrain raise toward deck (keep gorge open)
+    "approach_conform_max_raise_m",  # falloff: max raise (keep gorge beside road)
+    "approach_conform_deck_raise_m",  # under slab: max raise to deck (Decal drape)
     "approach_conform_max_cut_m",  # max terrain cut down to deck (flush cliffs)
     "terrain_embed",  # reserved: abutment lip bake (galleries implement first)
     "terrain_embed_rings",
     "terrain_embed_foundation_m",
     "terrain_embed_max_delta_m",
     "profile",  # hermite (legacy) | road_spline
-    "centerline",  # osm | strassennetz
+    "centerline",  # osm | strassennetz | gip
     "solid_run_m",
     "free_span",  # linear | pchip_ends
     "abutment_s",  # optional [s0, s1] override along centerline
@@ -551,19 +552,28 @@ def portal_dz_ds_override(cfg: dict) -> tuple[float, float] | None:
     return float(seq[0]), float(seq[1])
 
 
+def _as_oid_set(val) -> set[int]:
+    if val is None:
+        return set()
+    if isinstance(val, (list, tuple, set)):
+        return {int(x) for x in val if x is not None}
+    return {int(val)}
+
+
 def resolve_bridge_cfg(defaults: dict, items: list, feat: dict) -> dict:
     """Merge defaults with first matching items[] entry."""
     cfg = dict(defaults)
     cfg["style"] = dict(defaults.get("style") or {})
     mats = dict(defaults.get("materials") or {})
-    oid = feat.get("objectid")
+    feat_oids = _as_oid_set(feat.get("objectid")) | _as_oid_set(feat.get("merged_from"))
     name = str(feat.get("name") or "")
     matched = None
     for item in items or []:
         m = item.get("match") or {}
         ok = True
-        if "objectid" in m and int(m["objectid"]) != int(oid or -1):
-            ok = False
+        if "objectid" in m:
+            if not feat_oids or not (_as_oid_set(m["objectid"]) & feat_oids):
+                ok = False
         if "name" in m and str(m["name"]).lower() not in name.lower():
             ok = False
         if "name_exact" in m and str(m["name_exact"]) != name:
@@ -985,7 +995,7 @@ def build_bridge_entries_road_spline(
     info["road_name"] = road.get("name")
     info["road_len_m"] = round(float(road["length"]), 1)
     info["road_stitched"] = False
-    info["centerline"] = "strassennetz"
+    info["centerline"] = str(road.get("source") or "strassennetz")
     info["node_z_is_top"] = bool(cfg.get("node_z_is_top", True))
     info["depth_m"] = float(cfg["depth_m"])
 
@@ -1098,13 +1108,15 @@ def conform_bridge_heightmap(
     size: int,
     extent: float,
     elev: np.ndarray,
-) -> tuple[np.ndarray, dict]:
-    """Bake heightmap toward MeshRoad surface under each deck ribbon.
+) -> tuple[np.ndarray, np.ndarray, dict]:
+    """Proposal: target Z + weight under each MeshRoad deck ribbon.
 
-    Asymmetric limits: cut cliffs down to the deck, but barely raise terrain so
-    gorge air gaps are not filled (unlike a single large max_delta).
+    Core ribbon (dist ≤ half+pad): raise up to deck_raise so Decals can drape.
+    Falloff ring: keep the smaller max_raise so the gorge beside the road stays.
     """
     out = elev.astype(np.float64).copy()
+    z_tgt = np.zeros_like(out)
+    w_acc = np.zeros_like(out)
     tested = 0
     changed = 0
     max_abs = 0.0
@@ -1137,6 +1149,8 @@ def conform_bridge_heightmap(
         max_cut = cfg.get("approach_conform_max_cut_m")
         max_raise = float(max_raise) if max_raise is not None else max_delta
         max_cut = float(max_cut) if max_cut is not None else max_delta
+        deck_raise_raw = cfg.get("approach_conform_deck_raise_m")
+        deck_raise = float(deck_raise_raw) if deck_raise_raw is not None else max_raise
         half_ref = 0.5 * max(float(n["width"]) for n in nodes)
         xs = [float(n["x"]) for n in nodes]
         ys = [float(n["y"]) for n in nodes]
@@ -1163,7 +1177,8 @@ def conform_bridge_heightmap(
                 target = float(z_deck) - sink
                 z0 = float(out[py, px])
                 need = target - z0  # +raise terrain / -cut
-                if need > max_raise + 1e-9 or need < -(max_cut + 1e-9):
+                raise_lim = deck_raise if dist <= half else max_raise
+                if need > raise_lim + 1e-9 or need < -(max_cut + 1e-9):
                     continue
                 if dist <= half:
                     w = 1.0
@@ -1173,6 +1188,8 @@ def conform_bridge_heightmap(
                 z_new = (1.0 - w) * z0 + w * target
                 if abs(z_new - z0) < 1e-4:
                     continue
+                z_tgt[py, px] = target
+                w_acc[py, px] = w
                 out[py, px] = z_new
                 changed += 1
                 max_abs = max(max_abs, abs(z_new - z0))
@@ -1189,64 +1206,37 @@ def conform_bridge_heightmap(
             f"Bridge approach conform: tested={tested} changed={changed} "
             f"max_delta={max_abs:.3f}m (heightmap -> MeshRoad Z)"
         )
-    return out, stats
+    return z_tgt, w_acc, stats
 
 
 def write_bridge_conform_heightmap(
     proc: Path,
     level_name: str,
     *,
-    elev: np.ndarray,
+    z_tgt: np.ndarray,
+    weight: np.ndarray,
     max_height_m: float,
 ) -> Path:
-    """Write conformed heightmap into processed/ and sync level import/."""
-    from PIL import Image
+    """Write bridge_deck replace layer and compose onto DGM."""
+    import heightmap_layers as hml
 
-    size = int(elev.shape[0])
-    u16 = np.clip(
-        np.round(elev / max(max_height_m, 1e-6) * 65535.0),
-        0,
-        65535,
-    ).astype(np.uint16)
-    carved_name = f"heightmap_{size}_bridge_conform.png"
-    carved_path = proc / carved_name
-    Image.fromarray(u16, mode="I;16").save(carved_path)
-
-    preset_path = proc / "terrainPreset.json"
-    preset: dict = {}
-    if preset_path.is_file():
-        try:
-            preset = json.loads(preset_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            preset = {}
-    preset.setdefault("type", "TerrainData")
-    preset.setdefault("name", "theTerrain")
-    preset["heightScale"] = float(max_height_m)
-    preset["heightMapPath"] = f"/levels/{level_name}/import/heightmap_{size}.png"
-    preset_path.write_text(json.dumps(preset, indent=2), encoding="utf-8")
-
-    user_import = USER_LEVELS / level_name / "import"
-    if user_import.parent.is_dir():
-        user_import.mkdir(parents=True, exist_ok=True)
-        Image.fromarray(u16, mode="I;16").save(user_import / f"heightmap_{size}.png")
-        (user_import / "terrainPreset.json").write_text(
-            json.dumps(preset, indent=2), encoding="utf-8"
-        )
-        print(f"Synced bridge-conform heightmap -> {user_import}")
-        print("Re-import terrainPreset.json in World Editor (heightmap changed).")
-    return carved_path
+    size = int(z_tgt.shape[0])
+    hml.write_span_part(
+        proc, "bridge", z_tgt, weight, max_h=max_height_m, size=size
+    )
+    return hml.compose(proc, size=size, max_h=max_height_m, level_name=level_name)
 
 
 def restore_pristine_heightmap(proc: Path, level_name: str, size: int) -> None:
-    """Copy pristine DGM heightmap back into import/ when conform is off."""
-    import shutil
+    """Drop bridge_deck layer and recompose (DGM if no other layers)."""
+    import heightmap_layers as hml
 
-    src = proc / f"heightmap_{size}.png"
-    user_import = USER_LEVELS / level_name / "import"
-    if src.is_file() and user_import.parent.is_dir():
-        user_import.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src, user_import / f"heightmap_{size}.png")
-        print(f"Restored DGM heightmap -> {user_import / f'heightmap_{size}.png'}")
+    hml.drop_span_part(proc, "bridge")
+    try:
+        elev, max_h = hml.load_dgm(proc, size)
+    except FileNotFoundError:
+        return
+    hml.compose(proc, size=size, max_h=max_h, level_name=level_name)
 
 
 def _mesh_material(
@@ -1458,6 +1448,11 @@ def default_bridge_cfg(bng: dict) -> tuple[dict, list]:
             if raw.get("approach_conform_max_raise_m") is not None
             else None
         ),
+        "approach_conform_deck_raise_m": (
+            float(raw["approach_conform_deck_raise_m"])
+            if raw.get("approach_conform_deck_raise_m") is not None
+            else None
+        ),
         "approach_conform_max_cut_m": (
             float(raw["approach_conform_max_cut_m"])
             if raw.get("approach_conform_max_cut_m") is not None
@@ -1543,11 +1538,17 @@ def main() -> None:
         defaults["step_m"] = args.step
 
     use_spline = str(defaults.get("profile") or "hermite") == "road_spline"
-    use_net = str(defaults.get("centerline") or "osm") == "strassennetz" or use_spline
+    cl = str(defaults.get("centerline") or "osm").lower().strip()
+    use_gip_cl = cl in ("gip", "verkehrswege", "objectid", "oid")
+    use_sn_cl = cl in ("strassennetz", "sn", "net", "strasse", "straßennetz")
 
     roads = load_road_polylines(proc)
     net_road = None
-    if use_net:
+    if use_gip_cl:
+        from gip_road_segments import load_gip_stitched_span_road
+
+        net_road = load_gip_stitched_span_road(site)
+    elif use_sn_cl or use_spline:
         net_road = load_strassennetz_road(proc)
         print(
             f"Centerline Strassennetz: {net_road.get('name')!r} "
@@ -1571,7 +1572,16 @@ def main() -> None:
             continue
         bridge_cfgs.append(cfg)
         if str(cfg.get("profile") or "hermite") == "road_spline":
-            road = net_road if net_road is not None else load_strassennetz_road(proc)
+            if net_road is None:
+                cl_f = str(cfg.get("centerline") or defaults.get("centerline") or "osm").lower()
+                if cl_f in ("gip", "verkehrswege", "objectid", "oid"):
+                    from gip_road_segments import load_gip_stitched_span_road
+
+                    road = load_gip_stitched_span_road(site)
+                else:
+                    road = load_strassennetz_road(proc)
+            else:
+                road = net_road
             strip_entries, info = build_bridge_entries_road_spline(
                 feat, road, z_terrain, cfg
             )
@@ -1704,11 +1714,11 @@ def main() -> None:
                     conf_cfgs.append(cfg)
                     ei += 1
             conf_entries = entries[:ei]
-        elev1, conf_stats = conform_bridge_heightmap(
+        z_tgt, w_acc, conf_stats = conform_bridge_heightmap(
             conf_entries, conf_infos, conf_cfgs, size=size, extent=extent, elev=elev_m
         )
         carved = write_bridge_conform_heightmap(
-            proc, level_name, elev=elev1, max_height_m=max_h
+            proc, level_name, z_tgt=z_tgt, weight=w_acc, max_height_m=max_h
         )
         meta["approach_conform"] = conf_stats
         meta["approach_conform_heightmap"] = str(carved.relative_to(ROOT)).replace("\\", "/")

@@ -91,7 +91,13 @@ beamng:
     curvature_window_m: 8.0
     lateral_extra_m: 0.55
     z_sample_inward_m: 0.35
-    sides: both
+    sides: both                 # both | left | right | none | steep
+    # centerline: gip            # gip = Verkehrswege OBJECTIDs | osm (default)
+    # steep_sides:                # nur wenn sides: steep / auto
+    #   sample_m: 80
+    #   look_out_m: 6.0
+    #   drop_m: 2.5
+    #   min_hits: 1
     highways: [secondary, primary, tertiary, trunk, motorway]
     z_lift_m: 0.05
     pivot_ground_offset_m: 0.0
@@ -99,6 +105,17 @@ beamng:
     snap_to_heightmap: true
     face_y_outward: true
     yaw_flip_right: false
+    # Optional overrides (cascade: later matching rules win):
+    # rules:
+    #   - match: { lanes: ">2" }          # Eigenschaftsgruppe
+    #     sides: both
+    #   - match: { highway: [motorway, trunk] }
+    #     sides: both
+    #     lateral_extra_m: 0.4
+    #   - match: { ids: [2301-2312, 2315, 2320-2324] }
+    #     sides: left
+    #   - match: { ids: 2400-2450 }
+    #     sides: none                     # oder present: false
 
 # Hand-editierte Ränder / Leitplanken (siehe docs/ANNOTATIONS.md).
 # Schema: python tools/init_annotations_gpkg.py

@@ -1010,6 +1010,7 @@ def main() -> None:
         # Prefer latest heightmap bake (water/bridge/gallery) over pristine DGM.
         hm = None
         for cand in (
+            PROC / f"heightmap_{OUT_SIZE}_composed.png",
             PROC / f"heightmap_{OUT_SIZE}_water.png",
             PROC / f"heightmap_{OUT_SIZE}_gallery_embed.png",
             PROC / f"heightmap_{OUT_SIZE}_gallery_approach.png",
