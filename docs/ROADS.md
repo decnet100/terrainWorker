@@ -2,7 +2,9 @@
 
 Stand nach Mega-Fernpass-Feinschliff (Lanes→Breite, Decal-Übergänge, Leitpoller).
 
-Verwandt: [BEAMNG_IMPORT.md](BEAMNG_IMPORT.md), [GIP.md](GIP.md), `tools/road_width.py`.
+Verwandt: [BEAMNG_IMPORT.md](BEAMNG_IMPORT.md), [GIP.md](GIP.md) (**Centerline-Quellen**), `tools/road_width.py`.
+
+**Achse (Fernpass-Mega):** Decals/Guardrails/Brücken/Galerien → **GIP**, nicht OSM. Kurzfassung und Spine vs. Stitch: [GIP.md § Centerline-Quellen](GIP.md#centerline-quellen-stand-2026-09-16--fernpass-mega).
 
 ---
 

@@ -20,8 +20,9 @@ Spätere Multi-Map-Session (nicht jetzt bauen): [TIROLRUNDE.md](TIROLRUNDE.md).
 - `terrainPreset.json` → Level-`import/` (Import schreibt `theTerrain.ter`; Reload allein nicht)
 
 ### Leitplanken / Leitpoller
-- Default: Leitpoller (`style: posts`, vendored `reflector`, `post_scale` ~1 m)
-- `--clear` + eindeutige Namen gegen Doppelte; Italy-Schienen weiter per `style: sections`
+- Fernpass-Mega: **`style: sections`** (Italy-Schiene); Leitpoller nur bewusst / per Rule (`posts` / `both`)
+- Achse = GIP OBJECTIDs; auf Brücken Deck-Z + enger Lateral — [GIP.md](GIP.md#centerline-quellen-stand-2026-09-16--fernpass-mega)
+- `--clear` + eindeutige Namen gegen Doppelte
 - GPKG-Pfad unverändert — [ANNOTATIONS.md](ANNOTATIONS.md)
 
 ### GIS-Annotationen

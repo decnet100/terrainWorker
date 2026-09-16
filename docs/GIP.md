@@ -34,6 +34,44 @@ beamng:
 
 Normale Builds (`build_smoke` / Masken / Guardrails) rufen den WFS **nicht** an.
 
+## Centerline-Quellen (Stand 2026-09-16 / Fernpass-Mega)
+
+**Fernpass-Mega (`fernpass_mega.yaml`) nutzt überall GIP Verkehrswege** — nicht OSM, nicht Straßennetz.
+
+| Baustein | YAML-Key | Loader |
+|----------|----------|--------|
+| Decals | `decal_roads.centerline_source: gip` | `gip_road_segments.load_gip_polylines_for_decals` → ~90 OBJECTID-Polylines, dann Decal-`stitch_abutting` |
+| Guardrails | `guardrails.centerline: gip` | `load_gip_road_segments` — **eine Entscheidungseinheit = GIP OBJECTID** (Rules, steep-sides, Tunnel-Skip) |
+| Bridges (`road_spline`) | `bridges.defaults.centerline: gip` | `load_gip_stitched_span_road` → **eine** ~15,7 km-Spine |
+| Galleries | `galleries.defaults.centerline: gip` | Hermite: GIP-Segmente als `roads`; Spline: dieselbe Spine |
+
+### Warum nicht OSM / Straßennetz?
+
+- **OSM:** oft Ortho-geklickte Achse (auch bei 2+1) → symmetrischer Half-Width-Offset sitzt falsch auf der realen Fahrbahn.
+- **Straßennetz:** eine glatte Achse (~OID 473), ~5 m mittlerer Versatz zur GIP-Achse — kurz getestet, dann verworfen zugunsten GIP-Konsistenz mit Decals/Rails.
+- **GIP:** gleiche Geometrie wie Regeln/OIDs; Decals und Rails teilen dieselbe Achse.
+
+### Zwei GIP-„Merge“-Modi (wichtig)
+
+1. **Decal-`stitch_abutting`** — nur Degree-2 End-an-End (wie OSM-Stubs). An Rampen/Knoten stoppt der Merge → längste Komponente oft nur ~700 m. Für Decals OK (viele Stücke).
+2. **Span-Spine `_chain_gip_spine`** (`tools/gip_road_segments.py`) — startet am längsten Stück, wächst an Enden; bei Verzweigung Partner mit bester Fortsetzungsrichtung. Ergebnis auf Fernpass: **~15658 m / 66 von 90 Segmenten** (gleiche Länge wie Straßennetz). **Brücken brauchen diese Spine**, sonst fehlt die Station außerhalb der kurzen Stitch-Komponente.
+
+Cache: `data/processed/<site>/gip_roads_beamng.json` (pro OBJECTID Nodes `[x,y,z,width]`).
+
+### Guardrails auf Brücken
+
+Rails folgen sonst dem **DGM** unter der Schlucht. Mit `bridge_deck_z: true` + `bridges_items.level.json` / `bridges_decks.json`:
+
+- Z = MeshRoad-Deckoberseite
+- `bridge_lateral_extra_m` (Default 0) statt roadside `lateral_extra_m` — näher an die Deck-Kante
+
+`build_bridges` schreibt **nur** `level_objects/bridges/` — überschreibt Guardrails **nicht**.
+
+### YAML-Fallen
+
+- `guardrails.style` auf Fernpass ist **`sections`** (Italy-Schiene). Nicht still auf `posts` zurücksetzen — Leitpoller nur bewusst oder per Rule.
+- Aliase: `gip` / `verkehrswege` / `objectid`; `strassennetz` / `sn`; Default vieler Tools bleibt `osm` wenn der Key fehlt.
+
 ## Wichtige Attribute
 
 | Feld | Bedeutung |
@@ -61,7 +99,7 @@ Hand-Korrektur in QGIS bleibt möglich (offene Galerie-Seite, Portale).
 
 `beamng.bridges.defaults` + `beamng.bridges.items[]` (Match über `objectid` / `name`):
 
-- **`profile: road_spline`** + **`centerline: strassennetz`**: Deck = 4 MeshRoad-Streifen aus `road_span_profile` (Fernpass-Mega / L13-Splining). Legacy: `hermite` + OSM.
+- **`profile: road_spline`** + **`centerline: gip`** (Fernpass-Mega): Deck = 4 MeshRoad-Streifen aus `road_span_profile` entlang der GIP-Spine. Alternativ `centerline: strassennetz`. Legacy: `hermite` + OSM.
 - `extend_before_m` / `extend_after_m`: Verlängerung über die Widerlager hinaus (nur Mesh + Conform-Band)
 - `under_inset_m`: Fels-Maske unter der Brücke = Gap **ohne** Extends, zusätzlich nach innen verkürzt
 - `portal_z_offset_m: [dz_s0, dz_s1]`: Seite höher/tiefer; Grade dazwischen passt sich an
@@ -73,7 +111,7 @@ Hand-Korrektur in QGIS bleibt möglich (offene Galerie-Seite, Portale).
 
 Wenn das **Original-DGM** unter der GIP-Brücke eine Kerbe/Schlucht hat (Fahrbahn-Z bleibt hoch, Terrain fällt ab), setzt Auto-Span die Portale oft zu weit in den Absturz. Dann sitzt das Deck falsch oder Conform/Road-Bed erzeugen Schwellen auf der Auffahrt.
 
-**Lösung:** Widerlager auf die letzte/feste Stelle **vor** bzw. **nach** der Kerbe pinnen (Station der aktiven Centerline — bei Spline: **Strassennetz-Meter**, nicht OSM):
+**Lösung:** Widerlager auf die letzte/feste Stelle **vor** bzw. **nach** der Kerbe pinnen (Station der aktiven Centerline — bei Spline: **GIP-Spine-Meter** bzw. Straßennetz-Meter, nicht OSM):
 
 ```yaml
 - match: { objectid: 3852, name: Brücke 3852 }
