@@ -46,11 +46,14 @@ CRS typisch: MGI GK West/Central (EPSG:31254 / 31255), Höhen GHA.
 OGD (WCS/WFS/OSM)
     → Ingest + einheitliches Meter-CRS
     → Centerline (korrigierbar in QGIS)
-    → Road-JSON (x,y,z,width) + Heightmap 16-bit PNG
+    → Road-JSON (x,y,z,width) + DGM-Heightmap 16-bit PNG
+    → Heightmap-Layer (Water / Road-Bed / Span) → composed PNG
     → Surface-Segmente → Terrain-Paint + Groundmodels
     → Wald/Fels-Maske → Kamm-Impostors (Wipfel-Alpha)
     → BeamNG Level (World Editor Import)
 ```
+
+Heightmap-Mixer (DGM bleibt roh): [HEIGHTMAP_COMPOSE.md](HEIGHTMAP_COMPOSE.md).
 
 ### Straße und Ränder
 

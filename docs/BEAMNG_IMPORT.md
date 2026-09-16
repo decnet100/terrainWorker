@@ -87,6 +87,9 @@ Sonst speichert der Import nicht dauerhaft (Template-Pfad ist schreibgeschützt)
 3. **Import** → **File → Save Level**
 4. Template-**ocean** löschen/deaktivieren (sonst Wasser bei Z≈116)
 
+`import/heightmap_<N>.png` ist die **composed** Karte (DGM + Layer), nicht das Roh-DGM.  
+Reload **ohne** diesen Import lässt `theTerrain.ter` unverändert. Mixer und Fallstricke: [HEIGHTMAP_COMPOSE.md](HEIGHTMAP_COMPOSE.md).
+
 Danach oft schwarz → Layer-Masken (nächster Abschnitt).
 
 ### Terrain-Materials aus Masken

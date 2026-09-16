@@ -1,7 +1,7 @@
 # Stand und Roadmap
 
 Kurzüberblick nach dem Hahntennjoch-Smoke-Test (BeamNG 0.39).  
-Details: [BEAMNG_IMPORT.md](BEAMNG_IMPORT.md), [ROADS.md](ROADS.md), [ANNOTATIONS.md](ANNOTATIONS.md), [KONZEPT.md](KONZEPT.md), [GIP.md](GIP.md).  
+Details: [BEAMNG_IMPORT.md](BEAMNG_IMPORT.md), [ROADS.md](ROADS.md), [ANNOTATIONS.md](ANNOTATIONS.md), [KONZEPT.md](KONZEPT.md), [GIP.md](GIP.md), [HEIGHTMAP_COMPOSE.md](HEIGHTMAP_COMPOSE.md).  
 Spätere Multi-Map-Session (nicht jetzt bauen): [TIROLRUNDE.md](TIROLRUNDE.md).
 
 ## Erledigt
@@ -16,7 +16,8 @@ Spätere Multi-Map-Session (nicht jetzt bauen): [TIROLRUNDE.md](TIROLRUNDE.md).
 - DGM → Heightmap + `roads_beamng.json`
 - **Lanes→Breite** (Default 2×3.75 m): [ROADS.md](ROADS.md)
 - Terrain-Masken + Cache (Landcover/Slope); Decal-Stitch + Width-Smooth; Road-Bed-Conform
-- `terrainPreset.json` → Level-`import/`
+- Heightmap: unveränderliches DGM + Layer → `heightmap_<N>_composed.png` — [HEIGHTMAP_COMPOSE.md](HEIGHTMAP_COMPOSE.md)
+- `terrainPreset.json` → Level-`import/` (Import schreibt `theTerrain.ter`; Reload allein nicht)
 
 ### Leitplanken / Leitpoller
 - Default: Leitpoller (`style: posts`, vendored `reflector`, `post_scale` ~1 m)
@@ -32,7 +33,7 @@ Spätere Multi-Map-Session (nicht jetzt bauen): [TIROLRUNDE.md](TIROLRUNDE.md).
 |-----------|--------|--------|
 | 1 | Road-Bed stärker / Re-Import-Check | Micro-Bumps: `road_bed_smooth_m` + Heightmap neu importieren |
 | 2 | QGIS-Feinschliff Guardrails | Lücken in `guardrail` |
-| 3 | Galerien/Brücken Feinschliff | GIP / Strassennetz — [GIP.md](GIP.md) |
+| 3 | Span-Prinzip Brücke/Galerie/Tunnel | Heightmap an Widerlagern, nicht unter der Platte — [HEIGHTMAP_COMPOSE.md](HEIGHTMAP_COMPOSE.md) |
 | 4 | `road_edge` → Asphalt/Bankett-Masken | analog zweistufig |
 | 5 | Terrain-Look Alm/Moos | `t_moss` |
 | — | **Tirolrunde** | Vision — [TIROLRUNDE.md](TIROLRUNDE.md) |
