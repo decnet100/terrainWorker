@@ -1,44 +1,69 @@
-# beamng_autoroad
+# Roadtrip Tyrol
 
-Semiautomatisierte Pipeline: Tiroler OGD → spielbare Passstraßen in **BeamNG.drive**.
+Open Tyrolean geodata → playable mountain-pass roads in **BeamNG.drive**.
 
-## Stand
+This repo is the pipeline (`beamng_autoroad`). **Roadtrip Tyrol** is the multi-map session: you drive one pass, linger in a portal, and hard-switch to the next map with weather and vehicle config kept.
 
-Zwei Testgebiete (siehe [config/sites/](config/sites/README.md)):
+## Status
 
-| Site | Zweck |
-|------|--------|
-| **Hahntennjoch** (`site.yaml` Default) | Leitplanken + Terrain-Optimierung, 512² |
-| **L13 Kühtai** (`AUTOROAD_SITE=…/l13_kuehtai.yaml`) | Galerien/Brücken (GIP), 1024² |
+BeamNG **0.39**. Details: [docs/STATUS.md](docs/STATUS.md). First portal switch: [docs/ROADTRIP_TYROL.md](docs/ROADTRIP_TYROL.md).
 
-- Heightmap + Masken + Guardrails (GPKG-Workflow)
-- GIP-WFS Cache für Kunstbauten — [docs/GIP.md](docs/GIP.md)
-- Roadmap: [docs/STATUS.md](docs/STATUS.md)
+| Site | Level | Size | Role |
+|------|--------|------|------|
+| **Hahntennjoch** | `autoroad_m28_test` | 512² | Default `config/site.yaml`; guardrails + terrain |
+| **Fernpass Mega** | `autoroad_fernpass_8192` | 8192² | Flagship B179 (GIP decals, bridges, galleries, rails) |
+| **Fernpass** | `autoroad_fernpass_4096` | 4096² | Smaller B179 crop |
+| **L13 Kühtai** | `autoroad_galerie_2048` | 2048² | Galleries / bridges |
+| **L13 splining** | `autoroad_l13_splining` | 2048² | MeshRoad decks from the Tyrol road network |
+| **Testarena** | `autoroad_testarena` | 512² | Specimen crop of a GIP structure (road surface first) |
 
-## Neu bauen
+Site files: [config/sites/](config/sites/README.md). Processed output: `data/processed/<site.name>/`.
+
+## Build
 
 ```powershell
-cd C:\temp\beamng_autoroad
-python -m pip install -r requirements.txt
-python tools\fetch_osm.py
-python tools\build_smoke.py
-# oder nur Masken / Leitplanken:
-# python tools\build_terrain_masks.py
-# python tools\build_guardrails.py
-# Annotations-GPKG (leer) anlegen / Heuristik seeden:
-# python tools\init_annotations_gpkg.py
-# python tools\seed_annotations.py
-# python tools\seed_annotations.py --force   # nur bewusst Überschreiben
-# python tools\fetch_gip.py                  # Galerien/Brücken (cached)
+cd C:\temp\beamng_autoroad; python -m pip install -r requirements.txt
 ```
 
-## Dokumente
+Default site is a local copy of Hahntennjoch (`config/site.yaml`, gitignored). To pin a site for one session:
 
-- [docs/KONZEPT.md](docs/KONZEPT.md)
-- [docs/STATUS.md](docs/STATUS.md) — Stand, Roadmap, Schnellbefehle
-- [docs/TIROLRUNDE.md](docs/TIROLRUNDE.md) — Vision: Multi-Map Session / Portal-Tore (später)
-- [docs/DATENUEBERGABE.md](docs/DATENUEBERGABE.md)
-- [docs/ANNOTATIONS.md](docs/ANNOTATIONS.md) — GIS: Straßenrand / Leitplanken / Öffnungen
-- [docs/GIP.md](docs/GIP.md) — Tirol Verkehrswege WFS / Kunstbauten (Cache)
-- [docs/BEAMNG_IMPORT.md](docs/BEAMNG_IMPORT.md)
-- [config/site.example.yaml](config/site.example.yaml) — Vorlage (`site.yaml` lokal, gitignore)
+```powershell
+cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/hahntennjoch.yaml"; python tools\fetch_osm.py; python tools\build_smoke.py
+```
+
+Fernpass Mega uses **GIP** for the road axis (not OSM). Typical rebuild:
+
+```powershell
+cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/fernpass_mega.yaml"; python tools\fetch_gip.py; python tools\build_smoke.py
+```
+
+Other common tools (not all run from `build_smoke`):
+
+```powershell
+cd C:\temp\beamng_autoroad; python tools\fetch_gip.py
+```
+
+```powershell
+cd C:\temp\beamng_autoroad; python tools\init_annotations_gpkg.py
+```
+
+```powershell
+cd C:\temp\beamng_autoroad; python tools\seed_annotations.py
+```
+
+Level import: [docs/BEAMNG_IMPORT.md](docs/BEAMNG_IMPORT.md). Portal mod: [docs/ROADTRIP_TYROL.md](docs/ROADTRIP_TYROL.md).
+
+## Docs
+
+- [docs/CONCEPT.md](docs/CONCEPT.md) — geodata → playable pass
+- [docs/STATUS.md](docs/STATUS.md) — current state, roadmap, commands
+- [docs/ROADTRIP_TYROL.md](docs/ROADTRIP_TYROL.md) — multi-map session (Hahntennjoch ↔ Fernpass)
+- [docs/SITE_DATA.md](docs/SITE_DATA.md) — WCS/WFS links, bbox, local tiles
+- [docs/ANNOTATIONS.md](docs/ANNOTATIONS.md) — GIS: road edge / guardrails / gaps
+- [docs/GIP.md](docs/GIP.md) — Tyrol road WFS / structures (cache)
+- [docs/ROADS.md](docs/ROADS.md) — width, decals, road-bed
+- [docs/HEIGHTMAP_COMPOSE.md](docs/HEIGHTMAP_COMPOSE.md) — DGM + layers → composed PNG
+- [docs/BEAMNG_IMPORT.md](docs/BEAMNG_IMPORT.md) — create level, import terrain
+- [config/site.example.yaml](config/site.example.yaml) — template (`site.yaml` is local, gitignored)
+
+Internal Lua/mod paths still use the identifier `tirolrunde` so existing BeamNG installs keep working. The name you see in the game and in this documentation is **Roadtrip Tyrol**.

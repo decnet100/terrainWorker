@@ -1,57 +1,89 @@
-# Stand und Roadmap
+# Status and roadmap
 
-Kurzüberblick nach dem Hahntennjoch-Smoke-Test (BeamNG 0.39).  
-Details: [BEAMNG_IMPORT.md](BEAMNG_IMPORT.md), [ROADS.md](ROADS.md), [ANNOTATIONS.md](ANNOTATIONS.md), [KONZEPT.md](KONZEPT.md), [GIP.md](GIP.md), [HEIGHTMAP_COMPOSE.md](HEIGHTMAP_COMPOSE.md).  
-Spätere Multi-Map-Session (nicht jetzt bauen): [TIROLRUNDE.md](TIROLRUNDE.md).
+Snapshot after the Hahntennjoch smoke test and Fernpass Mega work (BeamNG 0.39).  
+Details: [BEAMNG_IMPORT.md](BEAMNG_IMPORT.md), [ROADS.md](ROADS.md), [ANNOTATIONS.md](ANNOTATIONS.md), [CONCEPT.md](CONCEPT.md), [GIP.md](GIP.md), [HEIGHTMAP_COMPOSE.md](HEIGHTMAP_COMPOSE.md).  
+Multi-map session (first portal switch): [ROADTRIP_TYROL.md](ROADTRIP_TYROL.md).
 
-## Erledigt
+## Done
 
 ### Sites
-- **Hahntennjoch** — Default `config/site.yaml` / `config/sites/hahntennjoch.yaml`
-- **L13 Kühtai** — `config/sites/l13_kuehtai.yaml` (Galerien via GIP)
-- **Mega-Fernpass 8192** — `config/sites/fernpass_mega.yaml` (B179, Decals, Brücken/Galerien, Leitpoller)
-- Processed getrennt: `data/processed/<site.name>/`
 
-### Terrain / Straße
-- DGM → Heightmap + `roads_beamng.json`
-- **Lanes→Breite** (Default 2×3.75 m): [ROADS.md](ROADS.md)
-- Terrain-Masken + Cache (Landcover/Slope); Decal-Stitch + Width-Smooth; Road-Bed-Conform
-- Heightmap: unveränderliches DGM + Layer → `heightmap_<N>_composed.png` — [HEIGHTMAP_COMPOSE.md](HEIGHTMAP_COMPOSE.md)
-- `terrainPreset.json` → Level-`import/` (Import schreibt `theTerrain.ter`; Reload allein nicht)
+- **Hahntennjoch** — default `config/site.yaml` / `config/sites/hahntennjoch.yaml` (`autoroad_m28_test`, 512²)
+- **L13 Kühtai** — `config/sites/l13_kuehtai.yaml` (`autoroad_galerie_2048`, galleries via GIP)
+- **L13 splining** — `config/sites/l13_splining.yaml` (Tyrol road-network axis + MeshRoad decks)
+- **Fernpass 4096** — `config/sites/fernpass.yaml`
+- **Fernpass Mega 8192** — `config/sites/fernpass_mega.yaml` (B179, GIP decals, bridges/galleries, Italy rails)
+- **Testarena** — `config/sites/testarena.yaml` (crop of a GIP structure; road surface first)
+- Processed output is split: `data/processed/<site.name>/`
 
-### Leitplanken / Leitpoller
-- Fernpass-Mega: **`style: sections`** (Italy-Schiene); Leitpoller nur bewusst / per Rule (`posts` / `both`)
-- Achse = GIP OBJECTIDs; auf Brücken Deck-Z + enger Lateral — [GIP.md](GIP.md#centerline-quellen-stand-2026-09-16--fernpass-mega)
-- `--clear` + eindeutige Namen gegen Doppelte
-- GPKG-Pfad unverändert — [ANNOTATIONS.md](ANNOTATIONS.md)
+`config/sites/oetz.yaml` is still a copy of the site template, not a finished Ötztal map.
 
-### GIS-Annotationen
-- Schema + Seed + GPKG-Consume für Guardrails — [ANNOTATIONS.md](ANNOTATIONS.md)
+### Terrain / road
 
-## Offen / als Nächstes
+- DGM → heightmap + `roads_beamng.json`
+- **Lanes→width** (default 2×3.75 m): [ROADS.md](ROADS.md)
+- Terrain masks + cache (land cover / slope); decal stitch + width smooth; road-bed conform
+- Heightmap: immutable DGM + layers → `heightmap_<N>_composed.png` — [HEIGHTMAP_COMPOSE.md](HEIGHTMAP_COMPOSE.md)
+- `terrainPreset.json` → level `import/` (import writes `theTerrain.ter`; reload alone does not)
 
-| Priorität | Thema | Notiz |
-|-----------|--------|--------|
-| 1 | Road-Bed stärker / Re-Import-Check | Micro-Bumps: `road_bed_smooth_m` + Heightmap neu importieren |
-| 2 | QGIS-Feinschliff Guardrails | Lücken in `guardrail` |
-| 3 | Span-Prinzip Brücke/Galerie/Tunnel | Heightmap an Widerlagern, nicht unter der Platte — [HEIGHTMAP_COMPOSE.md](HEIGHTMAP_COMPOSE.md) |
-| 4 | `road_edge` → Asphalt/Bankett-Masken | analog zweistufig |
-| 5 | Terrain-Look Alm/Moos | `t_moss` |
-| — | **Tirolrunde** | Vision — [TIROLRUNDE.md](TIROLRUNDE.md) |
+### Guardrails / delineators
 
-## Bewusst nicht automatisch
+- Fernpass Mega: **`style: sections`** (Italy rail). Delineator posts only when intended / per rule (`posts` / `both`)
+- Axis = GIP OBJECTIDs; on bridges, deck Z + tighter lateral — [GIP.md](GIP.md#centerline-sources-fernpass-mega)
+- `--clear` + unique names against duplicates
+- GPKG path unchanged — [ANNOTATIONS.md](ANNOTATIONS.md)
 
-- `seed_annotations.py` läuft **nicht** in `build_smoke` / `build_guardrails`
-- `config/site.yaml` und `data/raw|processed` bleiben lokal (gitignore)
+### GIS annotations
 
-## Schnellbefehle
+- Schema + seed + GPKG consume for guardrails — [ANNOTATIONS.md](ANNOTATIONS.md)
+
+### Roadtrip Tyrol
+
+- First hard switch Hahntennjoch ↔ Fernpass Mega — [ROADTRIP_TYROL.md](ROADTRIP_TYROL.md)
+
+### Other tools (present, still evolving)
+
+- Backdrop meshes (Copernicus GLO-30 + viewshed): `fetch_backdrop.py` / `build_backdrop.py`
+- Forest, TWI, snow proxy, biome compose: `build_forest.py`, `build_twi.py`, `build_snow_proxy.py`, `compose_biomes.py`
+
+## Open / next
+
+| Priority | Topic | Note |
+|----------|--------|------|
+| 1 | Stronger road-bed / re-import check | Micro-bumps: `road_bed_smooth_m` + re-import the heightmap |
+| 2 | QGIS guardrail polish | Gaps in `guardrail` |
+| 3 | Span principle bridge/gallery/tunnel | Heightmap at abutments, not under the slab — [HEIGHTMAP_COMPOSE.md](HEIGHTMAP_COMPOSE.md) |
+| 4 | `road_edge` → asphalt / shoulder masks | same two-step workflow |
+| 5 | Terrain look meadow/moss | `t_moss` |
+| — | Roadtrip Tyrol product | Segment times, more gates, traffic, damage — [ROADTRIP_TYROL.md](ROADTRIP_TYROL.md) |
+
+## Deliberately not automatic
+
+- `seed_annotations.py` does **not** run inside `build_smoke` / `build_guardrails`
+- `config/site.yaml` and `data/raw|processed` stay local (gitignore)
+
+## Quick commands
 
 ```powershell
-python tools\seed_annotations.py          # Entwurf (nur wenn leer)
-python tools\seed_annotations.py --force  # Heuristik bewusst neu seeden
-python tools\fetch_gip.py                 # GIP/WFS Cache (Kunstbauten)
-python tools\fetch_gip.py --force         # GIP neu laden
-# … in QGIS editieren …
-python tools\build_guardrails.py          # 3D aus GPKG (auto)
-python tools\build_terrain_masks.py
+cd C:\temp\beamng_autoroad; python tools\seed_annotations.py
+```
+
+```powershell
+cd C:\temp\beamng_autoroad; python tools\seed_annotations.py --force
+```
+
+```powershell
+cd C:\temp\beamng_autoroad; python tools\fetch_gip.py
+```
+
+```powershell
+cd C:\temp\beamng_autoroad; python tools\fetch_gip.py --force
+```
+
+```powershell
+cd C:\temp\beamng_autoroad; python tools\build_guardrails.py
+```
+
+```powershell
+cd C:\temp\beamng_autoroad; python tools\build_terrain_masks.py
 ```

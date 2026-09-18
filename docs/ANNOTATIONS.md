@@ -1,18 +1,18 @@
-# GIS-Annotationen (Schema)
+# GIS annotations (schema)
 
-Hand-editierte Lagen für Straßenrand, Leitplanken und Lücken (Einmündungen).  
-OSM/DGM bleiben **Rohlage**; diese Dateien überschreiben Heuristik, sobald die Pipeline sie einliest.
+Hand-edited layers for road edge, guardrails, and gaps (junctions).  
+OSM/DGM stay the **raw layer**; these files override the heuristic once the pipeline reads them.
 
-## Datei und CRS
+## File and CRS
 
 | | |
 |--|--|
-| Pfad | `data/annotations/<site>.gpkg` (bevorzugt) oder einzelne GeoJSON unter `data/annotations/` |
-| CRS | wie `config/site.yaml` → `crs` (Smoke-Test: **EPSG:31254**) |
-| Editor | QGIS; Orthofoto + DGM als Hintergrund |
-| Anlegen | `python tools/init_annotations_gpkg.py` → leere Layer `road_edge`, `guardrail`, `centerline` |
+| Path | `data/annotations/<site>.gpkg` (preferred) or individual GeoJSON under `data/annotations/` |
+| CRS | as `config/site.yaml` → `crs` (smoke test: **EPSG:31254**) |
+| Editor | QGIS; orthophoto + DGM as background |
+| Create | `python tools/init_annotations_gpkg.py` → empty layers `road_edge`, `guardrail`, `centerline` |
 
-Eine GeoPackage-Datei pro Site, Layer-Namen exakt wie unten.
+One GeoPackage per site, layer names exactly as below.
 
 `config/site.yaml`:
 
@@ -23,142 +23,145 @@ annotations:
   # seed_sample_step_m: 2.0
 ```
 
-## Zweistufiger Workflow
+## Two-step workflow
 
 ```text
 1) python tools\seed_annotations.py [--force]
-      → Heuristik schreibt Entwurf in GPKG (centerline, road_edge, guardrail)
+      → heuristic writes a draft into the GPKG (centerline, road_edge, guardrail)
 
-2) QGIS: Linien verschieben / teilen / Lücken an Einmündungen
-      → present=false oder fehlende Linie = keine Planke
+2) QGIS: move / split lines / leave gaps at junctions
+      → present=false or missing line = no rail
 
 3) python tools\build_guardrails.py
-      → liest Layer guardrail (auto), baut 3D; schreibt GPKG nie
+      → reads layer guardrail (auto), builds 3D; never writes the GPKG
 ```
 
-| `guardrail_source` | Verhalten |
+| `guardrail_source` | Behaviour |
 |--------------------|-----------|
-| `auto` (Default) | GPKG wenn `guardrail` Features hat, sonst Heuristik |
-| `gpkg` | nur GPKG (Fehler wenn leer) |
-| `heuristic` | nur OSM-Offset (GPKG ignorieren) |
+| `auto` (default) | GPKG if `guardrail` has features, else heuristic |
+| `gpkg` | GPKG only (error if empty) |
+| `heuristic` | OSM offset only (ignore GPKG) |
 
-### Seed (Heuristik → GPKG)
+### Seed (heuristic → GPKG)
 
 ```powershell
-python tools\seed_annotations.py          # nur wenn Layer leer
-python tools\seed_annotations.py --force  # ersetzt vorhandene Features bewusst
+cd C:\temp\beamng_autoroad; python tools\seed_annotations.py
 ```
 
-Schreibt `centerline`, `road_edge` (`width/2`), `guardrail` (`width/2 + lateral_extra`) in Site-CRS.  
-**`build_smoke.py` / `build_guardrails.py` rufen das nie auf** und überschreiben die GPKG nicht.
+```powershell
+cd C:\temp\beamng_autoroad; python tools\seed_annotations.py --force
+```
+
+Writes `centerline`, `road_edge` (`width/2`), `guardrail` (`width/2 + lateral_extra`) in the site CRS.  
+**`build_smoke.py` / `build_guardrails.py` never call this** and do not overwrite the GPKG.
 
 ---
 
-## Layer
+## Layers
 
-### 1. `road_edge` — genauer Fahrbahnrand
+### 1. `road_edge` — precise carriageway edge
 
-**Geometrie:** `LineString` (2D; Z optional, sonst aus DGM)
+**Geometry:** `LineString` (2D; Z optional, else from DGM)
 
-Digitalisiere den **sichtbaren Asphalt-/Fahrbahnrand** (nicht die Leitplanke).  
-Links und rechts getrennt; Orientierung beliebig, `side` ist maßgeblich.
+Digitise the **visible asphalt / carriageway edge** (not the guardrail).  
+Left and right separately; orientation is free, `side` is authoritative.
 
-| Attribut | Typ | Pflicht | Werte / Bedeutung |
-|----------|-----|---------|-------------------|
-| `id` | text/int | ja | stabiler Schlüssel |
-| `side` | text | ja | `left` \| `right` (Fahrtrichtung der zugehörigen Centerline) |
-| `road_ref` | text | nein | OSM-way-id oder lokaler Straßenname |
-| `source` | text | nein | `ortho` \| `survey` \| `derived` |
-| `notes` | text | nein | frei |
+| Attribute | Type | Required | Values / meaning |
+|-----------|------|----------|------------------|
+| `id` | text/int | yes | stable key |
+| `side` | text | yes | `left` \| `right` (driving direction of the matching centerline) |
+| `road_ref` | text | no | OSM way id or local road name |
+| `source` | text | no | `ortho` \| `survey` \| `derived` |
+| `notes` | text | no | free |
 
-**Nutzung später:** Asphalt-Maske / Bankett / laterale Nullinie statt `width/2`.
-
----
-
-### 2. `guardrail` — Leitplankenverlauf und -vorhandensein
-
-**Geometrie:** `LineString` entlang der gewünschten **Planken-Achse** (Pfostenlinie).  
-Nur Abschnitte zeichnen, wo eine Planke stehen soll. **Lücken = Öffnungen** (Einmündung, Zufahrt, Busbucht) — kein Extra-Polygon nötig.
-
-| Attribut | Typ | Pflicht | Werte / Bedeutung |
-|----------|-----|---------|-------------------|
-| `id` | text/int | ja | stabiler Schlüssel |
-| `side` | text | ja | `left` \| `right` |
-| `present` | boolean | ja | `true` = bauen; `false` = bewusst keine Planke (selten nötig, wenn Linie fehlt) |
-| `kind` | text | nein | `wbeam` (Standard) \| `concrete` \| `gabion` \| `none` |
-| `gap_reason` | text | nein | bei Lücke / `present=false`: `junction` \| `driveway` \| `bus_stop` \| `bridge_joint` \| `other` |
-| `road_ref` | text | nein | Zuordnung zur Straße |
-| `section_m` | real | nein | Wunsch-Sektionslänge (Default aus `site.yaml`) |
-| `notes` | text | nein | frei |
-
-**Regeln:**
-
-1. Linie = wo Planken stehen. Keine Linie / Lücke in der Linie = Öffnung.
-2. `present=false` nur für explizite „hier keine Heuristik“-Sperren auf einem kurzen Stub.
-3. `side` konsistent zu `road_edge` derselben Straßenseite.
-4. Nicht die Centerline offsetten und committen, wenn der Rand schon in `road_edge` liegt — Pipeline kann Offset aus Rand + `lateral` ableiten; **bevorzugt** die editierte `guardrail`-Linie als Wahrheit.
-
-**Nutzung später:** `build_guardrails.py` liest diese Linien statt OSM-Offset; Heuristik nur wo Layer fehlt.
+**Later use:** asphalt mask / shoulder / lateral zero line instead of `width/2`.
 
 ---
 
-### 3. `centerline` — optional, Korrektur der Achse
+### 2. `guardrail` — rail path and presence
 
-**Geometrie:** `LineString`
+**Geometry:** `LineString` along the desired **rail axis** (post line).  
+Draw only where a rail should stand. **Gaps = openings** (junction, driveway, bus bay) — no extra polygon needed.
 
-| Attribut | Typ | Pflicht | Werte |
-|----------|-----|---------|--------|
-| `id` | text/int | ja | |
-| `width_m` | real | nein | überschreibt OSM-Breite |
-| `highway` | text | nein | `secondary` … |
-| `notes` | text | nein | |
+| Attribute | Type | Required | Values / meaning |
+|-----------|------|----------|------------------|
+| `id` | text/int | yes | stable key |
+| `side` | text | yes | `left` \| `right` |
+| `present` | boolean | yes | `true` = build; `false` = deliberately no rail (rarely needed if the line is missing) |
+| `kind` | text | no | `wbeam` (default) \| `concrete` \| `gabion` \| `none` |
+| `gap_reason` | text | no | at a gap / `present=false`: `junction` \| `driveway` \| `bus_stop` \| `bridge_joint` \| `other` |
+| `road_ref` | text | no | assignment to the road |
+| `section_m` | real | no | desired section length (default from `site.yaml`) |
+| `notes` | text | no | free |
 
-Nur nötig, wenn OSM-Achse grob falsch ist. Sonst weglassen.
+**Rules:**
 
----
+1. Line = where rails stand. No line / gap in the line = opening.
+2. `present=false` only for explicit “no heuristic here” blocks on a short stub.
+3. `side` consistent with `road_edge` on the same roadside.
+4. Do not offset the centerline and commit that if the edge already lives in `road_edge` — the pipeline can derive an offset from edge + `lateral`; **prefer** the edited `guardrail` line as truth.
 
-### 4. `gallery` / `bridge` / `tunnel` — aus GIP ableitbar
-
-Rohdaten: Tirol Verkehrswege WFS — siehe [GIP.md](GIP.md).  
-Felder `KUNSTBAUTEN` + `OBJEKT`/`OBJEKTBEZEICHNUNG` kennzeichnen Galerien und Brücken.
-
-| Attribut | Typ | Pflicht | Werte |
-|----------|-----|---------|--------|
-| `id` | text | ja | stabil (z. B. GIP OBJECTID) |
-| `kind` | text | ja | `gallery` \| `bridge` \| `tunnel` \| `culvert` |
-| `name` | text | nein | aus `KUNSTBAUTEN` |
-| `open_side` | text | nein | `left` \| `right` \| `both` \| `none` (Galerie) |
-| `notes` | text | nein | |
-
-Geometrie zunächst die GIP-Liniensegmente; Portale/Querschnitt später verfeinern.
-
-### 5. Reserviert
-
-| Layer | Geometrie | Zweck |
-|-------|-----------|--------|
-| `exclude` | Polygon | Seilbahn-/DOM-Artefakte aus Masken |
-| `wall` | LineString | Stützmauer/Gabione (eigenes Mesh) |
+**Later use:** `build_guardrails.py` reads these lines instead of OSM offset; heuristic only where the layer is missing.
 
 ---
 
-## QGIS-Arbeitsablauf (kurz)
+### 3. `centerline` — optional axis correction
 
-1. `python tools\seed_annotations.py` — Heuristik als Entwurf (nur wenn leer; sonst `--force`).
-2. Ortho + DGM laden, Projekt-CRS = Site-CRS; GPKG-Layer öffnen.
-3. `guardrail` verschieben, teilen, Lücken an Einmündungen (`present=false` optional).
-4. Einmündung: Linie unterbrechen (**zwei Features**).
-5. `python tools\build_guardrails.py` — 3D aus GPKG (`source=gpkg` in Meta).
+**Geometry:** `LineString`
 
-**Schutz:** Seed ohne `--force` bricht ab, wenn schon Features existieren. Builds schreiben die GPKG nicht.
+| Attribute | Type | Required | Values |
+|-----------|------|----------|--------|
+| `id` | text/int | yes | |
+| `width_m` | real | no | overrides OSM width |
+| `highway` | text | no | `secondary` … |
+| `notes` | text | no | |
 
-`road_edge` / `centerline` sind für spätere Masken/Achskorrektur; Guardrail-Build nutzt vorerst nur `guardrail`.
+Only needed if the OSM axis is badly wrong. Otherwise omit.
 
 ---
 
-## Pipeline-Rollen
+### 4. `gallery` / `bridge` / `tunnel` — derivable from GIP
 
-| Schritt | Verhalten |
-|---------|-----------|
-| `seed_annotations.py` | Heuristik → GPKG (nur explizit, `--force` bei Übernahme) |
-| QGIS | Nutzer editiert |
-| `build_guardrails.py` | liest `guardrail` (auto); **schreibt keine GPKG**; Fallback Heuristik wenn leer |
+Raw data: Tyrol road WFS — see [GIP.md](GIP.md).  
+Fields `KUNSTBAUTEN` + `OBJEKT` / `OBJEKTBEZEICHNUNG` mark galleries and bridges.
+
+| Attribute | Type | Required | Values |
+|-----------|------|----------|--------|
+| `id` | text | yes | stable (e.g. GIP OBJECTID) |
+| `kind` | text | yes | `gallery` \| `bridge` \| `tunnel` \| `culvert` |
+| `name` | text | no | from `KUNSTBAUTEN` |
+| `open_side` | text | no | `left` \| `right` \| `both` \| `none` (gallery) |
+| `notes` | text | no | |
+
+Geometry starts as the GIP line segments; refine portals / cross-section later.
+
+### 5. Reserved
+
+| Layer | Geometry | Purpose |
+|-------|----------|---------|
+| `exclude` | Polygon | cable-car / DSM artefacts out of masks |
+| `wall` | LineString | retaining wall / gabion (own mesh) |
+
+---
+
+## QGIS workflow (short)
+
+1. `python tools\seed_annotations.py` — heuristic as draft (only if empty; else `--force`).
+2. Load ortho + DGM, project CRS = site CRS; open GPKG layers.
+3. Move / split `guardrail`, leave gaps at junctions (`present=false` optional).
+4. Junction: break the line (**two features**).
+5. `python tools\build_guardrails.py` — 3D from GPKG (`source=gpkg` in meta).
+
+**Safety:** seed without `--force` aborts if features already exist. Builds do not write the GPKG.
+
+`road_edge` / `centerline` are for later masks / axis correction; the guardrail build currently uses only `guardrail`.
+
+---
+
+## Pipeline roles
+
+| Step | Behaviour |
+|------|-----------|
+| `seed_annotations.py` | heuristic → GPKG (explicit only, `--force` to replace) |
+| QGIS | user edits |
+| `build_guardrails.py` | reads `guardrail` (auto); **writes no GPKG**; fallback heuristic if empty |

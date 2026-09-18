@@ -1,209 +1,239 @@
-# BeamNG Import
+# BeamNG import
 
-**File → New Level** im World Editor ist bei dir unzuverlässig.  
-**Standardweg:** `python tools\setup_beamng_level.py <name>` — Template entpacken, Pfade umschreiben, Ocean/Props raus, Import-Assets kopieren.
+**File → New Level** in the World Editor is unreliable here.  
+**Standard path:** `python tools\setup_beamng_level.py <name>` — unpack the template, rewrite paths, strip ocean/props, copy import assets.
 
-User-Daten (BeamNG **0.39+**):
+User data (BeamNG **0.39+**):
 
 ```text
 C:\Users\<user>\AppData\Local\BeamNG\BeamNG.drive\current\levels\
 ```
 
-| Site | Level-Ordner | Heightmap | Max Height | mpp |
-|------|--------------|-----------|------------|-----|
-| Hahntennjoch | `autoroad_m28_test` | `heightmap_512.png` | aus `heightmap_meta.json` (~254.75) | 1.0 |
-| L13 Kühtai | `autoroad_galerie_test` | `heightmap_1024.png` | aus `heightmap_meta.json` (~424.63) | 1.0 |
+| Site | Level folder | Heightmap | Notes |
+|------|--------------|-----------|-------|
+| Hahntennjoch | `autoroad_m28_test` | `heightmap_512.png` | default site |
+| L13 Kühtai | `autoroad_galerie_2048` | `heightmap_2048.png` | galleries |
+| L13 splining | `autoroad_l13_splining` | `heightmap_2048.png` | MeshRoad decks |
+| Fernpass | `autoroad_fernpass_4096` | `heightmap_4096.png` | B179 crop |
+| Fernpass Mega | `autoroad_fernpass_8192` | `heightmap_8192.png` | flagship |
+| Testarena | `autoroad_testarena` | `heightmap_512.png` | specimen crop |
 
-Genauwerte immer aus `data/processed/<site>/heightmap_meta.json` nehmen.
+Always take `max_height_m` from `data/processed/<site>/heightmap_meta.json`. Heightmaps are **square**, **power of two**, **16-bit PNG**.
 
----
-
-## Fahrbahnbreite (Lanes)
-
-Default-Modell: **`default_lanes` × `lane_width_m` = 2 × 3.75 m = 7.5 m** (`beamng` in Site-YAML).
-
-Details, OSM-Fallen (`lanes` vs. `lanes:backward`), Decal-Übergänge und **Road-Bed**: [ROADS.md](ROADS.md).
-
-Kurz: `tools/build_smoke.py` → `roads_beamng.json` (Node-`width`); danach Decals/Masken neu.
+Portal session between Hahntennjoch and Fernpass Mega: [ROADTRIP_TYROL.md](ROADTRIP_TYROL.md).
 
 ---
 
-## 1. Level aus Template anlegen (Skript)
+## Carriageway width (lanes)
 
-**Nicht** File → New Level und **nicht** den alten Expand-Archive-One-Liner — Zip-Struktur und Pfade `/levels/template/...` machen das leicht kaputt.
+Default model: **`default_lanes` × `lane_width_m` = 2 × 3.75 m = 7.5 m** (`beamng` in the site YAML).
 
-Spiel **schließen**, dann:
+Details, OSM traps (`lanes` vs `lanes:backward`), decal transitions and **road-bed**: [ROADS.md](ROADS.md).
+
+Short: `tools/build_smoke.py` → `roads_beamng.json` (node `width`); then rebuild decals/masks.
+
+---
+
+## 1. Create a level from the template (script)
+
+**Do not** use File → New Level and **do not** use an old Expand-Archive one-liner — zip layout and paths `/levels/template/...` break easily.
+
+**Quit the game**, then:
 
 ```powershell
-cd C:\temp\beamng_autoroad
-
-# L13 (Name aus Site-YAML, Import-Assets werden mitkopiert):
-python tools\setup_beamng_level.py autoroad_galerie_test --site config/sites/l13_kuehtai.yaml
-
-# Hahntennjoch:
-python tools\setup_beamng_level.py autoroad_m28_test --site config/sites/hahntennjoch.yaml
-
-# Oder nur Namen tippen (Prompt):
-python tools\setup_beamng_level.py
+cd C:\temp\beamng_autoroad; python tools\setup_beamng_level.py autoroad_m28_test --site config/sites/hahntennjoch.yaml
 ```
 
-Bestehenden Ordner ersetzen: `--force`.
+```powershell
+cd C:\temp\beamng_autoroad; python tools\setup_beamng_level.py autoroad_galerie_2048 --site config/sites/l13_kuehtai.yaml
+```
 
-Das Skript:
+```powershell
+cd C:\temp\beamng_autoroad; python tools\setup_beamng_level.py autoroad_fernpass_8192 --site config/sites/fernpass_mega.yaml
+```
 
-- entpackt `content\levels\template.zip` nach  
+```powershell
+cd C:\temp\beamng_autoroad; python tools\setup_beamng_level.py
+```
+
+Replace an existing folder: `--force`.
+
+The script:
+
+- unpacks `content\levels\template.zip` to  
   `%LOCALAPPDATA%\BeamNG\BeamNG.drive\current\levels\<name>\`
-- schreibt alle `/levels/template` → `/levels/<name>` um (wichtig!)
-- setzt `info.json` (Titel, `isAuxiliary=false`)
-- entfernt Ocean/WaterPlane + Template-Backdrop/Groundcover
-- setzt `theTerrain.terrainFile` schreibbar, Position `0,0,0`, `maxHeight` aus Site-Meta
-- legt Spawn nahe Ursprung
-- kopiert `import/` aus `data/processed/...` wenn Site passt
+- rewrites every `/levels/template` → `/levels/<name>` (important!)
+- sets `info.json` (title, `isAuxiliary=false`)
+- removes Ocean/WaterPlane + template backdrop/groundcover
+- makes `theTerrain.terrainFile` writable, position `0,0,0`, `maxHeight` from site meta
+- places a spawn near the origin
+- copies `import/` from `data/processed/...` when the site matches
 
-Am Ende steht `READY: ...` mit den nächsten BeamNG-Schritten.
+It ends with `READY: ...` and the next BeamNG steps.
 
-Danach:
+Then:
 
-1. BeamNG → Freeroam → Level laden (nicht „New Level“).
-2. **F11** → Abschnitt **2. Heightmap importieren**.
-3. Nach Import: `python tools\build_smoke.py` (mit passendem `AUTOROAD_SITE`) für Masken-Sync + Guardrails.
+1. BeamNG → Freeroam → load the level (not “New Level”).
+2. **F11** → section **2. Import heightmap**.
+3. After import: `python tools\build_smoke.py` (with the matching `AUTOROAD_SITE`) for mask sync + guardrails.
 
 ---
 
-## 2. Heightmap importieren
+## 2. Import heightmap
 
-**Wichtig:** `theTerrain` → Inspector → `terrainFile` muss  
-`/levels/<dein_level>/theTerrain.ter` sein (**nicht** `/levels/template/...`).  
-Sonst speichert der Import nicht dauerhaft (Template-Pfad ist schreibgeschützt).
+**Important:** `theTerrain` → Inspector → `terrainFile` must be  
+`/levels/<your_level>/theTerrain.ter` (**not** `/levels/template/...`).  
+Otherwise the import does not persist (the template path is read-only).
 
 1. Toolbar → Landscape/Default → **Terrain Tools** → **Import Terrain**
 2. Dialog:
    - Terrain name: `theTerrain`
    - Heightmap: `/levels/<level>/import/heightmap_*.png`  
-     (oder Dateien aus `data/processed/...` vorher nach `import\` kopieren)
-   - **Meters per Pixel:** `1.0`
-   - **Max Height:** Wert aus `heightmap_meta.json` → `max_height_m`
-   - Position: **`0, 0, 0`** (nicht Template −512/−512/100)
+     (or copy files from `data/processed/...` into `import\` first)
+   - **Meters per Pixel:** `1.0` (unless the site YAML says otherwise)
+   - **Max Height:** value from `heightmap_meta.json` → `max_height_m`
+   - Position: **`0, 0, 0`** (not template −512/−512/100)
 3. **Import** → **File → Save Level**
-4. Template-**ocean** löschen/deaktivieren (sonst Wasser bei Z≈116)
+4. Delete/disable the template **ocean** (otherwise water at Z≈116)
 
-`import/heightmap_<N>.png` ist die **composed** Karte (DGM + Layer), nicht das Roh-DGM.  
-Reload **ohne** diesen Import lässt `theTerrain.ter` unverändert. Mixer und Fallstricke: [HEIGHTMAP_COMPOSE.md](HEIGHTMAP_COMPOSE.md).
+`import/heightmap_<N>.png` is the **composed** map (DGM + layers), not the raw DGM.  
+Reload **without** this import leaves `theTerrain.ter` unchanged. Mixer and pitfalls: [HEIGHTMAP_COMPOSE.md](HEIGHTMAP_COMPOSE.md).
 
-Danach oft schwarz → Layer-Masken (nächster Abschnitt).
+Often black afterwards → layer masks (next section).
 
-### Terrain-Materials aus Masken
+### Terrain materials from masks
 
-In 0.39 heißen Opacity-/Layer-Maps **„Texture Maps“** — die Liste ist anfangs **leer**.
+In 0.39, opacity / layer maps are called **“Texture Maps”** — the list starts **empty**.
 
-**Preset (einfachster Weg):**
+**Preset (simplest path):**
 
-1. `python tools\build_terrain_masks.py` (mit passendem `AUTOROAD_SITE`) — sync’t nach `levels/<level>/import/`
-2. Import-Dialog → **Load...** → `terrainPreset.json`
-3. Materials: Grass / dirt_rocky_large / rock / **Asphalt**, Channel **R**
+1. `python tools\build_terrain_masks.py` (with matching `AUTOROAD_SITE`) — syncs to `levels/<level>/import/`
+2. Import dialog → **Load...** → `terrainPreset.json`
+3. Materials: Grass / dirt_rocky_large / rock / **Asphalt**, channel **R**
 4. Groundmodels: `GRASS` / `DIRT_ROCKY_LARGE` / `ROCK` / `ASPHALT`
-5. Position `0,0,0` → **Import** → speichern
+5. Position `0,0,0` → **Import** → save
 
-**Manuell:** Texture Maps → **Add Texture Map**:
+**Manual:** Texture Maps → **Add Texture Map**:
 
 - `layerMap_0_Grass.png`
 - `layerMap_1_dirt_rocky_large.png`
 - `layerMap_2_rock.png`
 - `layerMap_3_Asphalt.png`
 
-Fahrbahnbreite: OSM (~7 m × `road_width_scale`) + Dirt-Bankett (`shoulder_m`).
+Carriageway width: OSM or GIP (~7 m × `road_width_scale`) + dirt shoulder (`shoulder_m`).
 
-Der Dateidialog sieht nur den **Spiel-VFS** (`/levels/...`), nicht `C:\temp\...`. Dateien müssen unter `levels\<level>\import\` liegen.
+The file dialog only sees the **game VFS** (`/levels/...`), not `C:\temp\...`. Files must sit under `levels\<level>\import\`.
 
-Heightmap: **quadratisch**, **2er-Potenz**, **16-bit PNG** (512 oder 1024 je Site).
+Preview after build: `preview_terrain_materials.png`.
 
-Vorschau nach Build: `preview_terrain_materials.png`.
-
-Offizielle Doku: [Terrain / heightmaps](https://docs.beamng.com/modding/levels/level_creation/section2/)
+Official docs: [Terrain / heightmaps](https://docs.beamng.com/modding/levels/level_creation/section2/)
 
 ---
 
-## 3. Leitplanken
+## 3. Guardrails
 
 Details: [ANNOTATIONS.md](ANNOTATIONS.md)
 
 ```powershell
-cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/l13_kuehtai.yaml"; python tools\seed_annotations.py; python tools\build_guardrails.py
+cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/hahntennjoch.yaml"; python tools\seed_annotations.py
 ```
-
-Schreibt TSStatics nach  
-`...\levels\<level>\main\MissionGroup\level_objects\guardrails\items.level.json`
-
-Default: **Leitpoller** (`style: posts`, Mesh `reflector.dae` ≈1.43 m nativ, `post_scale: 0.7` ≈1.0 m, Abstand `spacing_m` 25 oder 50).  
-Build vendored Mesh + `main.materials.json` nach `art/shapes/objects/` (sonst fehlen Materialien bei Cross-Level-Refs).  
-Alternativ kontinuierliche Italy-Schienen: `style: sections` + `italy_guardrails_common_section`.
-
-**Doppelte entfernen / neu setzen:**
 
 ```powershell
-python tools\build_guardrails.py --clear    # leert items.level.json
-# Level neu laden (nicht speichern)
-python tools\build_guardrails.py            # wipe + neu schreiben
-# Level erneut laden
+cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/hahntennjoch.yaml"; python tools\build_guardrails.py
 ```
 
-Level **neu laden**. Config: `beamng.guardrails` + `annotations.guardrail_source` (`auto`|`gpkg`|`heuristic`).
+Writes TSStatics to  
+`...\levels\<level>\main\MissionGroup\level_objects\guardrails\items.level.json`
 
-- `auto`: nicht-leerer `guardrail`-Layer → GPKG, sonst OSM-Heuristik
-- `style` / `spacing_m` / `post_scale` — Leitpoller
-- `--clear` — nur SimGroup leeren
-- `align_pitch` / `snap_to_heightmap` / `section_length_m` / `abut_overlap_m` — siehe Site-YAML (`sections`)
-- `yaw_flip_right` / `face_y_outward` — W-Profil / Reflektor zur Fahrbahn
-- Höhe: `pivot_ground_offset_m` / `z_lift_m`; Abstand Heuristik: `lateral_extra_m`
+Default for many sites: **delineator posts** (`style: posts`, mesh `reflector.dae` ≈1.43 m native, `post_scale: 0.7` ≈1.0 m, spacing `spacing_m` 25 or 50).  
+The build vendors mesh + `main.materials.json` into `art/shapes/objects/` (otherwise materials go missing on cross-level refs).  
+Fernpass Mega uses continuous Italy rails: `style: sections` + `italy_guardrails_common_section`.
+
+**Remove duplicates / reset:**
+
+```powershell
+cd C:\temp\beamng_autoroad; python tools\build_guardrails.py --clear
+```
+
+Reload the level (do not save).
+
+```powershell
+cd C:\temp\beamng_autoroad; python tools\build_guardrails.py
+```
+
+Reload the level again.
+
+Config: `beamng.guardrails` + `annotations.guardrail_source` (`auto`|`gpkg`|`heuristic`).
+
+- `auto`: non-empty `guardrail` layer → GPKG, else OSM heuristic
+- `style` / `spacing_m` / `post_scale` — delineators
+- `--clear` — empty the SimGroup only
+- `align_pitch` / `snap_to_heightmap` / `section_length_m` / `abut_overlap_m` — see site YAML (`sections`)
+- `yaw_flip_right` / `face_y_outward` — W-profile / reflector toward the road
+- Height: `pivot_ground_offset_m` / `z_lift_m`; heuristic offset: `lateral_extra_m`
 
 ---
 
-## Wenn Straße weg / Spawn falsch
+## If the road is gone / spawn is wrong
 
-**Spawn:** oft noch Template `[32,32,5]` (Ecke). Freeroam braucht zusätzlich einen **benannten** Spawn + `info.json`.
+**Spawn:** often still template `[32,32,5]` (corner). Freeroam also needs a **named** spawn + `info.json`.
 
 ```powershell
 cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/l13_kuehtai.yaml"; python tools\fix_beamng_level.py
 ```
 
-Erwarteter Spawn ca. Mitte L13 `(573, 498, ~83)`, Objektname `spawns_default`. BeamNG vorher schliessen.
+Quit BeamNG first. Script pick so far: longest / highest OSM class, point near map centre, Z = heightmap + lift.
 
-**Spawn selbst im World Editor setzen (empfohlen):**
-1. Level laden → F11
-2. Scene Tree: `MissionGroup` → `PlayerDropPoints` → Objekt **`spawns_default`**
-3. Mit Move-Tool (W) auf die Straße ziehen; Z etwas über dem Boden
+**Set the spawn in the World Editor (recommended):**
+
+1. Load the level → F11
+2. Scene Tree: `MissionGroup` → `PlayerDropPoints` → object **`spawns_default`**
+3. Move tool (W) onto the road; Z a little above the ground
 4. File → Save Level
-5. Freeroam neu starten (oder Fahrzeug neu spawnen) — `info.json` zeigt schon auf `spawns_default`
+5. Restart Freeroam (or respawn the vehicle) — `info.json` already points at `spawns_default`
 
-Skript-Auswahl bisher: längste/höchste OSM-Klasse (`secondary` L13), Punkt möglichst nahe Kartenmitte, Z = Heightmap + Lift.
-
-**Keine Asphalt-Oberfläche nach Re-Import:** Meist Heightmap **ohne** Texture Maps importiert.  
-`theTerrain.terrain.json` enthält dann z. B. noch `BeachSand` statt `Asphalt`.
+**No asphalt surface after re-import:** usually the heightmap was imported **without** texture maps.  
+`theTerrain.terrain.json` then still has e.g. `BeachSand` instead of `Asphalt`.
 
 1. Terrain Tools → Import Terrain → **Load…** →  
-   `/levels/autoroad_galerie_test/import/terrainPreset.json`
-2. Prüfen: vier Texture Maps, letzte = `layerMap_3_Asphalt.png`, Material **Asphalt**, Channel **R**
-3. Position `0,0,0` → Import → Save Level → Level neu laden
+   `/levels/<level>/import/terrainPreset.json`
+2. Check: four texture maps, last = `layerMap_3_Asphalt.png`, material **Asphalt**, channel **R**
+3. Position `0,0,0` → Import → Save Level → reload the level
 
-Nur Heightmap erneut zu importieren löscht die Layer-Zuordnung. Vorschau: `import/preview_terrain_materials.png` (dunkel = Asphalt).
+Re-importing only the heightmap drops the layer assignment. Preview: `import/preview_terrain_materials.png` (dark = asphalt).
 
-Wenn `main/.../terrain/items.level.json` leer ist (nach Save passiert das manchmal): `fix_beamng_level.py` stellt den TerrainBlock wieder her.
+If `main/.../terrain/items.level.json` is empty (that sometimes happens after Save): `fix_beamng_level.py` restores the TerrainBlock.
 
+### If the level does not start
 
-1. Spiel hart beenden (Task-Manager).
-2. **Nicht** erneut File → New Level mit leerem Ordner.
-3. Offizielle Map (`smallgrid` / `gridmap_v2`) laden — wenn die geht, Template-Pfad prüfen und Abschnitt 1 wiederholen.
-4. Konsole `` ` `` (unter Esc); Log:  
+1. Hard-quit the game (Task Manager).
+2. **Do not** File → New Level again with an empty folder.
+3. Load an official map (`smallgrid` / `gridmap_v2`) — if that works, check the template path and repeat section 1.
+4. Console `` ` `` (below Esc); log:  
    `%LOCALAPPDATA%\BeamNG\BeamNG.drive\current\beamng.log`  
-   (ältere Installationen ggf. `%LOCALAPPDATA%\BeamNG.drive\<version>\`)
-5. Mods kurz deaktivieren, nochmal testen.
+   (older installs maybe `%LOCALAPPDATA%\BeamNG.drive\<version>\`)
+5. Disable mods briefly, try again.
 
-**Nicht** Levels nach `Documents\BeamNG.drive` oder `BeamNG.drive\0.36\` legen — die Pipeline synct nach `BeamNG\BeamNG.drive\current\levels\`.
+**Do not** put levels in `Documents\BeamNG.drive` or `BeamNG.drive\0.36\` — the pipeline syncs to `BeamNG\BeamNG.drive\current\levels\`.
 
 ---
 
-## Neu bauen
+## Rebuild
 
 ```powershell
-cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/l13_kuehtai.yaml"; python tools\fetch_dgm.py; python tools\build_smoke.py
+cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/hahntennjoch.yaml"; python tools\fetch_dgm.py
+```
+
+```powershell
+cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/hahntennjoch.yaml"; python tools\build_smoke.py
+```
+
+Fernpass Mega:
+
+```powershell
+cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/fernpass_mega.yaml"; python tools\fetch_gip.py
+```
+
+```powershell
+cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/fernpass_mega.yaml"; python tools\build_smoke.py
 ```

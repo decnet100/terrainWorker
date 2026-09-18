@@ -1,4 +1,4 @@
-# site.example.yaml — template
+# Draft copy of the site template — not a finished Ötztal map.
 # Finished profiles: config/sites/*.yaml (see config/sites/README.md)
 # Active site: copy onto config/site.yaml OR $env:AUTOROAD_SITE="config/sites/…"
 
@@ -68,9 +68,7 @@ sources:
     type: wfs
     url: "https://dservices3.arcgis.com/hG7UfxX49PQ8XkXh/arcgis/services/Verkehrswege/WFSServer"
     type_name: "Verkehrswege:Verkehrswege"
-    str_code: L13                # through route (trunk). Required.
-    # include: bbox              # all provincial roads in site.bbox (FeatureServer)
-    # str_codes: [L13, B179]     # fallback / explicit instead of spatial intersect
+    str_code: L13                # required for an efficient download
 
 beamng:
   meters_per_pixel: 1.0          # heightmap resolution in the level (starting value)
@@ -83,12 +81,6 @@ beamng:
   lane_width_m: 3.75
   default_lanes: 2
   shoulder_m: 0.2                # dirt shoulder per side (m)
-  # GIP corridors (bridges/galleries). Trunk = sources.gip.str_code.
-  # roads:
-  #   spine_start_oid: 1234
-  #   spine_next:
-  #     - from_oid: 3852
-  #       to_oid: 3901
   # Optional: BEV×nDSM×TWI×snow → exclusive biomes + soft terrain (compose_biomes.py)
   # compose:
   #   ndsm_canopy_m: 5.0

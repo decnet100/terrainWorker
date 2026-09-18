@@ -1,116 +1,125 @@
-# Straßen: Breite, Decals, Road-Bed
+# Roads: width, decals, road-bed
 
-Stand nach Mega-Fernpass-Feinschliff (Lanes→Breite, Decal-Übergänge, Leitpoller).
+State after Fernpass Mega polish (lanes→width, decal transitions, delineators).
 
-Verwandt: [BEAMNG_IMPORT.md](BEAMNG_IMPORT.md), [GIP.md](GIP.md) (**Centerline-Quellen**), `tools/road_width.py`.
+Related: [BEAMNG_IMPORT.md](BEAMNG_IMPORT.md), [GIP.md](GIP.md) (**centerline sources**), `tools/road_width.py`.
 
-**Achse (Fernpass-Mega):** Decals/Guardrails/Brücken/Galerien → **GIP**, nicht OSM. Kurzfassung und Spine vs. Stitch: [GIP.md § Centerline-Quellen](GIP.md#centerline-quellen-stand-2026-09-16--fernpass-mega).
+**Axis (Fernpass Mega):** decals / guardrails / bridges / galleries → **GIP**, not OSM. Summary and spine vs stitch: [GIP.md § Centerline sources](GIP.md#centerline-sources-fernpass-mega).
 
 ---
 
-## Fahrbahnbreite (Lanes → Meter)
+## Carriageway width (lanes → metres)
 
-**Default:** `default_lanes × lane_width_m` = **2 × 3.75 m = 7.5 m**  
-(`beamng.lane_width_m` / `beamng.default_lanes` in der Site-YAML).
+**Default:** `default_lanes × lane_width_m` = **2 × 3.75 m = 7.5 m**  
+(`beamng.lane_width_m` / `beamng.default_lanes` in the site YAML).
 
-### Wo steckt was?
+### Where is what?
 
-| Ort | Inhalt |
-|-----|--------|
-| Site-YAML | Formel / Defaults (`lane_width_m`, `default_lanes`, optional `lanes_by_highway`) |
-| `data/raw/osm_roads_*.json` | OSM-Rohdaten (`lanes`, `width`, Geometrie) — Cache von Overpass |
-| `data/processed/.../roads_beamng.json` | **Fertige** Node-Breiten `[x,y,z,width]` — das nutzen Decals/Masken/Guardrails |
+| Place | Content |
+|-------|---------|
+| Site YAML | formula / defaults (`lane_width_m`, `default_lanes`, optional `lanes_by_highway`) |
+| `data/raw/osm_roads_*.json` | raw OSM (`lanes`, `width`, geometry) — Overpass cache |
+| `data/processed/.../roads_beamng.json` | **final** node widths `[x,y,z,width]` — what decals / masks / guardrails use |
 
-YAML speichert **nicht** die Breite jeder Straße; die wird beim Smoke aus OSM + Formel gerechnet und in `roads_beamng.json` abgelegt.
+YAML does **not** store the width of every road; smoke computes it from OSM + formula and writes `roads_beamng.json`. Fernpass Mega then follows GIP OBJECTID polylines for the axis (width still from that JSON / defaults).
 
-### Auslese-Reihenfolge (`tools/road_width.py` → `build_smoke`)
+### Lookup order (`tools/road_width.py` → `build_smoke`)
 
-1. OSM-Tag `width` (m), sonst  
-2. OSM **`lanes`** (Gesamtzahl) × `lane_width_m`, sonst  
-3. Nur wenn `lanes` fehlt **und** beide `lanes:forward` **und** `lanes:backward` gesetzt: Summe × `lane_width_m`, sonst  
-4. `lanes_by_highway[highway]` bzw. `default_lanes` × `lane_width_m`
+1. OSM tag `width` (m), else  
+2. OSM **`lanes`** (total count) × `lane_width_m`, else  
+3. Only if `lanes` is missing **and** both `lanes:forward` **and** `lanes:backward` are set: sum × `lane_width_m`, else  
+4. `lanes_by_highway[highway]` or `default_lanes` × `lane_width_m`
 
-**Wichtig (OSM):** `lanes=` ist die **Gesamtzahl**. Bei Zweirichtungsstraßen ist `lanes=2` = eine Spur je Richtung.  
-Nur `lanes:backward=1` neben `lanes=2` darf das Total **nicht** überschreiben (häufiges Fernpass-Tagging) — sonst entstehen fälschlich 3.75 m-Abschnitte.
+**Important (OSM):** `lanes=` is the **total**. On two-way roads `lanes=2` = one lane each way.  
+A lone `lanes:backward=1` next to `lanes=2` must **not** overwrite the total (common Fernpass tagging) — otherwise you get false 3.75 m stretches.
 
-### Neu rechnen
+### Recompute
 
 ```powershell
-cd C:\temp\beamng_autoroad
-$env:AUTOROAD_SITE = "config/sites/fernpass_mega.yaml"
-# OSM-Cache nur nötig, wenn Overpass-Rohdaten veraltet sind:
-# Remove-Item -ErrorAction SilentlyContinue data\raw\osm_roads_tirol-fernpass-8192.json
-python tools\build_smoke.py          # schreibt roads_beamng (+ Masken/Guardrails)
-python tools\build_decal_roads.py    # Decals mit neuen Breiten
+cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/fernpass_mega.yaml"; python tools\build_smoke.py
 ```
+
+```powershell
+cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/fernpass_mega.yaml"; python tools\build_decal_roads.py
+```
+
+OSM cache only if Overpass raw data is stale: `data\raw\osm_roads_tirol-fernpass-8192.json`.
 
 ---
 
-## Decal-Übergänge (Stitch + Width-Smooth)
+## Decal transitions (stitch + width smooth)
 
-OSM zerlegt die B179 in viele kurze Ways. Ohne Merge entstehen Lücken; mit Merge bleiben kurze schmale Stubs als **Taillen** (2–1–3…).
+OSM splits the B179 into many short ways. Without merge you get gaps; with merge, short narrow stubs remain as **waists** (2–1–3…).
 
 `build_decal_roads`:
 
-1. **`stitch_abutting`** — Degree-2 End-an-End mergen (`stitch_tol_m`)  
-2. **`width_fill_dip_m`** (Default 40) — kurze schmale Dips morphologisch schließen  
-3. **`width_blend_m`** (Default 25) — verbleibende Lane-Sprünge weich auslaufen  
-4. optional Galerie-Clip; `terrain_roof: keep_asphalt` wird **nicht** weggeschnitten (z. B. Tunnel 8082)
+1. **`stitch_abutting`** — merge degree-2 end-to-end (`stitch_tol_m`)
+2. **`width_fill_dip_m`** (default 40) — morphologically close short narrow dips
+3. **`width_blend_m`** (default 25) — remaining lane jumps ease out
+4. optional gallery clip; `terrain_roof: keep_asphalt` is **not** cut away (e.g. tunnel 8082)
 
 ```powershell
-python tools\build_decal_roads.py --skip-road-bed   # nur Decal-JSON
-python tools\build_decal_roads.py                   # inkl. Road-Bed-Heightmap
+cd C:\temp\beamng_autoroad; python tools\build_decal_roads.py --skip-road-bed
+```
+
+```powershell
+cd C:\temp\beamng_autoroad; python tools\build_decal_roads.py
 ```
 
 ---
 
-## Road-Bed (Terrain unter der Straße)
+## Road-bed (terrain under the road)
 
-**Was:** Geglättetes Höhenband unter der Fahrbahn in der Heightmap — nicht die Decal-Textur. Ziel: DGM-Mikro-Zacken dämpfen, Decal und Terrain auf einer gemeinsamen Grade.
+**What:** a smoothed height band under the carriageway in the heightmap — not the decal texture. Goal: damp DGM micro-spikes so decal and terrain share a grade.
 
-**Wann aktiv:** `beamng.decal_roads.road_bed_conform: true` und Build **ohne** `--skip-road-bed`.
+**When active:** `beamng.decal_roads.road_bed_conform: true` and build **without** `--skip-road-bed`.
 
-**Ausgabe:** `data/processed/<site>/heightmap_<size>_road_bed.png` (+ Sync nach Level-`import/`).
+**Output:** `data/processed/<site>/heightmap_<size>_road_bed.png` (+ sync to level `import/`).
 
-**Wichtige Knöpfe:**
+**Important knobs:**
 
-| Key | Rolle |
-|-----|--------|
-| `road_bed_smooth_m` | Längsfenster für Ziel-Z (größer = glattere Grade) |
-| `road_bed_pad_m` / `falloff_m` | Breite des gestempelten Bandes |
-| `road_bed_sink_m` | Bett etwas unter Decal-Z |
-| `road_bed_max_raise_m` / `max_cut_m` | Clamp gegen DGM |
+| Key | Role |
+|-----|------|
+| `road_bed_smooth_m` | along-track window for target Z (larger = smoother grade) |
+| `road_bed_pad_m` / `falloff_m` | width of the stamped band |
+| `road_bed_sink_m` | bed a little under decal Z |
+| `road_bed_max_raise_m` / `max_cut_m` | clamp against DGM |
 
-Decals: `snap_to_heightmap: true` → Node-Z vom Road-Bed (falls vorhanden).
+Decals: `snap_to_heightmap: true` → node Z from the road-bed (if present).
 
-**„Neu im Terrain“:** PNG schreiben reicht nicht. Im World Editor Heightmap / `terrainPreset.json` **neu importieren** und Level speichern — sonst fährt man weiter auf der alten Terrain-Geometrie. Micro-Bumps trotz Smooth = oft vergessener Re-Import.
+**“New in the terrain”:** writing the PNG is not enough. Re-import the heightmap / `terrainPreset.json` in the World Editor and save the level — otherwise you still drive on the old terrain geometry. Micro-bumps despite smooth = often a forgotten re-import.
 
 ---
 
-## Leitpoller / Guardrails
+## Delineators / guardrails
 
-Default Mega-Fernpass: `style: posts`, Mesh `reflector` (vendored inkl. Materialien), `post_scale: 0.7` (~1 m), `spacing_m: 25`.
+Fernpass Mega default: **`style: sections`** (Italy rail mesh). Delineator posts (`style: posts`, mesh `reflector`, `post_scale: 0.7` ~1 m, `spacing_m: 25`) only when intended or via `both` / rules.
 
 ```powershell
-# Alles entfernen (items.level.json leeren)
-python tools\build_guardrails.py --clear
-# Level neu laden (nicht speichern, falls noch Doppelte aus alter Session)
-
-# Neu erzeugen (wipe + write, eindeutige Namen, Dedup)
-python tools\build_guardrails.py
-# Level erneut laden
+cd C:\temp\beamng_autoroad; python tools\build_guardrails.py --clear
 ```
 
-Italy-Schienen: `style: sections` + `italy_guardrails_common_section`.
+Reload the level (do not save if duplicates from an old session are still in the tree).
+
+```powershell
+cd C:\temp\beamng_autoroad; python tools\build_guardrails.py
+```
+
+Reload the level again.
+
+Italy rails: `style: sections` + `italy_guardrails_common_section`.
 
 ---
 
-## Terrain-Masken-Cache
+## Terrain-mask cache
 
-`build_terrain_masks` cached Tirol-Landcover + DGM-Slope unter  
-`processed/<site>/cache/terrain_masks/`. Roads/Brücken/Galerien werden immer neu gerechnet.
+`build_terrain_masks` caches Tyrol land cover + DGM slope under  
+`processed/<site>/cache/terrain_masks/`. Roads / bridges / galleries are always recomputed.
 
 ```powershell
-python tools\build_terrain_masks.py          # Cache nutzen
-python tools\build_terrain_masks.py --force  # neu rasterisieren
+cd C:\temp\beamng_autoroad; python tools\build_terrain_masks.py
+```
+
+```powershell
+cd C:\temp\beamng_autoroad; python tools\build_terrain_masks.py --force
 ```

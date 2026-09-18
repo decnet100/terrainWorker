@@ -1,0 +1,72 @@
+{
+  "portal_red": {
+    "name": "portal_red",
+    "mapTo": "portal_red",
+    "class": "Material",
+    "persistentId": "a11e7101-71e0-4ead-b100-0000ffffff71",
+    "Stages": [
+      {
+        "baseColorMap": "/art/shapes/portals/portal_ghost.png",
+        "baseColorFactor": [
+          1.0,
+          0.3,
+          0.2,
+          1.0
+        ],
+        "opacityFactor": 0.14,
+        "emissiveFactor": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "roughnessFactor": 0.85,
+        "metallicFactor": 0.0
+      },
+      {},
+      {},
+      {}
+    ],
+    "translucent": true,
+    "translucentBlendOp": "PreMulAlpha",
+    "translucentRecvShadows": false,
+    "alphaTest": false,
+    "castShadows": false,
+    "doubleSided": true,
+    "version": 1.5
+  },
+  "portal_arc": {
+    "name": "portal_arc",
+    "mapTo": "portal_arc",
+    "class": "Material",
+    "persistentId": "a11e7101-71e0-4ead-b100-0000ffffff72",
+    "Stages": [
+      {
+        "baseColorMap": "/art/shapes/portals/portal_arc.png",
+        "baseColorFactor": [
+          1.0,
+          0.3,
+          0.2,
+          1.0
+        ],
+        "opacityFactor": 0.35,
+        "emissiveFactor": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "roughnessFactor": 0.9,
+        "metallicFactor": 0.0
+      },
+      {},
+      {},
+      {}
+    ],
+    "translucent": true,
+    "translucentBlendOp": "PreMulAlpha",
+    "translucentRecvShadows": false,
+    "alphaTest": false,
+    "castShadows": false,
+    "doubleSided": true,
+    "version": 1.5
+  }
+}

@@ -1,0 +1,46 @@
+# Roadtrip Tyrol portal graph (v1): one logical pair Hahntennjoch <-> Fernpass.
+# Coordinates are BeamNG terrain meters (not site CRS). dwell_s is fixed today;
+# later replace with routed driving time through the geographic gap.
+#
+# Boxes sit on the main road near a bbox edge, ~28 m inward.
+# Arrival spawn is further inward (~48 m) so the player does not re-enter the box.
+
+# dwell_s in YAML is fallback; build_portals sets 1 s per km of geo span.
+dwell_s_default: 5
+grace_s: 8
+box_size_m: [12.0, 8.0, 6.0]  # along-road, across, height
+
+# Sky ribbon while inside a box: full CRS distance to dest DGM-bbox center.
+# Heading = portal → dest bbox midpoint; end height = dest center_z_m in this map's Z.
+# Omit length_m to use the real span (~15–18 km). peak_frac = extra bulge vs span.
+arc:
+  width_m: 20
+  # Apex bulge: max(peak_height_m, peak_frac * span). 0.06 clipped into Fernpass peaks.
+  peak_frac: 0.16
+  peak_height_m: 2000
+  samples: 56
+
+gates:
+  - id: hahntenn_to_fernpass
+    from_level: autoroad_m28_test
+    to_level: autoroad_fernpass_8192
+    label: Towards Fernpass
+    box:
+      pos: [485.542, 356.991, 100.905]
+      tangent: [-0.994, -0.113]
+      size: [12.0, 8.0, 6.0]
+    arrive:
+      pos: [3013.198, 40.940, 110.274]
+      tangent: [-0.835, 0.550]
+
+  - id: fernpass_to_hahntenn
+    from_level: autoroad_fernpass_8192
+    to_level: autoroad_m28_test
+    label: Towards Hahntennjoch
+    box:
+      pos: [3029.905, 29.946, 111.442]
+      tangent: [-0.835, 0.550]
+      size: [12.0, 8.0, 6.0]
+    arrive:
+      pos: [467.010, 350.079, 97.104]
+      tangent: [-0.849, -0.528]

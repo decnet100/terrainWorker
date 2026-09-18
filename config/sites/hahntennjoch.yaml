@@ -1,5 +1,5 @@
 # Active site = copy or set AUTOROAD_SITE=config/sites/<name>.yaml
-# Default for Leitplanken-/Gelände-Optimierung.
+# Default for guardrail / terrain work.
 name: tirol-m28-test-500m
 crs: EPSG:31254
 bbox:
@@ -7,6 +7,8 @@ bbox:
   - 237990.0
   - 22650.0
   - 238500.0
+# Absolute GHA (m) at DGM-bbox center — Roadtrip Tyrol sky-arc target. Override if sampled height is off.
+center_z_m: 1705.2
 
 sources:
   dgm:
