@@ -51,7 +51,7 @@ cd C:\temp\beamng_autoroad; python tools\init_annotations_gpkg.py
 cd C:\temp\beamng_autoroad; python tools\seed_annotations.py
 ```
 
-Level import: [docs/BEAMNG_IMPORT.md](docs/BEAMNG_IMPORT.md). Portal mod: [docs/ROADTRIP_TYROL.md](docs/ROADTRIP_TYROL.md).
+Level import: [docs/BEAMNG_IMPORT.md](docs/BEAMNG_IMPORT.md). Horizon meshes: [docs/BACKDROP.md](docs/BACKDROP.md). Portal mod: [docs/ROADTRIP_TYROL.md](docs/ROADTRIP_TYROL.md).
 
 ## Docs
 
@@ -64,6 +64,7 @@ Level import: [docs/BEAMNG_IMPORT.md](docs/BEAMNG_IMPORT.md). Portal mod: [docs/
 - [docs/ROADS.md](docs/ROADS.md) — width, decals, road-bed
 - [docs/HEIGHTMAP_COMPOSE.md](docs/HEIGHTMAP_COMPOSE.md) — DGM + layers → composed PNG
 - [docs/BEAMNG_IMPORT.md](docs/BEAMNG_IMPORT.md) — create level, import terrain
+- [docs/BACKDROP.md](docs/BACKDROP.md) — far/mid/near horizon meshes (Copernicus + viewshed)
 - [config/site.example.yaml](config/site.example.yaml) — template (`site.yaml` is local, gitignored)
 
 Internal Lua/mod paths still use the identifier `tirolrunde` so existing BeamNG installs keep working. The name you see in the game and in this documentation is **Roadtrip Tyrol**.

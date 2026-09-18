@@ -45,6 +45,13 @@ sources:
     # First try often 1.0–2.0 m; 0.2 m only if needed
     resolution_m: 1.0
 
+  # Far/mid/near backdrop texture (optional). Defaults to SWISSIMAGE Hintergrund.
+  # backdrop_ortho:
+  #   type: wms
+  #   url: "https://wms.geo.admin.ch/"
+  #   layer: ch.swisstopo.swissimage
+  #   version: "1.3.0"
+
   landuse:
     type: osm                    # natural/landuse via Overpass
     # type: bev                  # BEV INSPIRE Land Cover WMS (see sources.bev_landcover)
@@ -69,7 +76,7 @@ sources:
     url: "https://dservices3.arcgis.com/hG7UfxX49PQ8XkXh/arcgis/services/Verkehrswege/WFSServer"
     type_name: "Verkehrswege:Verkehrswege"
     str_code: L13                # through route (trunk). Required.
-    # include: bbox              # all provincial roads in site.bbox (FeatureServer)
+    # include: bbox              # full Verkehrswege layer in site.bbox (FeatureServer)
     # str_codes: [L13, B179]     # fallback / explicit instead of spatial intersect
 
 beamng:
@@ -141,6 +148,14 @@ beamng:
     #     sides: left
     #   - match: { ids: 2400-2450 }
     #     sides: none                     # or present: false
+
+  # Horizon meshes around the playable bbox — see docs/BACKDROP.md
+  # backdrop:
+  #   radius_m: 40000
+  #   viewshed_step_m: 50
+  #   mesh_step_m: 120
+  #   near_m: 1000
+  #   mid_m: 10000
 
 # Hand-edited edges / guardrails (see docs/ANNOTATIONS.md).
 # Schema: python tools/init_annotations_gpkg.py

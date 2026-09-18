@@ -44,7 +44,7 @@ Anti ping-pong: arrival sits ~20 m further **into the map** than the destination
 ### In-map
 
 - Red, **very** transparent TSStatic box, `collisionType: None`, 12×8×6 m. Logic = Lua OBB.
-- While the vehicle is in the box: 20 m-wide ballistic arc toward the **DGM bbox centre of the destination map** (full CRS distance, end at `center_z_m` in the current map’s Z scale). `visibleDistance` is raised for that (template otherwise 7.5 km). Later the same mesh sits in front of the planned backdrop panorama.
+- While the vehicle is in the box: 20 m-wide ballistic arc toward the **DGM bbox centre of the destination map** (full CRS distance, end at `center_z_m` in the current map’s Z scale). `visibleDistance` is raised for that (template otherwise 7.5 km). Later the same mesh sits in front of the backdrop panorama — [BACKDROP.md](BACKDROP.md).
 
 | Gate | from | to | Box (BeamNG m) |
 |------|------|-----|----------------|

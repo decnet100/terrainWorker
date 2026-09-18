@@ -77,6 +77,7 @@ DecalRoads are often look / navigation; grip usually comes from the terrain mate
 - Rock ridge: hard terrain material, **no** canopy cards
 - Wooded slope: **alpha impostors / transparency** (Forest, no collision) for a broken horizon — no need for expensive unique trees
 - Close to the road, real Forest meshes are optional later
+- Beyond the playable heightmap: **backdrop rings** (near DGM / mid-far Copernicus) — [BACKDROP.md](BACKDROP.md)
 
 ### Tunnels / galleries
 

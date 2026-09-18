@@ -20,7 +20,7 @@ C:\Users\<user>\AppData\Local\BeamNG\BeamNG.drive\current\levels\
 
 Always take `max_height_m` from `data/processed/<site>/heightmap_meta.json`. Heightmaps are **square**, **power of two**, **16-bit PNG**.
 
-Portal session between Hahntennjoch and Fernpass Mega: [ROADTRIP_TYROL.md](ROADTRIP_TYROL.md).
+Portal session between Hahntennjoch and Fernpass Mega: [ROADTRIP_TYROL.md](ROADTRIP_TYROL.md). Horizon meshes around the playable map: [BACKDROP.md](BACKDROP.md).
 
 ---
 

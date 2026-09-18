@@ -1,7 +1,7 @@
 # Status and roadmap
 
 Snapshot after the Hahntennjoch smoke test and Fernpass Mega work (BeamNG 0.39).  
-Details: [BEAMNG_IMPORT.md](BEAMNG_IMPORT.md), [ROADS.md](ROADS.md), [ANNOTATIONS.md](ANNOTATIONS.md), [CONCEPT.md](CONCEPT.md), [GIP.md](GIP.md), [HEIGHTMAP_COMPOSE.md](HEIGHTMAP_COMPOSE.md).  
+Details: [BEAMNG_IMPORT.md](BEAMNG_IMPORT.md), [ROADS.md](ROADS.md), [ANNOTATIONS.md](ANNOTATIONS.md), [CONCEPT.md](CONCEPT.md), [GIP.md](GIP.md), [HEIGHTMAP_COMPOSE.md](HEIGHTMAP_COMPOSE.md), [BACKDROP.md](BACKDROP.md).  
 Multi-map session (first portal switch): [ROADTRIP_TYROL.md](ROADTRIP_TYROL.md).
 
 ## Done
@@ -41,9 +41,12 @@ Multi-map session (first portal switch): [ROADTRIP_TYROL.md](ROADTRIP_TYROL.md).
 
 - First hard switch Hahntennjoch ↔ Fernpass Mega — [ROADTRIP_TYROL.md](ROADTRIP_TYROL.md)
 
+### Backdrop (horizon)
+
+- Three-ring Collada TSStatics (near Tirol DGM, mid/far Copernicus GLO-30 + viewshed). Fernpass Mega is wired. POC, already injects — [BACKDROP.md](BACKDROP.md)
+
 ### Other tools (present, still evolving)
 
-- Backdrop meshes (Copernicus GLO-30 + viewshed): `fetch_backdrop.py` / `build_backdrop.py`
 - Forest, TWI, snow proxy, biome compose: `build_forest.py`, `build_twi.py`, `build_snow_proxy.py`, `compose_biomes.py`
 
 ## Open / next
