@@ -5,3 +5,4 @@ pyyaml>=6.0
 pyproj>=3.6
 requests>=2.31
 geopandas>=1.0
+scipy>=1.11

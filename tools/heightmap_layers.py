@@ -1,8 +1,12 @@
 """Immutable DGM + sparse heightmap proposals, then one compose.
 
-Each build_* that touches terrain writes a layer (replace Z or add Δz) with a
-weight mask. ``compose_heightmap`` always starts from the DGM
+Each build_* that touches terrain writes a layer (replace Z or add Δz) with an
+opacity mask. ``compose_heightmap`` always starts from the DGM
 (``heightmap_<N>.png``) and never overwrites it.
+
+Opacity is the mix channel: add ``z += dz * opacity``, replace
+``z = (1-opacity)*z + opacity*z_target``. Soft edges belong in opacity so
+layers do not invent overlapping falloffs.
 
 Layer order is ``LAYER_SPECS`` (higher replace priority wins). Change that dict
 when the pipeline order is decided; do not bake order into the tools.
@@ -15,6 +19,7 @@ Provisional defaults (one span replace for bridge/gallery/tunnel; water additive
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from pathlib import Path
 
@@ -42,6 +47,7 @@ SPAN_PARTS = ("bridge", "gallery")
 
 LAYERS_DIRNAME = "heightmap_layers"
 MANIFEST_NAME = "manifest.json"
+STEPS_DIRNAME = "steps"
 W_EPS = 1e-4
 
 
@@ -53,6 +59,55 @@ def layers_dir(proc: Path) -> Path:
     d = proc / LAYERS_DIRNAME
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+def steps_dir(proc: Path) -> Path:
+    d = layers_dir(proc) / STEPS_DIRNAME
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def compose_dump_enabled(dump_steps: bool | None) -> bool:
+    if dump_steps is not None:
+        return bool(dump_steps)
+    v = str(os.environ.get("AUTOROAD_COMPOSE_DUMP") or "").strip().lower()
+    return v in ("1", "true", "yes", "on")
+
+
+def _clear_steps_dir(d: Path) -> None:
+    if not d.is_dir():
+        return
+    for p in d.iterdir():
+        if p.is_file() and p.suffix.lower() in {".png", ".json"}:
+            p.unlink()
+
+
+def _write_step_pngs(
+    d: Path,
+    stem: str,
+    *,
+    z_m: np.ndarray | None = None,
+    dz_m: np.ndarray | None = None,
+    opacity: np.ndarray | None = None,
+    max_h: float | None = None,
+) -> dict[str, str]:
+    """Write z (absolute m), dz (relative m), opacity (0..1) as PNGs."""
+    files: dict[str, str] = {}
+    if z_m is not None:
+        if max_h is None:
+            raise ValueError("max_h required for absolute z dump")
+        name = f"{stem}_z.png"
+        Image.fromarray(_encode_z_u16(z_m, max_h), mode="I;16").save(d / name)
+        files["z"] = name
+    if dz_m is not None:
+        name = f"{stem}_dz.png"
+        Image.fromarray(_encode_dz_u16(dz_m), mode="I;16").save(d / name)
+        files["dz"] = name
+    if opacity is not None:
+        name = f"{stem}_opacity.png"
+        Image.fromarray(_encode_w_u8(opacity), mode="L").save(d / name)
+        files["opacity"] = name
+    return files
 
 
 def manifest_path(proc: Path) -> Path:
@@ -374,6 +429,67 @@ def proposal_from_diff(dgm: np.ndarray, baked: np.ndarray) -> tuple[np.ndarray, 
     return baked.astype(np.float64), w
 
 
+def _dump_span_parts(
+    dump_d: Path,
+    layer: dict,
+    *,
+    proc: Path,
+    dgm: np.ndarray,
+    max_h: float,
+    prio: int,
+) -> list[dict]:
+    """Dump each span part as z / dz / opacity before they are unioned."""
+    out: list[dict] = []
+    parts = layer.get("parts") or {}
+    for name in SPAN_PARTS:
+        spec = parts.get(name)
+        if not spec:
+            continue
+        z_path = _layer_file(proc, str(spec.get("z") or ""))
+        w_path = _layer_file(proc, str(spec.get("weight") or ""))
+        if not z_path.is_file() or not w_path.is_file():
+            continue
+        zt = _decode_z_u16(np.asarray(Image.open(z_path)).astype(np.uint16), max_h)
+        op = _decode_w_u8(np.asarray(Image.open(w_path)).astype(np.uint8))
+        if zt.shape != dgm.shape:
+            continue
+        stem = f"{prio:02d}_span_{name}"
+        files = _write_step_pngs(
+            dump_d, stem, z_m=zt, dz_m=zt - dgm, opacity=op, max_h=max_h
+        )
+        out.append({"stem": stem, "part": name, "files": files})
+    return out
+
+
+def _record_step_dump(
+    dump_d: Path,
+    stem: str,
+    *,
+    mode: str,
+    dgm: np.ndarray,
+    z_before: np.ndarray,
+    z_after: np.ndarray,
+    z_target: np.ndarray,
+    dz_layer: np.ndarray,
+    opacity: np.ndarray,
+    max_h: float,
+) -> dict:
+    proposal = _write_step_pngs(
+        dump_d, stem, z_m=z_target, dz_m=dz_layer, opacity=opacity, max_h=max_h
+    )
+    after = _write_step_pngs(
+        dump_d, f"{stem}_after", z_m=z_after, dz_m=z_after - dgm, max_h=max_h
+    )
+    applied = _write_step_pngs(dump_d, f"{stem}_applied", dz_m=z_after - z_before)
+    return {
+        "stem": stem,
+        "mode": mode,
+        "proposal": proposal,
+        "after": after,
+        "applied": applied,
+    }
+
+
 def compose(
     proc: Path,
     *,
@@ -381,61 +497,156 @@ def compose(
     max_h: float,
     level_name: str | None = None,
     sync_import: bool = True,
+    dump_steps: bool | None = None,
+    skip_layers: list[str] | None = None,
 ) -> Path:
-    """DGM + add layers + replace layers (priority order) → composed PNG."""
+    """DGM + add layers + replace layers (priority order) -> composed PNG.
+
+    Opacity is the mix: add ``z += dz * opacity``, replace lerp to z_target.
+    ``dump_steps`` writes per-layer z / dz / opacity PNGs under
+    ``heightmap_layers/steps/`` (or set AUTOROAD_COMPOSE_DUMP=1).
+    ``skip_layers`` omits named layers (``span``/``bridge``, ``road_bed``, ``water``)
+    and writes ``heightmap_<N>_composed_omit_<names>.png`` without changing the
+    canonical composed file.
+    """
     dgm, max_h_file = load_dgm(proc, size)
     max_h = float(max_h or max_h_file)
     z = dgm.copy()
     data = load_manifest(proc)
     layers = list(data.get("layers") or [])
+    skip = {str(x).strip().lower() for x in (skip_layers or []) if str(x).strip()}
+    if "bridge" in skip:
+        skip.add("span")
+    for bogus in ("guardrail", "guardrails"):
+        if bogus in skip:
+            print("omit: guardrails have no heightmap layer")
+            skip.discard(bogus)
     layers.sort(key=lambda x: (int(x.get("priority") or 0), str(x.get("name") or "")))
+
+    dump = compose_dump_enabled(dump_steps)
+    dump_d: Path | None = None
+    dump_index: dict = {}
+    if dump:
+        dump_d = steps_dir(proc)
+        _clear_steps_dir(dump_d)
+        dump_index = {
+            "encodings": {
+                "z": "I;16 absolute meters, 0 .. max_height_m",
+                "dz": "I;16 relative meters as signed mm + 32768 bias",
+                "opacity": "L 0-255 mix (1 = fully apply this layer)",
+            },
+            "max_height_m": max_h,
+            "size": size,
+            "steps": [],
+        }
+        dgm_files = _write_step_pngs(dump_d, "00_dgm", z_m=dgm, max_h=max_h)
+        dump_index["steps"].append({"stem": "00_dgm", "mode": "dgm", "files": dgm_files})
 
     n_add = n_rep = 0
     for layer in layers:
         mode = str(layer.get("mode") or "")
+        name = str(layer.get("name") or "layer")
+        if name.lower() in skip:
+            print(f"  omit layer {name}")
+            continue
+        prio = int(layer.get("priority") or 0)
+        stem = f"{prio:02d}_{name}"
+        z_before = z
         if mode == "add":
             w_path = _layer_file(proc, str(layer.get("weight") or ""))
             d_path = _layer_file(proc, str(layer.get("delta") or ""))
             if not w_path.is_file() or not d_path.is_file():
-                print(f"  skip layer {layer.get('name')}: missing rasters")
+                print(f"  skip layer {name}: missing rasters")
                 continue
             w = _decode_w_u8(np.asarray(Image.open(w_path)).astype(np.uint8))
             if w.shape != z.shape:
-                print(f"  skip layer {layer.get('name')}: shape {w.shape} != {z.shape}")
+                print(f"  skip layer {name}: shape {w.shape} != {z.shape}")
                 continue
             dz = _decode_dz_u16(np.asarray(Image.open(d_path)).astype(np.uint16))
-            z += dz * w
+            z_target = z + dz
+            z = z + dz * w
             n_add += 1
+            if dump_d is not None:
+                dump_index["steps"].append(
+                    _record_step_dump(
+                        dump_d,
+                        stem,
+                        mode="add",
+                        dgm=dgm,
+                        z_before=z_before,
+                        z_after=z,
+                        z_target=z_target,
+                        dz_layer=dz,
+                        opacity=w,
+                        max_h=max_h,
+                    )
+                )
         elif mode == "replace":
-            if layer.get("parts") or str(layer.get("name") or "") == "span":
+            if layer.get("parts") or name == "span":
+                if dump_d is not None:
+                    dump_index["steps"].extend(
+                        _dump_span_parts(
+                            dump_d, layer, proc=proc, dgm=dgm, max_h=max_h, prio=prio
+                        )
+                    )
                 merged = _union_span_parts(proc, layer, z.shape, max_h)
                 if merged is None:
-                    print(f"  skip layer {layer.get('name')}: no span parts")
+                    print(f"  skip layer {name}: no span parts")
                     continue
                 zt, w = merged
             else:
                 w_path = _layer_file(proc, str(layer.get("weight") or ""))
                 z_path = _layer_file(proc, str(layer.get("z") or ""))
                 if not w_path.is_file() or not z_path.is_file():
-                    print(f"  skip layer {layer.get('name')}: missing rasters")
+                    print(f"  skip layer {name}: missing rasters")
                     continue
                 w = _decode_w_u8(np.asarray(Image.open(w_path)).astype(np.uint8))
                 zt = _decode_z_u16(np.asarray(Image.open(z_path)).astype(np.uint16), max_h)
                 if w.shape != z.shape:
-                    print(f"  skip layer {layer.get('name')}: shape {w.shape} != {z.shape}")
+                    print(f"  skip layer {name}: shape {w.shape} != {z.shape}")
                     continue
             z = z * (1.0 - w) + zt * w
             n_rep += 1
+            if dump_d is not None:
+                dump_index["steps"].append(
+                    _record_step_dump(
+                        dump_d,
+                        stem,
+                        mode="replace",
+                        dgm=dgm,
+                        z_before=z_before,
+                        z_after=z,
+                        z_target=zt,
+                        dz_layer=zt - dgm,
+                        opacity=w,
+                        max_h=max_h,
+                    )
+                )
 
     np.clip(z, 0.0, max_h, out=z)
     u16 = _encode_z_u16(z, max_h)
-    out = composed_path(proc, size)
-    Image.fromarray(u16, mode="I;16").save(out)
-    data["composed"] = out.name
-    data["size"] = size
-    data["max_height_m"] = max_h
-    save_manifest(proc, data)
-    print(f"Heightmap compose: adds={n_add} replaces={n_rep} -> {out.name}")
+    if skip:
+        tag = "_".join(sorted(skip)) or "none"
+        out = proc / f"heightmap_{size}_composed_omit_{tag}.png"
+        Image.fromarray(u16, mode="I;16").save(out)
+        print(f"Heightmap compose omit={sorted(skip)} adds={n_add} replaces={n_rep} -> {out.name}")
+    else:
+        out = composed_path(proc, size)
+        Image.fromarray(u16, mode="I;16").save(out)
+        data["composed"] = out.name
+        data["size"] = size
+        data["max_height_m"] = max_h
+        save_manifest(proc, data)
+        print(f"Heightmap compose: adds={n_add} replaces={n_rep} -> {out.name}")
+
+    if dump_d is not None:
+        final = _write_step_pngs(dump_d, "99_composed", z_m=z, dz_m=z - dgm, max_h=max_h)
+        dump_index["steps"].append({"stem": "99_composed", "mode": "composed", "files": final})
+        dump_index["dir"] = str(dump_d.relative_to(proc)).replace("\\", "/")
+        (dump_d / "index.json").write_text(
+            json.dumps(dump_index, indent=2) + "\n", encoding="utf-8"
+        )
+        print(f"Compose step dump -> {dump_d} ({len(dump_index['steps'])} entries)")
 
     if sync_import and level_name:
         _sync_import(proc, level_name, size, max_h, u16)

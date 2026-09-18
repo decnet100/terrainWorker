@@ -16,6 +16,36 @@ sources:
     coverage: "Gelaendemodell_50cm_M28"
     version: "1.0.0"
     resolution_m: 1.0
+  # DOM = DSM (Oberflächenmodell) — für nDSM / Vegetationshöhe (DOM − DGM)
+  dom:
+    type: wcs
+    url: "https://gis.tirol.gv.at/arcgis/services/Service_Public/terrain/MapServer/WCSServer"
+    coverage: "Oberflaechenmodell_50cm_M28"
+    version: "1.0.0"
+    resolution_m: 1.0
+  # TWI from DGM (build_twi.py); smooth_m = Gaussian σ in metres
+  twi:
+    smooth_m: 10.0
+  # Schnee-Proxy aus DGM (Höhe/Exposition/Neigung/T0) — build_snow_proxy.py
+  # Presets: november | june | winter  (Parameter hier überschreibbar)
+  # BEV INSPIRE Land Cover (WMS→GeoTIFF), 6 Klassen @ mask_size
+  # https://data.bev.gv.at/geoserver/INSdataLC/wms — Layer LC.LandCoverRaster
+  bev_landcover:
+    type: wms
+    url: "https://data.bev.gv.at/geoserver/INSdataLC/ows"
+    layer: LC.LandCoverRaster
+    # size: 8192   # default = beamng.mask_size
+  snow:
+    type: dgm_proxy
+    preset: november
+    # t0_c: 4.0              # °C bei z0_m
+    # z0_m: 1200
+    # lapse_c_per_m: 0.0065
+    # snow_temp_c: 0.0       # darüber kein Schnee
+    # full_snow_temp_c: -5.0 # darunter volle Decke
+    # aspect_strength: 0.35  # Nord+/Süd−
+    # steep_deg: 48
+    # steep_factor: 0.25
   ortho:
     type: wcs
     url: "https://gis.tirol.gv.at/arcgis/services/Service_Public/orthofoto/MapServer/WCSServer"
@@ -34,7 +64,9 @@ sources:
     type_name: "Strassennetz:Strassennetz"
     str_code: B179
   landuse:
-    type: featureserver
+    # BEV INSPIRE Land Cover (WMS) → terrain classes + biome masks
+    type: bev
+    # Tirol FeatureServer kept as optional fallback (set type: featureserver)
     layers:
       landnutzung:
         url: "https://services3.arcgis.com/hG7UfxX49PQ8XkXh/arcgis/rest/services/Landnutzung/FeatureServer/0"
@@ -56,7 +88,20 @@ beamng:
   # Option 2: no terrain Asphalt — gravel bed/bankett; DecalRoad = Fahrbahn.
   road_terrain: asphalt
   dirt_material: gravel
+  dry_grass_material: dry_meadow   # user material (ex Grass20_copy) for meadow_dry
+  forest_material: ForestFloor     # user material for forest_tall/scrub
+  grass_material: Grass            # green grass (meadow_wet / forest_gap)
+  snow_material: snow              # snow_light / snow_heavy paint
   shoulder_m: 3.0
+
+  # BEV × nDSM × TWI × snow_proxy → biomes + soft terrain (compose_biomes.py)
+  compose:
+    ndsm_canopy_m: 5.0
+    ndsm_scrub_m: 1.5
+    ndsm_clearing_m: 1.0
+    twi_wet: 5.0
+    snow_light: 0.25
+    snow_heavy: 0.55
 
   bridges:
     defaults:
@@ -125,7 +170,8 @@ beamng:
       - match: { objectid: 3992, name: Brücke 3992 }
       - match: { objectid: 2304, name: Brücke 2304 }
         extend_before_m: 1.0
-        extend_after_m: 1.0
+        extend_after_m: 1.0l
+        road_bed_sink_m: 0.0
       - match: { objectid: 3836, name: Brücke 3836 }
       - match: { objectid: 3844, name: Brücke 3844 }
         extend_before_m: 1.0
@@ -297,11 +343,19 @@ beamng:
 
   forest:
     enabled: true
-    spacing_high_m: 10.0
-    spacing_scrub_m: 5.0
+    trees: true
+    dry_grass: false
+    spacing_high_m: 9.0
+    spacing_scrub_m: 4.5
+    spacing_meadow_m: 5.0
     slope_max_deg: 42.0
+    slope_max_meadow_deg: 38.0
     clear_road_m: 4.0
-    max_items: 50000
+    max_items: 60000
+    max_items_meadow: 0
+    scrub_fraction: 0.35          # share of tree budget for non-collidable undergrowth
+    scale_high: [0.85, 1.3]
+    scale_scrub: [0.65, 1.1]
     seed: 13
 
   buildings:
@@ -393,5 +447,8 @@ annotations:
 
 notes: |
   Mega-Fernpass B179, 8192×8192 m @ 1 m/px, center EPSG:31254 ~38400/246100.
-  Pipeline: fetch_dgm → build_smoke → fetch_landcover → build_terrain_masks →
-  fetch_gip → setup_beamng_level → bridges/galleries/decal/guardrails as needed.
+  Pipeline: fetch_dgm → fetch_dom → fetch_bev_landcover → build_twi → build_snow_proxy →
+  build_smoke → build_terrain_masks (landuse:bev) → compose_biomes → fetch_gip →
+  setup_beamng_level → bridges/galleries/decal/guardrails as needed.
+  Biomes: mask_biome_{kill,water,snow_*,rock,forest_*,meadow_*,bare_*}.png (exclusive).
+  Terrain soft refine: Mud from TWI-wet; Grass2 from canopy; snow does not add a material.

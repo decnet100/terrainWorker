@@ -1001,6 +1001,7 @@ def build_gallery_road_spline(
             cfg.get("corner_down_m") if cfg.get("corner_down_m") is not None else 0.06
         ),
         corner_band=float(cfg.get("corner_band") if cfg.get("corner_band") is not None else 0.2),
+        weld_adjacent_m=float(cfg.get("weld_adjacent_m") or 0.0),
     )
 
     # Shell / portal nodes: width for loft = base (+ width_extra on closed sense via loft args)

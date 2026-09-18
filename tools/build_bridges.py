@@ -66,6 +66,12 @@ BRIDGE_SCALAR_KEYS = (
     "approach_conform_max_raise_m",  # falloff: max raise (keep gorge beside road)
     "approach_conform_deck_raise_m",  # under slab: max raise to deck (Decal drape)
     "approach_conform_max_cut_m",  # max terrain cut down to deck (flush cliffs)
+    "approach_conform_range_m",  # along-road: full-weight lip just outside the abutment
+    "approach_conform_pull_m",  # along-road: smoothstep pull of approach DGM toward portal Z
+    "approach_conform_side_cut",  # also cut high DGM beside the mesh edges
+    "approach_conform_side_range_m",  # metres past the mesh edge (same closeness as the threshold)
+    "approach_conform_side_drop_m",  # extra cut beside the slab so 1 m cells don't form a deck-height ledge
+    "approach_conform_side_corner_m",  # fade the extra drop in this far past the abutment (Schwelle owns corners)
     "terrain_embed",  # reserved: abutment lip bake (galleries implement first)
     "terrain_embed_rings",
     "terrain_embed_foundation_m",
@@ -80,6 +86,7 @@ BRIDGE_SCALAR_KEYS = (
     "corner_band",
     "step_m",
     "crossfall_max",
+    "weld_adjacent_m",  # XY snap: nearby strip corners → midpoint (0 = off)
     "enabled",  # false → skip this bridge
 )
 
@@ -987,6 +994,7 @@ def build_bridge_entries_road_spline(
         corner_up_m=float(cfg.get("corner_up_m") if cfg.get("corner_up_m") is not None else 0.25),
         corner_down_m=float(cfg.get("corner_down_m") if cfg.get("corner_down_m") is not None else 0.06),
         corner_band=float(cfg.get("corner_band") if cfg.get("corner_band") is not None else 0.2),
+        weld_adjacent_m=float(cfg.get("weld_adjacent_m") or 0.0),
     )
     info = dict(prof.info)
     info["name"] = feat["name"]
@@ -1062,28 +1070,69 @@ def _project_xy_to_nodes(
     nodes: list[dict],
 ) -> tuple[float, float, float] | None:
     """Nearest point on deck polyline -> (dist_m, z_surf, half_width)."""
+    hit = _project_xy_to_nodes_s(bx, by, nodes, extend_ends=False)
+    if hit is None:
+        return None
+    dist, _s, _total, z_surf, half_w = hit
+    return dist, z_surf, half_w
+
+
+def _project_xy_to_nodes_s(
+    bx: float,
+    by: float,
+    nodes: list[dict],
+    *,
+    extend_ends: bool,
+) -> tuple[float, float, float, float, float] | None:
+    """Nearest point on deck polyline -> (dist_lat, s, total_s, z_surf, half_width).
+
+    ``s`` is arc length along the deck. With ``extend_ends``, the first/last
+    segment may be used with t outside [0,1] so s < 0 or s > total (approach).
+    """
     if len(nodes) < 1:
         return None
-    best: tuple[float, float, float] | None = None
-    for i, n in enumerate(nodes):
-        x0, y0 = float(n["x"]), float(n["y"])
-        z0 = float(n["z"])
-        w0 = 0.5 * float(n.get("width") or 7.5)
-        if i == len(nodes) - 1:
-            cand = (math.hypot(bx - x0, by - y0), z0, w0)
+    cum = [0.0]
+    for a, b in zip(nodes, nodes[1:]):
+        cum.append(
+            cum[-1]
+            + math.hypot(float(b["x"]) - float(a["x"]), float(b["y"]) - float(a["y"]))
+        )
+    total = cum[-1] if cum else 0.0
+    best: tuple[float, float, float, float, float] | None = None
+    if len(nodes) == 1:
+        n = nodes[0]
+        dist = math.hypot(bx - float(n["x"]), by - float(n["y"]))
+        return dist, 0.0, 0.0, float(n["z"]), 0.5 * float(n.get("width") or 7.5)
+
+    for i, (a, b) in enumerate(zip(nodes, nodes[1:])):
+        x0, y0, z0 = float(a["x"]), float(a["y"]), float(a["z"])
+        x1, y1, z1 = float(b["x"]), float(b["y"]), float(b["z"])
+        w0 = 0.5 * float(a.get("width") or 7.5)
+        w1 = 0.5 * float(b.get("width") or 7.5)
+        dx, dy = x1 - x0, y1 - y0
+        seg2 = dx * dx + dy * dy
+        if seg2 < 1e-12:
+            continue
+        t = ((bx - x0) * dx + (by - y0) * dy) / seg2
+        last_i = len(nodes) - 2
+        if not extend_ends:
+            t = max(0.0, min(1.0, t))
+        elif last_i == 0:
+            pass
+        elif i == 0:
+            t = min(1.0, t)
+        elif i == last_i:
+            t = max(0.0, t)
         else:
-            n1 = nodes[i + 1]
-            x1, y1 = float(n1["x"]), float(n1["y"])
-            z1 = float(n1["z"])
-            w1 = 0.5 * float(n1.get("width") or 7.5)
-            dx, dy = x1 - x0, y1 - y0
-            seg2 = dx * dx + dy * dy
-            t = 0.0 if seg2 < 1e-12 else max(0.0, min(1.0, ((bx - x0) * dx + (by - y0) * dy) / seg2))
-            px = x0 + t * dx
-            py = y0 + t * dy
-            cand = (math.hypot(bx - px, by - py), z0 + t * (z1 - z0), w0 + t * (w1 - w0))
-        if best is None or cand[0] < best[0]:
-            best = cand
+            t = max(0.0, min(1.0, t))
+        px = x0 + t * dx
+        py = y0 + t * dy
+        dist = math.hypot(bx - px, by - py)
+        s = cum[i] + t * (cum[i + 1] - cum[i])
+        z = z0 + t * (z1 - z0)
+        hw = w0 + t * (w1 - w0)
+        if best is None or dist < best[0]:
+            best = (dist, s, total, z, hw)
     return best
 
 
@@ -1109,10 +1158,26 @@ def conform_bridge_heightmap(
     extent: float,
     elev: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray, dict]:
-    """Proposal: target Z + weight under each MeshRoad deck ribbon.
+    """Bake heightmap to MeshRoad abutments without filling the gorge.
 
-    Core ribbon (dist ≤ half+pad): raise up to deck_raise so Decals can drape.
-    Falloff ring: keep the smaller max_raise so the gorge beside the road stays.
+    Under the slab: *cut only* where DGM is above mesh Z minus sink
+    (kills poke-through / z-fight). Low gorge pixels stay.
+
+    Beside the deck, ``approach_conform_side_cut`` (default on) lowers
+    high DGM the same distance past the edge as ``approach_conform_range_m``
+    at the threshold, with a smoothstep fade. Those cells drop by
+    ``approach_conform_side_drop_m`` (default: slab depth) so a 1 m
+    heightmap does not leave a deck-height staircase beside the mesh.
+    The extra drop fades to 0 at the abutments (extend + threshold
+    range) so the Schwelle owns the corners.
+
+    Outside the portals, pull DGM toward portal Z minus sink:
+
+    - ``approach_conform_range_m`` (default 2 m): linear lip, weight 1 at
+      the threshold and 0 at that range.
+    - ``approach_conform_pull_m`` (default 8 m): smoothstep fade of the
+      same target so the approach DGM is drawn into the MeshRoad instead
+      of meeting it as a shelf. Combined weight is the max of both.
     """
     out = elev.astype(np.float64).copy()
     z_tgt = np.zeros_like(out)
@@ -1120,7 +1185,18 @@ def conform_bridge_heightmap(
     tested = 0
     changed = 0
     max_abs = 0.0
+    cut_tested = 0
+    cut_changed = 0
+    cut_max = 0.0
     any_on = False
+    range_used = 0.0
+    pull_used = 0.0
+    side_used = 0.0
+    under = np.zeros(out.shape, dtype=bool)
+    side_tgt = np.full_like(out, np.inf)
+    side_wacc = np.zeros_like(out)
+    side_drop_used = 0.0
+    sink = 0.02
 
     for entry, info, cfg in zip(entries, span_infos, cfgs):
         if not bool(cfg.get("approach_conform", False)):
@@ -1129,7 +1205,11 @@ def conform_bridge_heightmap(
         nodes = meshroad_surface_nodes(entry, info)
         if len(nodes) < 2:
             continue
-        pad = float(cfg.get("approach_conform_pad_m") if cfg.get("approach_conform_pad_m") is not None else 0.5)
+        pad = float(
+            cfg.get("approach_conform_pad_m")
+            if cfg.get("approach_conform_pad_m") is not None
+            else 0.5
+        )
         falloff = float(
             cfg.get("approach_conform_falloff_m")
             if cfg.get("approach_conform_falloff_m") is not None
@@ -1149,12 +1229,39 @@ def conform_bridge_heightmap(
         max_cut = cfg.get("approach_conform_max_cut_m")
         max_raise = float(max_raise) if max_raise is not None else max_delta
         max_cut = float(max_cut) if max_cut is not None else max_delta
-        deck_raise_raw = cfg.get("approach_conform_deck_raise_m")
-        deck_raise = float(deck_raise_raw) if deck_raise_raw is not None else max_raise
+        range_m = float(
+            cfg.get("approach_conform_range_m")
+            if cfg.get("approach_conform_range_m") is not None
+            else 2.0
+        )
+        pull_m = float(
+            cfg.get("approach_conform_pull_m")
+            if cfg.get("approach_conform_pull_m") is not None
+            else 8.0
+        )
+        side_cut = bool(cfg.get("approach_conform_side_cut", True))
+        side_range_m = cfg.get("approach_conform_side_range_m")
+        side_range_m = float(side_range_m) if side_range_m is not None else range_m
+        depth_m = float(info.get("depth_m") or 0.4)
+        side_drop_m = cfg.get("approach_conform_side_drop_m")
+        side_drop_m = float(side_drop_m) if side_drop_m is not None else depth_m
+        ext_b = float(cfg.get("extend_before_m") or info.get("extend_before_m") or 0.0)
+        ext_a = float(cfg.get("extend_after_m") or info.get("extend_after_m") or 0.0)
+        corner_m = cfg.get("approach_conform_side_corner_m")
+        corner_m = float(corner_m) if corner_m is not None else range_m
+        range_used = max(range_used, range_m)
+        pull_used = max(pull_used, pull_m)
+        along_limit = max(range_m, pull_m)
+        side_used = max(side_used, side_range_m) if side_cut else side_used
+        side_drop_used = max(side_drop_used, side_drop_m) if side_cut else side_drop_used
+        z_start = float(nodes[0]["z"]) - sink
+        z_end = float(nodes[-1]["z"]) - sink
         half_ref = 0.5 * max(float(n["width"]) for n in nodes)
         xs = [float(n["x"]) for n in nodes]
         ys = [float(n["y"]) for n in nodes]
-        margin = half_ref + pad + falloff + 1.0
+        margin = (
+            half_ref + pad + falloff + max(along_limit, side_range_m if side_cut else 0.0) + 1.0
+        )
         px0, py0 = _to_px_beamng(min(xs) - margin, max(ys) + margin, size, extent)
         px1, py1 = _to_px_beamng(max(xs) + margin, min(ys) - margin, size, extent)
         c0 = max(0, int(math.floor(min(px0, px1))))
@@ -1165,46 +1272,147 @@ def conform_bridge_heightmap(
         for py in range(r0, r1 + 1):
             for px in range(c0, c1 + 1):
                 bx, by = _from_px_beamng(float(px), float(py), size, extent)
-                proj = _project_xy_to_nodes(bx, by, nodes)
-                if proj is None:
+                hit = _project_xy_to_nodes_s(bx, by, nodes, extend_ends=True)
+                if hit is None:
                     continue
-                dist, z_deck, hw = proj
+                dist, s, total, z_on, hw = hit
+                z0 = float(out[py, px])
+                inside = s >= 0.0 and s <= total
+
+                if inside:
+                    if dist <= hw:
+                        under[py, px] = True
+                        target = float(z_on) - sink
+                        if z0 <= target + 1e-4:
+                            continue
+                        cut_tested += 1
+                        w = 1.0
+                        prev_w = float(w_acc[py, px])
+                        if prev_w > 1e-6:
+                            target = min(float(z_tgt[py, px]), target)
+                            w = max(prev_w, w)
+                        z_tgt[py, px] = target
+                        w_acc[py, px] = w
+                        z_new = (1.0 - w) * z0 + w * target
+                        if abs(z_new - z0) < 1e-4:
+                            continue
+                        cut_changed += 1
+                        cut_max = max(cut_max, abs(z_new - z0))
+                        continue
+                    if side_cut and dist <= hw + side_range_m:
+                        u = (dist - hw) / max(side_range_m, 1e-6)
+                        w_lip = 1.0 - u
+                        w_soft = 1.0 - (u * u * (3.0 - 2.0 * u))
+                        w = max(0.0, min(1.0, max(w_lip, w_soft)))
+                        if w <= 1e-6:
+                            continue
+                        past_start = s - ext_b
+                        past_end = (total - s) - ext_a
+                        past = min(past_start, past_end)
+                        if past <= 0.0:
+                            drop_scale = 0.0
+                        elif corner_m <= 1e-9:
+                            drop_scale = 1.0
+                        elif past >= corner_m:
+                            drop_scale = 1.0
+                        else:
+                            t = past / corner_m
+                            drop_scale = t * t * (3.0 - 2.0 * t)
+                        target = float(z_on) - sink - side_drop_m * drop_scale
+                        if z0 <= target + 1e-4:
+                            continue
+                        prev_w = float(side_wacc[py, px])
+                        if prev_w > 1e-6:
+                            target = min(float(side_tgt[py, px]), target)
+                            w = max(prev_w, w)
+                        side_tgt[py, px] = target
+                        side_wacc[py, px] = w
+                    continue
+
                 half = hw + pad
                 outer = half + max(falloff, 1e-6)
                 if dist > outer:
                     continue
+                if s < 0.0:
+                    along = -s
+                    target = z_start
+                else:
+                    along = s - total
+                    target = z_end
+                if along > along_limit + 1e-9:
+                    continue
                 tested += 1
-                target = float(z_deck) - sink
-                z0 = float(out[py, px])
-                need = target - z0  # +raise terrain / -cut
-                raise_lim = deck_raise if dist <= half else max_raise
-                if need > raise_lim + 1e-9 or need < -(max_cut + 1e-9):
+                need = target - z0
+                if need > max_raise + 1e-9 or need < -(max_cut + 1e-9):
                     continue
                 if dist <= half:
-                    w = 1.0
+                    w_lat = 1.0
                 else:
-                    w = 1.0 - (dist - half) / max(falloff, 1e-6)
-                    w = max(0.0, min(1.0, w))
-                z_new = (1.0 - w) * z0 + w * target
-                if abs(z_new - z0) < 1e-4:
+                    w_lat = 1.0 - (dist - half) / max(falloff, 1e-6)
+                    w_lat = max(0.0, min(1.0, w_lat))
+                w_lip = 0.0
+                if range_m > 1e-9 and along <= range_m:
+                    w_lip = 1.0 - along / range_m
+                w_pull = 0.0
+                if pull_m > 1e-9 and along <= pull_m:
+                    u = along / pull_m
+                    w_pull = 1.0 - (u * u * (3.0 - 2.0 * u))
+                w_along = max(0.0, min(1.0, max(w_lip, w_pull)))
+                w = max(0.0, min(1.0, w_lat * w_along))
+                if w <= 1e-6:
+                    continue
+                if w < float(w_acc[py, px]):
                     continue
                 z_tgt[py, px] = target
                 w_acc[py, px] = w
-                out[py, px] = z_new
+                z_new = (1.0 - w) * z0 + w * target
+                if abs(z_new - z0) < 1e-4:
+                    continue
                 changed += 1
                 max_abs = max(max_abs, abs(z_new - z0))
+
+    sel = (~under) & (side_wacc > 1e-6) & np.isfinite(side_tgt)
+    if np.any(sel):
+        z0s = out[sel]
+        tgts = side_tgt[sel]
+        ws = np.clip(side_wacc[sel], 0.0, 1.0)
+        z_new = (1.0 - ws) * z0s + ws * tgts
+        dlt = np.abs(z_new - z0s)
+        use = dlt >= 1e-4
+        cut_tested += int(np.count_nonzero(sel))
+        if np.any(use):
+            sel2 = np.zeros_like(sel)
+            sel2[sel] = use
+            z_tgt[sel2] = side_tgt[sel2]
+            w_acc[sel2] = side_wacc[sel2]
+            cut_changed += int(np.count_nonzero(use))
+            cut_max = max(cut_max, float(np.max(dlt[use])))
 
     stats = {
         "enabled": any_on,
         "tested": tested,
         "changed": changed,
         "max_delta_m": round(max_abs, 3),
-        "method": "bridge_approach_conform",
+        "range_m": round(range_used, 2),
+        "pull_m": round(pull_used, 2),
+        "cut_tested": cut_tested,
+        "cut_changed": cut_changed,
+        "cut_max_delta_m": round(cut_max, 3),
+        "side_cut": bool(side_used > 1e-9),
+        "side_range_m": round(side_used, 2),
+        "side_drop_m": round(side_drop_used, 3),
+        "method": "abutment_outside_raise_pull_deck_cut",
     }
     if any_on:
         print(
-            f"Bridge approach conform: tested={tested} changed={changed} "
-            f"max_delta={max_abs:.3f}m (heightmap -> MeshRoad Z)"
+            f"Bridge approach conform: abutment raise range={range_used:.1f}m "
+            f"pull={pull_used:.1f}m tested={tested} changed={changed} "
+            f"max_delta={max_abs:.3f}m"
+        )
+        print(
+            f"Bridge deck cut (high DGM only): tested={cut_tested} "
+            f"changed={cut_changed} max_delta={cut_max:.3f}m sink={sink:.3f}m "
+            f"side_range={side_used:.1f}m side_drop={side_drop_used:.2f}m"
         )
     return z_tgt, w_acc, stats
 
@@ -1458,6 +1666,32 @@ def default_bridge_cfg(bng: dict) -> tuple[dict, list]:
             if raw.get("approach_conform_max_cut_m") is not None
             else None
         ),
+        "approach_conform_range_m": float(
+            raw["approach_conform_range_m"]
+            if raw.get("approach_conform_range_m") is not None
+            else 2.0
+        ),
+        "approach_conform_pull_m": float(
+            raw["approach_conform_pull_m"]
+            if raw.get("approach_conform_pull_m") is not None
+            else 8.0
+        ),
+        "approach_conform_side_cut": bool(raw.get("approach_conform_side_cut", True)),
+        "approach_conform_side_range_m": (
+            float(raw["approach_conform_side_range_m"])
+            if raw.get("approach_conform_side_range_m") is not None
+            else None
+        ),
+        "approach_conform_side_drop_m": (
+            float(raw["approach_conform_side_drop_m"])
+            if raw.get("approach_conform_side_drop_m") is not None
+            else None
+        ),
+        "approach_conform_side_corner_m": (
+            float(raw["approach_conform_side_corner_m"])
+            if raw.get("approach_conform_side_corner_m") is not None
+            else None
+        ),
         "terrain_embed": bool(raw.get("terrain_embed", False)),
         "terrain_embed_rings": int(raw.get("terrain_embed_rings") or 2),
         "terrain_embed_foundation_m": float(
@@ -1484,6 +1718,9 @@ def default_bridge_cfg(bng: dict) -> tuple[dict, list]:
         "step_m": float(raw.get("step_m") or 1.0),
         "crossfall_max": float(
             raw["crossfall_max"] if raw.get("crossfall_max") is not None else 0.12
+        ),
+        "weld_adjacent_m": float(
+            raw["weld_adjacent_m"] if raw.get("weld_adjacent_m") is not None else 0.0
         ),
         "enabled": True,
         "style": {

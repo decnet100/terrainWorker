@@ -162,6 +162,131 @@ def z_on_profile(z_prof: list[float] | np.ndarray, f: float, fracs: tuple[float,
     return float(z_prof[len(z_prof) // 2])
 
 
+def weld_adjacent_strip_nodes(
+    strips: list[list[tuple[float, float, float, float, float, float, float]]],
+    *,
+    tol_m: float,
+) -> int:
+    """Snap MeshRoad corners that lie within ``tol_m`` in XY to their midpoint.
+
+    Adjacent strips share an edge; those reconstructed corners are typically
+    millimetres apart in plan but differ in Z (corner_up / crossfall). Cluster
+    by XY, then move every contributing strip node to the cluster mean Z.
+    Side-by-side nodes at the same station are unioned through the shared
+    edge, so a whole portal becomes one height.
+
+    Returns how many strip-nodes changed. ``tol_m <= 0`` skips.
+    """
+    if tol_m <= 1e-9 or len(strips) < 2 or not strips[0]:
+        return 0
+    n_st = len(strips)
+    n_k = len(strips[0])
+    if any(len(s) != n_k for s in strips):
+        return 0
+
+    def tangent_at(s: int, k: int) -> tuple[float, float]:
+        nodes = strips[s]
+        if k + 1 < n_k:
+            dx = nodes[k + 1][0] - nodes[k][0]
+            dy = nodes[k + 1][1] - nodes[k][1]
+        elif k > 0:
+            dx = nodes[k][0] - nodes[k - 1][0]
+            dy = nodes[k][1] - nodes[k - 1][1]
+        else:
+            return 1.0, 0.0
+        L = math.hypot(dx, dy) or 1.0
+        return dx / L, dy / L
+
+    def corners(s: int, k: int) -> list[tuple[float, float, float]]:
+        x, y, z, w, *_rest = strips[s][k]
+        tx, ty = tangent_at(s, k)
+        lx, ly = _left_unit(tx, ty)
+        hw = 0.5 * float(w)
+        return [
+            (x + lx * hw, y + ly * hw, z),
+            (x - lx * hw, y - ly * hw, z),
+        ]
+
+    n_nodes = n_st * n_k
+    parent = list(range(n_nodes))
+
+    def idx(s: int, k: int) -> int:
+        return s * n_k + k
+
+    def find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def union(a: int, b: int) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[rb] = ra
+
+    # Corners: (node_index, x, y, z)
+    cxy: list[tuple[int, float, float, float]] = []
+    for s in range(n_st):
+        for k in range(n_k):
+            nid = idx(s, k)
+            for cx, cy, cz in corners(s, k):
+                cxy.append((nid, cx, cy, cz))
+
+    # Union nodes whose reconstructed corners fall within tol in plan.
+    for i in range(len(cxy)):
+        ni, xi, yi, _zi = cxy[i]
+        for j in range(i + 1, len(cxy)):
+            nj, xj, yj, _zj = cxy[j]
+            if ni == nj:
+                continue
+            if math.hypot(xi - xj, yi - yj) <= tol_m:
+                union(ni, nj)
+
+    clusters: dict[int, list[int]] = {}
+    for i in range(n_nodes):
+        clusters.setdefault(find(i), []).append(i)
+
+    n_changed = 0
+    new_z = [strips[i // n_k][i % n_k][2] for i in range(n_nodes)]
+    for members in clusters.values():
+        if len(members) < 2:
+            continue
+        mz = sum(strips[i // n_k][i % n_k][2] for i in members) / len(members)
+        for i in members:
+            new_z[i] = mz
+
+    mutable: list[list[list]] = [list(map(list, s)) for s in strips]
+    for i in range(n_nodes):
+        s, k = divmod(i, n_k)
+        if abs(mutable[s][k][2] - new_z[i]) > 1e-6:
+            n_changed += 1
+        mutable[s][k][2] = new_z[i]
+
+    # Rebuild pitch-only normals so a strip's own left/right corners share Z.
+    for s in range(n_st):
+        for k in range(n_k):
+            n = mutable[s][k]
+            if k + 1 < n_k:
+                dx = mutable[s][k + 1][0] - n[0]
+                dy = mutable[s][k + 1][1] - n[1]
+                dz = mutable[s][k + 1][2] - n[2]
+            elif k > 0:
+                dx = n[0] - mutable[s][k - 1][0]
+                dy = n[1] - mutable[s][k - 1][1]
+                dz = n[2] - mutable[s][k - 1][2]
+            else:
+                continue
+            Lxy = math.hypot(dx, dy) or 1.0
+            tx, ty = dx / Lxy, dy / Lxy
+            dz_ds = dz / Lxy
+            nx, ny, nz = normal_from_pitch_crossfall(tx, ty, dz_ds, 0.0)
+            n[4], n[5], n[6] = nx, ny, nz
+
+    for s in range(n_st):
+        strips[s] = [tuple(p) for p in mutable[s]]
+    return n_changed
+
+
 def sample_road_xy(
     road: dict, s: float
 ) -> tuple[float, float, float, float, float, float, float]:
@@ -360,6 +485,7 @@ def build_span_profile(
     corner_up_m: float = 0.25,
     corner_down_m: float = 0.06,
     corner_band: float = 0.2,
+    weld_adjacent_m: float = 0.0,
 ) -> SpanProfile:
     """Build full span profile + 4 strip polylines."""
     s_ends = [project_xy(road, x, y)[0] for x, y in (xy_gip[0], xy_gip[-1])]
@@ -517,6 +643,8 @@ def build_span_profile(
             nodes.append((sx, sy, z, strip_w, nx, ny, nz))
         strips.append(nodes)
 
+    n_weld = weld_adjacent_strip_nodes(strips, tol_m=float(weld_adjacent_m))
+
     info = {
         "profile": "road_spline",
         "free_span": free_span,
@@ -542,6 +670,8 @@ def build_span_profile(
         "abut": abut_info,
         "nodes": len(s_vals),
         "strips": len(strips),
+        "weld_adjacent_m": round(float(weld_adjacent_m), 3),
+        "weld_adjacent_n": n_weld,
     }
     return SpanProfile(
         s0=s0,

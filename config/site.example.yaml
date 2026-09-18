@@ -30,10 +30,11 @@ sources:
     # type: local
     # path: data/raw/dgm.tif
 
+  # DOM = DSM (Tirol: Oberflaechenmodell_*). Vegetationshöhe: build_twi.py → ndsm.tif
   dom:
     type: wcs
     url: "https://REPLACE/ogd/wcs/gelaende"
-    coverage: "DOM_50cm"
+    coverage: "Oberflaechenmodell_50cm_M28"
     resolution_m: 0.5
     optional: true
 
@@ -45,10 +46,18 @@ sources:
     resolution_m: 1.0
 
   landuse:
-    type: osm                    # natural/landuse via Overpass (LISA WFS später)
+    type: osm                    # natural/landuse via Overpass
+    # type: bev                  # BEV INSPIRE Land Cover WMS (see sources.bev_landcover)
+    # type: featureserver        # Tirol Landnutzung/Wald FeatureServer
     # type: wfs
     # url: "https://REPLACE/ogd/wfs"
     # type_name: "Landnutzung"
+
+  # Optional AT-wide classified land cover (feeds landuse:bev + biome masks)
+  # bev_landcover:
+  #   type: wms
+  #   url: "https://data.bev.gv.at/geonetwork/srv/eng/catalog.search#/metadata/..."
+  #   layers: "LC.LandCoverRaster"
 
   roads:
     type: osm
@@ -72,6 +81,14 @@ beamng:
   lane_width_m: 3.75
   default_lanes: 2
   shoulder_m: 0.2                # Dirt-Bankett je Seite (m)
+  # Optional: BEV×nDSM×TWI×snow → exclusive biomes + soft terrain (compose_biomes.py)
+  # compose:
+  #   ndsm_canopy_m: 5.0
+  #   ndsm_scrub_m: 1.5
+  #   ndsm_clearing_m: 1.0
+  #   twi_wet: 5.0
+  #   snow_light: 0.25
+  #   snow_heavy: 0.55
   guardrails:
     enabled: true
     # posts (default) = Leitpoller every spacing_m; sections = Italy rail mesh

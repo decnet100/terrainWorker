@@ -2,6 +2,7 @@
 data/raw/
 data/processed/
 config/site.yaml
+.cdse_credentials
 
 # Python
 __pycache__/

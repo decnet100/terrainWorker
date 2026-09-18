@@ -15,9 +15,10 @@ Verwandt: [BEAMNG_IMPORT.md](BEAMNG_IMPORT.md), [ROADS.md](ROADS.md), [GIP.md](G
 | `heightmap_<N>.png` | **DGM**, einmal aus `build_smoke`. Niemals überschreiben. |
 | `heightmap_<N>_composed.png` | Mixer-Ergebnis. Das geht nach `import/`. |
 | `heightmap_layers/manifest.json` | Welche Layer existieren. |
-| `heightmap_layers/water_{dz,w}.png` | Add: Δz (signed mm, Bias 32768) + Gewicht. |
-| `heightmap_layers/road_bed_{z,w}.png` | Replace: Ziel-Z + Gewicht. |
+| `heightmap_layers/water_{dz,w}.png` | Add: Δz (signed mm, Bias 32768) + Opacity |
+| `heightmap_layers/road_bed_{z,w}.png` | Replace: Ziel-Z + Opacity |
 | `heightmap_layers/span_<part>_{z,w}.png` | Replace-Teile der Span-Layer (`bridge`, `gallery`). |
+| `heightmap_layers/steps/` | Optionaler Dump je Mix-Schritt (`--dump-steps`) |
 
 Layer-Reihenfolge steht **nur** in `LAYER_SPECS` (`heightmap_layers.py`), nicht in den Buildern:
 
@@ -27,14 +28,32 @@ road_bed  replace  priority 40
 span      replace  priority 55   # Teile: bridge + gallery (Tunnel = gallery)
 ```
 
-Mixer, Pixel für Pixel:
+Mixer, Pixel für Pixel. **Opacity** (0..1) ist der Mix — weiche Ränder gehören hierher, nicht als Extra-Falloff in jedem Builder:
 
 1. Start = DGM
-2. Add: `z += dz * w`
-3. Replace (höhere Priority später): `z = (1-w)*z + w*z_target`
+2. Add: `z += dz * opacity`
+3. Replace (höhere Priority später): `z = (1-opacity)*z + opacity*z_target`
 4. Clip auf `[0, max_height_m]`
 
-Span-Teile werden **vor** dem Replace vereinigt (`max(weight)`, bei Gleichstand gewinnt `gallery` nach `bridge`). Ein Gallery-Rebuild darf die Brücken-Part nicht löschen.
+Span-Teile werden **vor** dem Replace vereinigt (`max(opacity)`, bei Gleichstand gewinnt `gallery` nach `bridge`). Ein Gallery-Rebuild darf die Brücken-Part nicht löschen.
+
+### Step-Dump
+
+```powershell
+$env:AUTOROAD_SITE = "config/sites/fernpass_mega.yaml"
+python tools\compose_heightmap.py --dump-steps
+# oder in jedem build_*, der compose aufruft:
+$env:AUTOROAD_COMPOSE_DUMP = "1"
+```
+
+Unter `heightmap_layers/steps/` (siehe `index.json`):
+
+| Suffix | Inhalt |
+|--------|--------|
+| `_z.png` | Absolut, I;16 Meter (0..max_height) |
+| `_dz.png` | Relativ zum DGM (Layer) bzw. zum vorigen Mix (`*_applied_dz`), I;16 signed mm + 32768 |
+| `_opacity.png` | Mix 0..255, 8-bit — das ist die einzige weiche Kante, die der Mixer kennt |
+| `*_after_z.png` | Heightmap nach diesem Layer |
 
 ---
 
@@ -45,6 +64,7 @@ Writer rufen `compose()` **selbst** am Ende auf. Extra-CLI nur zum Neu-Mischen o
 ```powershell
 $env:AUTOROAD_SITE = "config/sites/fernpass_mega.yaml"
 python tools\compose_heightmap.py
+python tools\compose_heightmap.py --dump-steps
 ```
 
 | Tool | Schreibt | Liest Heightmap |

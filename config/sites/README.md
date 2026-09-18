@@ -6,7 +6,7 @@
 | [`l13_kuehtai.yaml`](l13_kuehtai.yaml) | L13 Sellraintal / Kühtai (Galerien) | `autoroad_galerie_2048` | 2048² |
 | [`l13_splining.yaml`](l13_splining.yaml) | L13 Splining-Test (Strassennetz + 4 MeshRoads) | `autoroad_l13_splining` | 2048² |
 | [`fernpass.yaml`](fernpass.yaml) | B179 Fernpass | `autoroad_fernpass_4096` | 4096² |
-| [`fernpass_mega.yaml`](fernpass_mega.yaml) | B179 Mega-Fernpass | `autoroad_fernpass_8192` | 8192² |
+| [`testarena.yaml`](testarena.yaml) | Specimen-Arena (Crop, zuerst GIP 2304) | `autoroad_testarena` | 512² |
 
 ## Aktiv wählen
 

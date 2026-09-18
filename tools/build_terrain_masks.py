@@ -308,6 +308,116 @@ def _tirol_wald_kind(props: dict) -> str | None:
     return None
 
 
+def rasterize_bev_landcover(
+    size: int, *, force: bool = False
+) -> tuple[np.ndarray, dict[str, np.ndarray], str]:
+    """Map BEV INSPIRE Land Cover (6 classes) → terrain CLASS_* + biome extras.
+
+    BEV codes (LC.LandCoverRaster GeoTIFF from WMS):
+      0 vegetation_hoch → FOREST + forest_high
+      1 vegetation_mittel → FOREST + forest_scrub
+      2 vegetation_niedrig → GRASS
+      3 bodenflaechen → DIRTY/bare (CLASS_DIRT); steep still → rock later
+      4 gebaeude → CONCRETE
+      5 gewaesser → WATER
+      6 nodata → unclassified (-1)
+    """
+    from fetch_bev_landcover import _raw_paths, fetch_bev_landcover  # noqa: WPS433
+
+    fingerprint = {
+        "schema": "bev_landcover_v1",
+        "size": size,
+        "bbox": [XMIN, YMIN, XMAX, YMAX],
+        "crs": CRS,
+        "bev": _file_sig(_raw_paths(SITE)[0]),
+    }
+    cached = _load_cached_npz("bev_landcover", fingerprint, force=force)
+    if cached is not None:
+        landuse = cached["landuse"].astype(np.int8, copy=False)
+        extras = {
+            "forest_high": cached["forest_high"].astype(bool, copy=False),
+            "forest_scrub": cached["forest_scrub"].astype(bool, copy=False),
+            "water": cached["water"].astype(bool, copy=False),
+            "veg_hoch": cached["veg_hoch"].astype(bool, copy=False),
+            "veg_mittel": cached["veg_mittel"].astype(bool, copy=False),
+            "veg_niedrig": cached["veg_niedrig"].astype(bool, copy=False),
+            "bare": cached["bare"].astype(bool, copy=False),
+            "building": cached["building"].astype(bool, copy=False),
+            "bev_codes": cached["bev_codes"].astype(np.uint8, copy=False),
+        }
+        note = "bev_landcover_cached"
+        print(
+            f"BEV landcover (cached): "
+            f"forest={(landuse == CLASS_FOREST).mean()*100:.2f}% "
+            f"grass={(landuse == CLASS_GRASS).mean()*100:.2f}% "
+            f"dirt={(landuse == CLASS_DIRT).mean()*100:.2f}% "
+            f"water={(landuse == CLASS_WATER).mean()*100:.2f}% "
+            f"concrete={(landuse == CLASS_CONCRETE).mean()*100:.2f}%"
+        )
+        return landuse, extras, note
+
+    raw_path = fetch_bev_landcover(SITE, force=force)
+    codes = np.asarray(tiff.imread(raw_path))
+    if codes.ndim == 3:
+        raise SystemExit(f"BEV landcover expected single-band, got {codes.shape}")
+    codes = codes.astype(np.uint8, copy=False)
+    if codes.shape != (size, size):
+        img = Image.fromarray(codes, mode="L")
+        img = img.resize((size, size), resample=Image.Resampling.NEAREST)
+        codes = np.asarray(img, dtype=np.uint8)
+
+    landuse = np.full((size, size), -1, dtype=np.int8)
+    veg_hoch = codes == 0
+    veg_mittel = codes == 1
+    veg_niedrig = codes == 2
+    bare = codes == 3
+    building = codes == 4
+    water = codes == 5
+
+    landuse[veg_niedrig] = CLASS_GRASS
+    landuse[veg_hoch | veg_mittel] = CLASS_FOREST
+    landuse[bare] = CLASS_DIRT
+    landuse[building] = CLASS_CONCRETE
+    landuse[water] = CLASS_WATER
+    # code 6 / other → leave -1 (dirt default in classify)
+
+    extras = {
+        "forest_high": veg_hoch,
+        "forest_scrub": veg_mittel,
+        "water": water,
+        "veg_hoch": veg_hoch,
+        "veg_mittel": veg_mittel,
+        "veg_niedrig": veg_niedrig,
+        "bare": bare,
+        "building": building,
+        "bev_codes": codes,
+    }
+    note = "bev_landcover"
+    print(
+        f"BEV landcover: "
+        f"hoch={veg_hoch.mean()*100:.2f}% mittel={veg_mittel.mean()*100:.2f}% "
+        f"niedrig={veg_niedrig.mean()*100:.2f}% bare={bare.mean()*100:.2f}% "
+        f"building={building.mean()*100:.2f}% water={water.mean()*100:.2f}%"
+    )
+    _save_cached_npz(
+        "bev_landcover",
+        fingerprint,
+        {
+            "landuse": landuse.astype(np.int8, copy=False),
+            "forest_high": veg_hoch.astype(np.uint8),
+            "forest_scrub": veg_mittel.astype(np.uint8),
+            "water": water.astype(np.uint8),
+            "veg_hoch": veg_hoch.astype(np.uint8),
+            "veg_mittel": veg_mittel.astype(np.uint8),
+            "veg_niedrig": veg_niedrig.astype(np.uint8),
+            "bare": bare.astype(np.uint8),
+            "building": building.astype(np.uint8),
+            "bev_codes": codes,
+        },
+    )
+    return landuse, extras, note
+
+
 def rasterize_tirol_landcover(
     size: int, *, force: bool = False
 ) -> tuple[np.ndarray, dict[str, np.ndarray], str]:
@@ -815,6 +925,11 @@ def main() -> None:
     lu_src = str(((SITE.get("sources") or {}).get("landuse") or {}).get("type") or "osm").lower()
     extras: dict[str, np.ndarray] = {}
     source_note = "osm_landuse"
+    if lu_src in ("bev", "bev_wms", "bev_landcover"):
+        landuse, extras, source_note = rasterize_bev_landcover(OUT_SIZE, force=force)
+        if source_note == "none" or int((landuse >= 0).sum()) == 0:
+            print("BEV landcover missing/empty — falling back to Tirol/OSM")
+            lu_src = "featureserver"
     if lu_src in ("featureserver", "wfs", "tirol", "landcover"):
         landuse, extras, source_note = rasterize_tirol_landcover(OUT_SIZE, force=force)
         if source_note == "none" or int((landuse >= 0).sum()) == 0:
@@ -827,7 +942,7 @@ def main() -> None:
                 print(f"OSM fallback failed: {ex}")
                 landuse = np.full((OUT_SIZE, OUT_SIZE), -1, dtype=np.int8)
                 source_note = "slope_only"
-    else:
+    elif lu_src not in ("bev", "bev_wms", "bev_landcover"):
         try:
             lu_data = fetch_osm_landuse()
             landuse = rasterize_landuse(lu_data, OUT_SIZE)
@@ -899,6 +1014,38 @@ def main() -> None:
         PROC / "mask_settlement.png"
     )
 
+    # Biome-ready BEV partitions (disjoint landcover; slope rock still separate).
+    veg_hoch = np.asarray(extras.get("veg_hoch", forest_high), dtype=bool)
+    veg_mittel = np.asarray(extras.get("veg_mittel", forest_scrub), dtype=bool)
+    veg_niedrig = np.asarray(
+        extras.get("veg_niedrig", landuse == CLASS_GRASS), dtype=bool
+    )
+    bare = np.asarray(extras.get("bare", landuse == CLASS_DIRT), dtype=bool)
+    building = np.asarray(
+        extras.get("building", classes == CLASS_CONCRETE), dtype=bool
+    )
+    Image.fromarray(veg_hoch.astype(np.uint8) * 255, mode="L").save(
+        PROC / "mask_biome_veg_hoch.png"
+    )
+    Image.fromarray(veg_mittel.astype(np.uint8) * 255, mode="L").save(
+        PROC / "mask_biome_veg_mittel.png"
+    )
+    Image.fromarray(veg_niedrig.astype(np.uint8) * 255, mode="L").save(
+        PROC / "mask_biome_veg_niedrig.png"
+    )
+    Image.fromarray(bare.astype(np.uint8) * 255, mode="L").save(PROC / "mask_biome_bare.png")
+    Image.fromarray(building.astype(np.uint8) * 255, mode="L").save(
+        PROC / "mask_biome_building.png"
+    )
+    Image.fromarray(water.astype(np.uint8) * 255, mode="L").save(
+        PROC / "mask_biome_water.png"
+    )
+    bev_codes = extras.get("bev_codes")
+    if bev_codes is not None:
+        Image.fromarray(np.asarray(bev_codes, dtype=np.uint8), mode="L").save(
+            PROC / "mask_biome_bev_codes.png"
+        )
+
     meta = {
         "size_px": OUT_SIZE,
         "crs": CRS,
@@ -920,6 +1067,11 @@ def main() -> None:
             "concrete_pct": round(float((classes == CLASS_CONCRETE).mean() * 100), 2),
             "forest_high_pct": round(float(forest_high.mean() * 100), 2),
             "forest_scrub_pct": round(float(forest_scrub.mean() * 100), 2),
+            "biome_veg_hoch_pct": round(float(veg_hoch.mean() * 100), 2),
+            "biome_veg_mittel_pct": round(float(veg_mittel.mean() * 100), 2),
+            "biome_veg_niedrig_pct": round(float(veg_niedrig.mean() * 100), 2),
+            "biome_bare_pct": round(float(bare.mean() * 100), 2),
+            "biome_building_pct": round(float(building.mean() * 100), 2),
             "gallery_roof_pct": round(float(gallery_roof.mean() * 100), 2),
             "gallery_roof_keep_asphalt_pct": round(float(gallery_roof_keep.mean() * 100), 2),
         },
@@ -929,7 +1081,7 @@ def main() -> None:
             "osm_roads_asphalt_shoulder",
             "bridges_decks_under_rock",
             "galleries_roof_rock",
-            "tirol_settlement_concrete",
+            "bev_landcover" if source_note.startswith("bev") else "tirol_settlement_concrete",
         ],
         "import_notes": [
             "Terrain Tools → Import Terrain → Load terrainPreset.json (recommended)",
@@ -937,8 +1089,17 @@ def main() -> None:
             "Texture maps in order: Grass, %s, rock, Asphalt, Grass2, Mud, Concrete"
             % DIRT_MATERIAL,
             "Groundmodels: GRASS / DIRT / ROCK / ASPHALT / GRASS / MUD / CONCRETE",
-            "Tirol: Almen→Grass; Wald→Grass2+forest scatter; Gewässer→Mud+WaterBlock/River",
-            "Siedlung (LN-S*) → Concrete (Zementflächen)",
+            (
+                "BEV: veg_hoch/mittel→Grass2+forest; veg_niedrig→Grass; bare→dirt; "
+                "building→Concrete; water→Mud; biomes: mask_biome_*.png"
+                if source_note.startswith("bev")
+                else "Tirol: Almen→Grass; Wald→Grass2+forest scatter; Gewässer→Mud+WaterBlock/River"
+            ),
+            (
+                "Siedlung/Gebäude → Concrete"
+                if source_note.startswith("bev")
+                else "Siedlung (LN-S*) → Concrete (Zementflächen)"
+            ),
             (
                 "road_terrain=gravel: OSM corridor → %s (DecalRoad = asphalt); "
                 "shoulder overrides slope-rock"
@@ -1031,6 +1192,13 @@ def main() -> None:
             "mask_forest_high.png",
             "mask_forest_scrub.png",
             "mask_water.png",
+            "mask_biome_veg_hoch.png",
+            "mask_biome_veg_mittel.png",
+            "mask_biome_veg_niedrig.png",
+            "mask_biome_bare.png",
+            "mask_biome_building.png",
+            "mask_biome_water.png",
+            "mask_biome_bev_codes.png",
             "preview_terrain_materials.png",
         ):
             hp = PROC / helper

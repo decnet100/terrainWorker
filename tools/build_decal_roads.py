@@ -107,6 +107,14 @@ def _cfg(bng: dict) -> dict:
             if defaults.get("snap_max_raise_m") is not None
             else 2.0
         ),
+        # True: set node Z to composed (raise and lower). False: raise-only.
+        "snap_follow_heightmap": bool(defaults.get("snap_follow_heightmap", False)),
+        # Moving-average Z along the Decal polyline after snap (0 = off).
+        "smooth_decal_z_m": float(
+            defaults.get("smooth_decal_z_m")
+            if defaults.get("smooth_decal_z_m") is not None
+            else 0.0
+        ),
         # Smooth heightmap under carriageway so DecalRoad can capture clean tris
         # (kills DGM noise / side-hill z-fight). Needs terrainPreset re-import.
         "road_bed_conform": bool(defaults.get("road_bed_conform", False)),
@@ -181,6 +189,12 @@ def _cfg(bng: dict) -> dict:
             defaults.get("road_bed_bridge_deck_sink_m")
             if defaults.get("road_bed_bridge_deck_sink_m") is not None
             else 0.03
+        ),
+        # After clip: lerp approach Z to deck Z over this length (0 = off).
+        "abutment_blend_m": float(
+            defaults.get("abutment_blend_m")
+            if defaults.get("abutment_blend_m") is not None
+            else 0.0
         ),
         "centerline": {
             "enabled": bool((defaults.get("centerline") or {}).get("enabled", True)),
@@ -262,8 +276,13 @@ def _snap_nodes_z(
     z_at,
     lift_m: float,
     max_raise_m: float,
+    *,
+    follow: bool = False,
 ) -> tuple[list[list[float]], float, float, int]:
-    """Raise Z up to heightmap+lift when buried; never lower (bridge decks).
+    """Snap node Z to heightmap+lift.
+
+    follow=False: raise when buried, never lower (legacy, protects decks).
+    follow=True: set Z to the heightmap (raise and lower), clamped by max_raise.
 
     Returns (nodes, min_dz, max_dz, n_raised).
     """
@@ -275,7 +294,14 @@ def _snap_nodes_z(
     for i, n in enumerate(nodes):
         z_old = float(n[2])
         z_hm = float(z_at(n[0], n[1])) + lift_m
-        if z_old < z_hm - 1e-4:
+        if follow:
+            target = z_hm
+            if max_raise > 0:
+                target = min(z_old + max_raise, max(z_old - max_raise, target))
+            z_new = target
+            if abs(z_new - z_old) > 1e-4:
+                n_raised += 1
+        elif z_old < z_hm - 1e-4:
             target = z_hm
             if max_raise > 0:
                 target = min(target, z_old + max_raise)
@@ -805,6 +831,107 @@ def _group_meshroad_spans(
     return spans
 
 
+def _mesh_gaps_on_nodes(
+    nodes: list,
+    meshroads: list[dict],
+    *,
+    hit_lim: float = 8.0,
+) -> list[tuple[float, float, float, float]]:
+    """(s0, s1, z0, z1) MeshRoad spans projected onto a polyline."""
+    if len(nodes) < 2 or not meshroads:
+        return []
+    xyzw: list[list[float]] = []
+    for n in nodes:
+        if isinstance(n, dict):
+            xyzw.append(
+                [float(n["x"]), float(n["y"]), float(n["z"]), float(n.get("width") or 0.0)]
+            )
+        else:
+            xyzw.append([float(n[0]), float(n[1]), float(n[2]), float(n[3] if len(n) > 3 else 0.0)])
+    gaps: list[tuple[float, float, float, float]] = []
+    for start, end in _group_meshroad_spans(meshroads):
+        ha = _project_xy_on_nodes(start[0], start[1], xyzw)
+        hb = _project_xy_on_nodes(end[0], end[1], xyzw)
+        if ha is None or hb is None:
+            continue
+        da, sa = ha
+        db, sb = hb
+        if da > hit_lim or db > hit_lim:
+            continue
+        s0, s1 = (sa, sb) if sa <= sb else (sb, sa)
+        z0, z1 = (start[2], end[2]) if sa <= sb else (end[2], start[2])
+        gaps.append((s0, s1, z0, z1))
+    if not gaps:
+        return []
+    gaps.sort()
+    merged: list[tuple[float, float, float, float]] = []
+    for s0, s1, z0, z1 in gaps:
+        if merged and s0 <= merged[-1][1] + 1.0:
+            prev = merged[-1]
+            if s1 > prev[1]:
+                merged[-1] = (prev[0], s1, prev[2], z1)
+        else:
+            merged.append((s0, s1, z0, z1))
+    return merged
+
+
+def _hold_span_deck_z(nodes: list, meshroads: list[dict]) -> list:
+    """Set Z on MeshRoad span samples to deck Z so smoothing cannot pull the gorge."""
+    gaps = _mesh_gaps_on_nodes(nodes, meshroads)
+    if not gaps:
+        return nodes
+    xyzw: list[list[float]] = []
+    for n in nodes:
+        if isinstance(n, dict):
+            xyzw.append([float(n["x"]), float(n["y"]), float(n["z"]), 0.0])
+        else:
+            xyzw.append([float(n[0]), float(n[1]), float(n[2]), 0.0])
+    cum, _ = _resample_by_s(xyzw)
+    out = []
+    for i, n in enumerate(nodes):
+        s = cum[i]
+        z_hold = None
+        for s0, s1, z0, z1 in gaps:
+            if s0 - 0.5 <= s <= s1 + 0.5:
+                span = max(s1 - s0, 1e-6)
+                t = (s - s0) / span
+                z_hold = z0 + t * (z1 - z0)
+                break
+        if z_hold is None:
+            out.append(n)
+        elif isinstance(n, dict):
+            out.append({**n, "z": float(z_hold)})
+        else:
+            held = list(n)
+            held[2] = float(z_hold)
+            out.append(held)
+    return out
+
+
+def _blend_run_abutment_z(nodes: list[list[float]], blend_m: float) -> list[list[float]]:
+    """Lerp Z toward the already-set end nodes over blend_m of chainage."""
+    if blend_m <= 0 or len(nodes) < 2:
+        return nodes
+    cum, _ = _resample_by_s(nodes)
+    total = cum[-1]
+    if total < 1e-6:
+        return nodes
+    z_a = float(nodes[0][2])
+    z_b = float(nodes[-1][2])
+    out = [list(n) for n in nodes]
+    for i, s in enumerate(cum):
+        z = float(nodes[i][2])
+        if s <= blend_m:
+            w = 1.0 - (s / blend_m)
+            z = z * (1.0 - w) + z_a * w
+        dist_end = total - s
+        if dist_end <= blend_m:
+            w = 1.0 - (dist_end / blend_m)
+            z = z * (1.0 - w) + z_b * w
+        out[i][2] = z
+    return out
+
+
 def _meshroad_deck_centerline(strips: list[dict]) -> list[list[float]]:
     """Average parallel MeshRoad strips into one [x,y,z,width] carriageway."""
     seqs = [list(s.get("nodes") or []) for s in strips]
@@ -1166,7 +1293,11 @@ def build_entries(
         densified = _densify_nodes(raw_nodes, float(cfg.get("densify_max_step_m") or 0.0))
         if snap:
             densified, dmin, dmax, nr = _snap_nodes_z(
-                densified, z_at, lift, max_raise
+                densified,
+                z_at,
+                lift,
+                max_raise,
+                follow=bool(cfg.get("snap_follow_heightmap")),
             )
             raised_n += nr
             if snap_n == 0:
@@ -1175,6 +1306,15 @@ def build_entries(
                 snap_min = min(snap_min, dmin)
                 snap_max = max(snap_max, dmax)
             snap_n += len(densified)
+        if meshroads:
+            densified = _hold_span_deck_z(densified, meshroads)
+        smooth_z = float(cfg.get("smooth_decal_z_m") or 0.0)
+        if smooth_z > 0 and len(densified) >= 2:
+            tmp = [
+                {"x": n[0], "y": n[1], "z": n[2], "width": n[3]} for n in densified
+            ]
+            tmp = _smooth_polyline_z(tmp, smooth_z)
+            densified = [[t["x"], t["y"], t["z"], t["width"]] for t in tmp]
         runs = [densified]
         if cfg.get("clip_bridges") and meshroads:
             split: list[list[list[float]]] = []
@@ -1185,6 +1325,11 @@ def build_entries(
         for run in runs:
             out_g.extend(_split_outside(run, corridors))
         runs = out_g if corridors else runs
+        blend_m = float(cfg.get("abutment_blend_m") or 0.0)
+        if blend_m > 0:
+            runs = [
+                _blend_run_abutment_z(run, blend_m) for run in runs if len(run) >= 2
+            ]
         slug = bb._slug(str(road.get("name") or hwy or "road"))
         oid = road.get("id") or road.get("osm_id") or ri
         max_len = float(cfg.get("max_decal_length_m") or 0.0)
@@ -1611,6 +1756,7 @@ def conform_road_bed_heightmap(
     max_h: float,
     site: dict | None = None,
     proc: Path | None = None,
+    meshroads: list[dict] | None = None,
 ):
     """Flatten heightmap under all roads via one shared value/opacity raster.
 
@@ -1711,6 +1857,8 @@ def conform_road_bed_heightmap(
             }
             for n in densified
         ]
+        if meshroads:
+            nodes = _hold_span_deck_z(nodes, meshroads)
         nodes = _smooth_polyline_z(nodes, smooth_m)
         n_roads += 1
 
@@ -1913,6 +2061,10 @@ def main() -> None:
         max_h = 256.0
         extent = float(size)
 
+    meshroads: list[dict] = []
+    if cfg.get("clip_bridges") or cfg.get("deck_decals") or cfg.get("road_bed_conform"):
+        meshroads = _load_meshroads(proc, level_name)
+
     if cfg.get("road_bed_conform") and not args.skip_road_bed:
         import heightmap_layers as hml
 
@@ -1931,6 +2083,7 @@ def main() -> None:
                 max_h=max_h_dgm,
                 site=site,
                 proc=proc,
+                meshroads=meshroads,
             )
             write_road_bed_heightmap(
                 proc,
@@ -1952,9 +2105,7 @@ def main() -> None:
             print(f"snap_to_heightmap: using {label}")
 
     corridors = _load_clip_corridors(proc, cfg)
-    meshroads: list[dict] = []
-    if cfg.get("clip_bridges") or cfg.get("deck_decals"):
-        meshroads = _load_meshroads(proc, level_name)
+    if meshroads:
         print(
             f"Decal MeshRoads: {len(meshroads)} strips "
             f"(clip={bool(cfg.get('clip_bridges'))} deck={bool(cfg.get('deck_decals'))})"
