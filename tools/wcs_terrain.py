@@ -27,20 +27,27 @@ def fetch_terrain_coverage(
     force: bool = False,
     label: str | None = None,
     default_stem: str | None = None,
+    bbox: list[float] | tuple[float, float, float, float] | None = None,
+    resolution_m: float | None = None,
+    out_path: Path | None = None,
 ) -> Path:
     """Download one ``sources.<key>`` WCS coverage into ``data/raw/`` (cached)."""
     src = (site.get("sources") or {}).get(source_key) or {}
     if not src:
         raise SystemExit(f"sources.{source_key} missing in site config")
 
-    out = terrain_cache_path(site, source_key, default_stem=default_stem)
+    out = Path(out_path) if out_path is not None else terrain_cache_path(
+        site, source_key, default_stem=default_stem
+    )
+    if not out.is_absolute():
+        out = ROOT / out
     out.parent.mkdir(parents=True, exist_ok=True)
     meta_path = out.with_suffix(".meta.json")
     nice = label or source_key.upper()
 
-    bbox = list(map(float, site["bbox"]))
+    bbox = list(map(float, bbox if bbox is not None else site["bbox"]))
     xmin, ymin, xmax, ymax = bbox
-    res = float(src.get("resolution_m", 0.5))
+    res = float(resolution_m if resolution_m is not None else src.get("resolution_m", 0.5))
     width = max(1, int(round((xmax - xmin) / res)))
     height = max(1, int(round((ymax - ymin) / res)))
 
@@ -86,7 +93,7 @@ def fetch_terrain_coverage(
         "width": width,
         "height": height,
         "bytes": len(r.content),
-        "path": str(out.relative_to(ROOT)),
+        "path": str(out.relative_to(ROOT) if out.is_relative_to(ROOT) else out),
     }
     meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
     print(f"Wrote {out} ({len(r.content)} bytes)")

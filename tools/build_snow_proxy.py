@@ -55,6 +55,18 @@ _PRESETS: dict[str, dict] = {
         "steep_deg": 50.0,
         "steep_factor": 0.2,
     },
+    # Early autumn: first dusting on high ridges, pass roads stay clear.
+    # Onset T=0 ≈ 1740 m; full at −1 °C ≈ 1890 m — this crop's crest is ~1870 m.
+    "september": {
+        "t0_c": 3.5,
+        "z0_m": 1200.0,
+        "lapse_c_per_m": 0.0065,
+        "snow_temp_c": 0.0,
+        "full_snow_temp_c": -1.0,
+        "aspect_strength": 0.50,
+        "steep_deg": 50.0,
+        "steep_factor": 0.25,
+    },
     "winter": {
         "t0_c": -2.0,
         "z0_m": 1200.0,

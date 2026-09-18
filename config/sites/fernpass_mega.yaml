@@ -8,6 +8,8 @@ bbox:
   - 242004.0
   - 42496.0
   - 250196.0
+# Absolute GHA (m) at DGM-bbox center — Roadtrip Tyrol sky-arc target.
+center_z_m: 1065.3
 
 sources:
   dgm:
@@ -27,7 +29,7 @@ sources:
   twi:
     smooth_m: 10.0
   # Schnee-Proxy aus DGM (Höhe/Exposition/Neigung/T0) — build_snow_proxy.py
-  # Presets: november | june | winter  (Parameter hier überschreibbar)
+  # Presets: november | june | september | winter  (Parameter hier überschreibbar)
   # BEV INSPIRE Land Cover (WMS→GeoTIFF), 6 Klassen @ mask_size
   # https://data.bev.gv.at/geoserver/INSdataLC/wms — Layer LC.LandCoverRaster
   bev_landcover:
@@ -51,13 +53,20 @@ sources:
     url: "https://gis.tirol.gv.at/arcgis/services/Service_Public/orthofoto/MapServer/WCSServer"
     coverage: "Aktuell_RGB"
     resolution_m: 1.0
+  # Far backdrop texture (CH + surroundings). Title: SWISSIMAGE Hintergrund.
+  backdrop_ortho:
+    type: wms
+    url: "https://wms.geo.admin.ch/"
+    layer: ch.swisstopo.swissimage
+    version: "1.3.0"
   roads:
     type: osm
   gip:
     type: wfs
     url: "https://dservices3.arcgis.com/hG7UfxX49PQ8XkXh/arcgis/services/Verkehrswege/WFSServer"
     type_name: "Verkehrswege:Verkehrswege"
-    str_code: B179
+    str_code: B179                 # Durchgangsroute (Trunk-Spine)
+    include: bbox                  # ganzer Verkehrswege-Layer in site.bbox (nicht nur L+B)
   strassennetz:
     type: wfs
     url: "https://dservices3.arcgis.com/hG7UfxX49PQ8XkXh/arcgis/services/Strassennetz/WFSServer"
@@ -79,7 +88,7 @@ beamng:
   meters_per_pixel: 1.0
   level_name: autoroad_fernpass_8192
   mask_size: 8192
-  slope_rock_deg: 43
+  slope_rock_deg: 40
   slope_rock_open_px: 1
   road_width_scale: 0.9
   # Carriageway = lanes × lane_width_m (default 2 × 3.75 = 7.5 m).
@@ -93,6 +102,11 @@ beamng:
   grass_material: Grass            # green grass (meadow_wet / forest_gap)
   snow_material: snow              # snow_light / snow_heavy paint
   shoulder_m: 3.0
+
+  # GIP-Korridore für Brücken/Galerien. Trunk = sources.gip.str_code (isoliert).
+  roads:
+    spine_start_oid: null          # optional, sonst längstes Trunk-Stück
+    spine_next: []                 # - {from_oid, to_oid, note} an Gabelungen
 
   # BEV × nDSM × TWI × snow_proxy → biomes + soft terrain (compose_biomes.py)
   compose:
@@ -288,6 +302,7 @@ beamng:
     # steep = DGM-Probe; Achse = GIP Verkehrswege (OBJECTID-Segmente)
     sides: steep
     centerline: gip                # gip | strassennetz | osm
+    # Keine Planken/Poller auf Gassen/Forst/Rad, Parkplätzen (S-BP), Rampen (S-BR).
     steep_sides:
       sample_m: 80
       look_out_m: 6.0
@@ -304,19 +319,25 @@ beamng:
     clip_galleries: true
     stop_before_gallery_m: 3.0
     gallery_clip_pad_m: 2.0
+    # Kreuzungen: Rail-Joint auf fremder Fahrbahn → Run splitten
+    clip_centerlines: true
+    centerline_clip_pad_m: 0.75
+    # Tunnel: keine Rails in der Draufsicht über der Röhre (Berg)
+    clip_tunnels: true
+    tunnel_clip_pad_m: 25.0
     # Cascade: spätere Treffer überschreiben frühere. Match auf osm_id / lanes / highway.
     rules:
+      # Tunnel / Unterflur: keine Planken (auch nicht über der Röhre auf dem Berg)
+      - match: { objekt: S-BT }
+        sides: none
+      - match: { kunstbauten: [Tunnel, Unterflur] }
+        sides: none
+      # Explizit (Fernpass): Lermooser + Nassereith
+      - match: { ids: [3699, 3842, 4299, 3690, 3691, 3843] }
+        sides: none
       # Mehrspurig: Leitpoller / Planken beidseitig (überschreibt steep)
       - match: { lanes: ">2" }
         sides: both
-      # Beispiel Mix: bestimmte OIDs mit Italy-Schiene statt/zusätzlich Posts
-      # - match: { ids: [3852, 3993, 4104] }
-      #   style: sections          # oder: both / styles: [posts, sections]
-      # ID-Ketten (Ranges + Einzeln) — bei Bedarf ausfüllen, z.B.:
-      # - match: { ids: [2301-2312, 2315, 2320-2324] }
-      #   sides: left
-      # - match: { ids: 2400-2450 }
-      #   sides: none
 
   water:
     enabled: true
@@ -357,6 +378,33 @@ beamng:
     scale_high: [0.85, 1.3]
     scale_scrub: [0.65, 1.1]
     seed: 13
+
+  # Far = Copernicus GLO-30 + viewshed. Mid = 1–10 km Copernicus 50 m. Near = Tirol DGM.
+  backdrop:
+    radius_m: 40000
+    observer_grid: 5
+    observer_z_extra_m: 10
+    extra_peaks: 4
+    min_views: 1
+    viewshed_step_m: 50
+    mesh_step_m: 120
+    hole_pad_m: 30
+    near_m: 1000
+    near_step_m: 15
+    near_dgm_res_m: 2
+    near_overlap_m: 80
+    near_lip_drop_m: 1.0     # inner ring sits below the playable lip (cliff, no tuck)
+    near_texture_size: 2048
+    mid_m: 10000             # 1–10 km band, Copernicus @ 50 m, own texture
+    mid_step_m: 50
+    mid_overlap_m: 150
+    mid_texture_size: 2048
+    mid_tiles: 3             # 3×3 Collada tiles, letter names (no _00 LOD trap)
+    n_rays: 2048
+    curvature_cc: 0.85714
+    texture_size: 2048
+    albedo_gain: 0.58        # ortho is already sunlit; <1 avoids a washed-out look
+    # snow overlay uses sources.snow + compose.snow_light/snow_heavy
 
   buildings:
     enabled: true
@@ -447,8 +495,9 @@ annotations:
 
 notes: |
   Mega-Fernpass B179, 8192×8192 m @ 1 m/px, center EPSG:31254 ~38400/246100.
-  Pipeline: fetch_dgm → fetch_dom → fetch_bev_landcover → build_twi → build_snow_proxy →
-  build_smoke → build_terrain_masks (landuse:bev) → compose_biomes → fetch_gip →
-  setup_beamng_level → bridges/galleries/decal/guardrails as needed.
+  Pipeline: python tools/build_level.py --site config/sites/fernpass_mega.yaml
+  (fetch_dgm/dom/bev → twi/snow → smoke/masks → setup → ensure_terrain_materials →
+  compose_biomes → build_forest). Materials: dry_meadow (dirt base), ForestFloor
+  (50/50 mudgrass PNG). Then bridges/galleries/decal/guardrails as needed.
   Biomes: mask_biome_{kill,water,snow_*,rock,forest_*,meadow_*,bare_*}.png (exclusive).
-  Terrain soft refine: Mud from TWI-wet; Grass2 from canopy; snow does not add a material.
+  Terrain soft refine: Mud from TWI-wet; Grass2 from canopy; snow paint on snow biomes.

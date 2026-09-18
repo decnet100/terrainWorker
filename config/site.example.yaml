@@ -156,6 +156,8 @@ beamng:
   #   mesh_step_m: 120
   #   near_m: 1000
   #   mid_m: 10000
+  #   albedo_gain: 0.58          # <1: ortho is already sunlit
+  #   # snow: sources.snow + compose.snow_light/snow_heavy (no extra key)
 
 # Hand-edited edges / guardrails (see docs/ANNOTATIONS.md).
 # Schema: python tools/init_annotations_gpkg.py

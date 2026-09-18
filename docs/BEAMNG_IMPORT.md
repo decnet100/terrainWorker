@@ -16,11 +16,12 @@ C:\Users\<user>\AppData\Local\BeamNG\BeamNG.drive\current\levels\
 | L13 splining | `autoroad_l13_splining` | `heightmap_2048.png` | MeshRoad decks |
 | Fernpass | `autoroad_fernpass_4096` | `heightmap_4096.png` | B179 crop |
 | Fernpass Mega | `autoroad_fernpass_8192` | `heightmap_8192.png` | flagship |
+| Reschen | `autoroad_reschen_8192` | `heightmap_8192.png` | B180 |
 | Testarena | `autoroad_testarena` | `heightmap_512.png` | specimen crop |
 
 Always take `max_height_m` from `data/processed/<site>/heightmap_meta.json`. Heightmaps are **square**, **power of two**, **16-bit PNG**.
 
-Portal session between Hahntennjoch and Fernpass Mega: [ROADTRIP_TYROL.md](ROADTRIP_TYROL.md). Horizon meshes around the playable map: [BACKDROP.md](BACKDROP.md).
+Portal session between Hahntennjoch and Fernpass Mega: [ROADTRIP_TYROL.md](ROADTRIP_TYROL.md). Horizon meshes around the playable map: [BACKDROP.md](BACKDROP.md) (`build_backdrop.py` after the heightmap exists).
 
 ---
 
@@ -236,4 +237,10 @@ cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/fernpass_mega.yam
 
 ```powershell
 cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/fernpass_mega.yaml"; python tools\build_smoke.py
+```
+
+Horizon (Fernpass Mega): [BACKDROP.md](BACKDROP.md)
+
+```powershell
+cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/fernpass_mega.yaml"; python tools\build_backdrop.py
 ```

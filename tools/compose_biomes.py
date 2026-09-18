@@ -453,6 +453,9 @@ def main() -> None:
     )
     user_level = USER_LEVELS / level_name
     if user_level.is_dir():
+        from ensure_terrain_materials import ensure_terrain_materials  # noqa: WPS433
+
+        ensure_terrain_materials(user_level, level_name)
         if dry_grass_material == "dirt_grass":
             vendor_dirt_grass_material(user_level, level_name)
         clear_dry_grass_forest(user_level)

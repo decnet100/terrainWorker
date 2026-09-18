@@ -16,6 +16,7 @@ BeamNG **0.39**. Details: [docs/STATUS.md](docs/STATUS.md). First portal switch:
 | **L13 Kühtai** | `autoroad_galerie_2048` | 2048² | Galleries / bridges |
 | **L13 splining** | `autoroad_l13_splining` | 2048² | MeshRoad decks from the Tyrol road network |
 | **Testarena** | `autoroad_testarena` | 512² | Specimen crop of a GIP structure (road surface first) |
+| **Reschen** | `autoroad_reschen_8192` | 8192² | B180 Reschenstraße (Prutz / Kaunertal), first-look auto |
 
 Site files: [config/sites/](config/sites/README.md). Processed output: `data/processed/<site.name>/`.
 
@@ -25,22 +26,24 @@ Site files: [config/sites/](config/sites/README.md). Processed output: `data/pro
 cd C:\temp\beamng_autoroad; python -m pip install -r requirements.txt
 ```
 
+**One-shot** (fresh clone → BeamNG user level with biomes, terrain materials, forest):
+
+```powershell
+cd C:\temp\beamng_autoroad; python tools\build_level.py --site config/sites/fernpass_mega.yaml
+```
+
+That runs DGM/DOM/BEV → TWI/snow → smoke/masks → level setup → `dry_meadow`/`ForestFloor` materials → compose biomes → forest. Steps: `python tools\build_level.py --list`. Resume with `--from`, single step with `--only`. Existing level folders are kept unless `--force-setup`.
+
 Default site is a local copy of Hahntennjoch (`config/site.yaml`, gitignored). To pin a site for one session:
 
 ```powershell
 cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/hahntennjoch.yaml"; python tools\fetch_osm.py; python tools\build_smoke.py
 ```
 
-Fernpass Mega uses **GIP** for the road axis (not OSM). Typical rebuild:
+Fernpass Mega uses **GIP** for the road axis (not OSM). After `build_level`, typical extras:
 
 ```powershell
-cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/fernpass_mega.yaml"; python tools\fetch_gip.py; python tools\build_smoke.py
-```
-
-Other common tools (not all run from `build_smoke`):
-
-```powershell
-cd C:\temp\beamng_autoroad; python tools\fetch_gip.py
+cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/fernpass_mega.yaml"; python tools\fetch_gip.py
 ```
 
 ```powershell
@@ -51,8 +54,7 @@ cd C:\temp\beamng_autoroad; python tools\init_annotations_gpkg.py
 cd C:\temp\beamng_autoroad; python tools\seed_annotations.py
 ```
 
-Level import: [docs/BEAMNG_IMPORT.md](docs/BEAMNG_IMPORT.md). Horizon meshes: [docs/BACKDROP.md](docs/BACKDROP.md). Portal mod: [docs/ROADTRIP_TYROL.md](docs/ROADTRIP_TYROL.md).
-
+Level import: [docs/BEAMNG_IMPORT.md](docs/BEAMNG_IMPORT.md). Horizon meshes: [docs/BACKDROP.md](docs/BACKDROP.md). Portal mod: [docs/ROADTRIP_TYROL.md](docs/ROADTRIP_TYROL.md). Site profiles: [config/sites/README.md](config/sites/README.md).
 ## Docs
 
 - [docs/CONCEPT.md](docs/CONCEPT.md) — geodata → playable pass

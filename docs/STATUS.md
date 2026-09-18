@@ -12,6 +12,7 @@ Multi-map session (first portal switch): [ROADTRIP_TYROL.md](ROADTRIP_TYROL.md).
 - **L13 Kühtai** — `config/sites/l13_kuehtai.yaml` (`autoroad_galerie_2048`, galleries via GIP)
 - **L13 splining** — `config/sites/l13_splining.yaml` (Tyrol road-network axis + MeshRoad decks)
 - **Fernpass 4096** — `config/sites/fernpass.yaml`
+- **Reschen 8192** — `config/sites/reschen.yaml` (`autoroad_reschen_8192`, B180)
 - **Fernpass Mega 8192** — `config/sites/fernpass_mega.yaml` (B179, GIP decals, bridges/galleries, Italy rails)
 - **Testarena** — `config/sites/testarena.yaml` (crop of a GIP structure; road surface first)
 - Processed output is split: `data/processed/<site.name>/`
@@ -43,7 +44,7 @@ Multi-map session (first portal switch): [ROADTRIP_TYROL.md](ROADTRIP_TYROL.md).
 
 ### Backdrop (horizon)
 
-- Three-ring Collada TSStatics (near Tirol DGM, mid/far Copernicus GLO-30 + viewshed). Fernpass Mega is wired. POC, already injects — [BACKDROP.md](BACKDROP.md)
+- Three-ring Collada TSStatics (near Tirol DGM, mid/far Copernicus GLO-30 + viewshed). Fernpass Mega and Reschen are wired. Snow overlay uses the same DGM proxy as biomes. POC, already injects — [BACKDROP.md](BACKDROP.md)
 
 ### Other tools (present, still evolving)
 
@@ -89,4 +90,8 @@ cd C:\temp\beamng_autoroad; python tools\build_guardrails.py
 
 ```powershell
 cd C:\temp\beamng_autoroad; python tools\build_terrain_masks.py
+```
+
+```powershell
+cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/fernpass_mega.yaml"; python tools\build_backdrop.py
 ```

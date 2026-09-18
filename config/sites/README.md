@@ -8,6 +8,7 @@
 | [`fernpass.yaml`](fernpass.yaml) | B179 Fernpass | `autoroad_fernpass_4096` | 4096² |
 | [`fernpass_mega.yaml`](fernpass_mega.yaml) | B179 Fernpass (flagship) | `autoroad_fernpass_8192` | 8192² |
 | [`testarena.yaml`](testarena.yaml) | Specimen arena (crop, GIP 2304 first) | `autoroad_testarena` | 512² |
+| [`reschen.yaml`](reschen.yaml) | B180 Reschenstraße (Prutz / Kaunertal) | `autoroad_reschen_8192` | 8000×8000 → 8192² |
 | [`oetz.yaml`](oetz.yaml) | Draft copy of the site template | `autoroad_test` | — |
 
 ## Choose the active site
@@ -38,7 +39,20 @@ $env:AUTOROAD_SITE = "config/sites/fernpass_mega.yaml"
 $env:AUTOROAD_SITE = "config/sites/testarena.yaml"
 ```
 
+```powershell
+$env:AUTOROAD_SITE = "config/sites/reschen.yaml"
+```
+
 Then, from the repo root:
+
+```powershell
+cd C:\temp\beamng_autoroad; python tools\build_level.py --site config/sites/fernpass_mega.yaml
+```
+
+That runs DGM/DOM/BEV → TWI/snow → masks → compose biomes → `dry_meadow`/`ForestFloor` materials → forest scatter.
+Terrain materials are created by `tools/ensure_terrain_materials.py` (Grass+dirt base / 50·50 mudgrass mix) — no World Editor required.
+
+Or step-by-step:
 
 ```powershell
 cd C:\temp\beamng_autoroad; python tools\fetch_dgm.py

@@ -3,7 +3,8 @@
 POC: 5x5 (+ local peaks) viewshed with earth curvature, cut invisible cells
 and the playable bbox, four quadrant Collada TSStatics, WorldCover or
 elevation/slope tint, no collision. Near ring uses Tirol DGM; cells without
-coverage stay empty (no Copernicus fill).
+coverage stay empty (no Copernicus fill). If sources.snow is set, the DGM
+snow proxy recolours baked textures to match the playable map.
 
 Usage:
   cd C:\\temp\\beamng_autoroad; $env:AUTOROAD_SITE = \"config/sites/fernpass_mega.yaml\"; python tools\\build_backdrop.py
@@ -42,6 +43,10 @@ from fetch_backdrop import (  # noqa: E402
 )
 from site_coords import SiteCoords, load_site, processed_dir, site_slug  # noqa: E402
 from heightmap_layers import load_composed_or_dgm  # noqa: E402
+from build_snow_proxy import (  # noqa: E402
+    _cfg as snow_proxy_cfg,
+    compute_snow_proxy,
+)
 
 USER_LEVELS = (
     Path.home()
@@ -66,6 +71,11 @@ _TILE_3 = (
     ("w", "c", "e"),
     ("sw", "s", "se"),
 )
+
+# Match compose_biomes.BIOME_RGB snow_light / snow_heavy (0–1).
+_SNOW_LIGHT_RGB = np.array([200, 210, 230], dtype=np.float32) / 255.0
+_SNOW_HEAVY_RGB = np.array([245, 245, 250], dtype=np.float32) / 255.0
+_WC_WATER = 80
 
 # Muted alpine remap of ESA WorldCover classes (not the cartoony legend).
 WC_RGB = {
@@ -353,12 +363,67 @@ def crop_to_extent(
     return elev[r0:r1, c0:c1]
 
 
+def _snow_compose_cfg(site: dict) -> tuple[dict | None, float, float]:
+    """Same DGM proxy + biome thresholds as the playable map, or None."""
+    if not ((site.get("sources") or {}).get("snow")):
+        return None, 0.25, 0.55
+    compose = ((site.get("beamng") or {}).get("compose") or {})
+    light = float(compose.get("snow_light", 0.25))
+    heavy = float(compose.get("snow_heavy", 0.55))
+    return snow_proxy_cfg(site), light, heavy
+
+
+def _snow_fraction(
+    elev: np.ndarray,
+    cell_m: float,
+    snow_cfg: dict,
+    wc: np.ndarray | None = None,
+) -> np.ndarray:
+    finite = np.isfinite(elev)
+    if not finite.any():
+        return np.zeros(elev.shape, dtype=np.float32)
+    fill = float(np.nanmedian(elev))
+    z = np.where(finite, elev, fill).astype(np.float64)
+    snow, _, _ = compute_snow_proxy(z, float(cell_m), snow_cfg)
+    snow = np.where(finite, snow, 0.0).astype(np.float32)
+    if wc is not None and wc.shape == snow.shape:
+        snow = np.where(wc == _WC_WATER, 0.0, snow)
+    return snow
+
+
+def _tint_snow(
+    rgb: np.ndarray,
+    elev: np.ndarray,
+    cell_m: float,
+    size: int,
+    snow_cfg: dict | None,
+    snow_light: float,
+    snow_heavy: float,
+    wc: np.ndarray | None,
+) -> np.ndarray:
+    """Lerp baked RGB toward biome snow colours using the DGM proxy."""
+    if snow_cfg is None:
+        return rgb
+    snow_img = _zoom_hw(_snow_fraction(elev, cell_m, snow_cfg, wc), size)
+    lo = float(snow_light)
+    hi = float(snow_heavy)
+    t = np.clip((snow_img - lo) / max(hi - lo, 1e-6), 0.0, 1.0)
+    t = t * t * (3.0 - 2.0 * t)
+    col = (1.0 - t)[..., None] * _SNOW_LIGHT_RGB + t[..., None] * _SNOW_HEAVY_RGB
+    amount = np.where(snow_img >= lo, 0.22 + 0.73 * t, 0.0)[..., None]
+    return np.clip((1.0 - amount) * rgb + amount * col, 0.0, 1.0)
+
+
 def bake_texture(
     elev: np.ndarray,
     wc: np.ndarray | None,
     cell_m: float,
     size: int,
     ortho: np.ndarray | None = None,
+    albedo_gain: float = 1.0,
+    snow_cfg: dict | None = None,
+    snow_light: float = 0.25,
+    snow_heavy: float = 0.55,
 ) -> np.ndarray:
     hs, steep = _hillshade_slope(elev, cell_m)
     tex_hs = _zoom_hw(hs.astype(np.float32), size)
@@ -371,39 +436,45 @@ def bake_texture(
                 Image.fromarray(ortho, mode="RGB").resize((size, size), Image.Resampling.BILINEAR)
             )
         rgb = ortho.astype(np.float32) / 255.0
-        shade = 0.78 + 0.22 * tex_hs[..., None]
-        return (np.clip(rgb * shade, 0.0, 1.0) * 255.0).astype(np.uint8)
-
-    lut = np.zeros((256, 3), dtype=np.float32)
-    # default alpine grey-green
-    lut[:] = (0.42, 0.44, 0.36)
-    for code, rgb in WC_RGB.items():
-        lut[code] = (rgb[0] / 255.0, rgb[1] / 255.0, rgb[2] / 255.0)
-    if wc is not None:
-        wc_img = Image.fromarray(wc, mode="L").resize((size, size), Image.Resampling.NEAREST)
-        codes = np.array(wc_img)
-        rgb = lut[codes]
+        # Photo is pre-lit; keep a darker floor so engine sun does not blow it out.
+        shade = float(albedo_gain) * (0.62 + 0.38 * tex_hs[..., None])
+        rgb = np.clip(rgb * shade, 0.0, 1.0)
     else:
-        # Hypsometric: valley green → alpine rock → snow. No landcover needed.
-        z = tex_z
-        t = np.clip((z - 800.0) / 1600.0, 0.0, 1.0)
-        low = np.array([0.22, 0.32, 0.18], dtype=np.float32)
-        mid = np.array([0.45, 0.46, 0.32], dtype=np.float32)
-        high = np.array([0.55, 0.54, 0.50], dtype=np.float32)
-        rgb = (1 - t)[..., None] * low + t[..., None] * mid
-        t2 = np.clip((z - 2000.0) / 500.0, 0.0, 1.0)
-        rgb = (1 - t2)[..., None] * rgb + t2[..., None] * high
+        lut = np.zeros((256, 3), dtype=np.float32)
+        # default alpine grey-green
+        lut[:] = (0.42, 0.44, 0.36)
+        for code, rgb_wc in WC_RGB.items():
+            lut[code] = (rgb_wc[0] / 255.0, rgb_wc[1] / 255.0, rgb_wc[2] / 255.0)
+        if wc is not None:
+            wc_img = Image.fromarray(wc, mode="L").resize((size, size), Image.Resampling.NEAREST)
+            codes = np.array(wc_img)
+            rgb = lut[codes]
+        else:
+            # Hypsometric: valley green → alpine rock. Snow comes from the proxy.
+            z = tex_z
+            t = np.clip((z - 800.0) / 1600.0, 0.0, 1.0)
+            low = np.array([0.22, 0.32, 0.18], dtype=np.float32)
+            mid = np.array([0.45, 0.46, 0.32], dtype=np.float32)
+            high = np.array([0.55, 0.54, 0.50], dtype=np.float32)
+            rgb = (1 - t)[..., None] * low + t[..., None] * mid
+            t2 = np.clip((z - 2000.0) / 500.0, 0.0, 1.0)
+            rgb = (1 - t2)[..., None] * rgb + t2[..., None] * high
 
-    rock = np.array([0.52, 0.50, 0.47], dtype=np.float32)
-    snow = np.array([0.88, 0.90, 0.92], dtype=np.float32)
-    steep_w = np.clip((tex_st - 28.0) / 28.0, 0.0, 1.0)[..., None]
-    rgb = (1.0 - 0.75 * steep_w) * rgb + 0.75 * steep_w * rock
-    alp = np.clip((tex_z - 1750.0) / 650.0, 0.0, 1.0)[..., None]
-    rgb = (1.0 - 0.35 * alp) * rgb + 0.35 * alp * rock
-    sn = np.clip((tex_z - 2450.0) / 450.0, 0.0, 1.0)[..., None]
-    rgb = (1.0 - sn) * rgb + sn * snow
-    shade = 0.52 + 0.48 * tex_hs[..., None]
-    rgb = np.clip(rgb * shade, 0.0, 1.0)
+        rock = np.array([0.52, 0.50, 0.47], dtype=np.float32)
+        steep_w = np.clip((tex_st - 28.0) / 28.0, 0.0, 1.0)[..., None]
+        rgb = (1.0 - 0.75 * steep_w) * rgb + 0.75 * steep_w * rock
+        alp = np.clip((tex_z - 1750.0) / 650.0, 0.0, 1.0)[..., None]
+        rgb = (1.0 - 0.35 * alp) * rgb + 0.35 * alp * rock
+        if snow_cfg is None:
+            snow = np.array([0.88, 0.90, 0.92], dtype=np.float32)
+            sn = np.clip((tex_z - 2450.0) / 450.0, 0.0, 1.0)[..., None]
+            rgb = (1.0 - sn) * rgb + sn * snow
+        shade = 0.52 + 0.48 * tex_hs[..., None]
+        rgb = np.clip(rgb * shade, 0.0, 1.0)
+
+    rgb = _tint_snow(
+        rgb, elev, cell_m, size, snow_cfg, snow_light, snow_heavy, wc
+    )
     return (rgb * 255.0).astype(np.uint8)
 
 
@@ -885,8 +956,43 @@ def main() -> None:
         ortho_mid = np.asarray(Image.open(mop).convert("RGB"))
         print(f"Ortho mid {mop.name} {ortho_mid.shape}")
 
+    snow_cfg, snow_light, snow_heavy = _snow_compose_cfg(site)
+    cell_m = abs(float(meta["px"]))
+    if snow_cfg is not None:
+        snow_far = _snow_fraction(elev, cell_m, snow_cfg, wc)
+        print(
+            f"backdrop snow preset={snow_cfg['preset']}  "
+            f"light={snow_light:.2f} heavy={snow_heavy:.2f}  "
+            f"far ≥light={100.0 * float((snow_far >= snow_light).mean()):.1f}%  "
+            f"≥heavy={100.0 * float((snow_far >= snow_heavy).mean()):.1f}%"
+        )
+        hs_s, _ = _hillshade_slope(elev, cell_m)
+        grey = (np.clip(hs_s, 0, 1) * 180).astype(np.float32)
+        prev = np.stack([grey, grey, grey], axis=-1)
+        t = np.clip(snow_far, 0.0, 1.0)[..., None]
+        snow_col = np.array([245.0, 248.0, 255.0], dtype=np.float32)
+        tinted = (1.0 - 0.85 * t) * prev + 0.85 * t * snow_col
+        Image.fromarray(np.clip(tinted, 0, 255).astype(np.uint8), mode="RGB").resize(
+            (min(elev.shape[1], 1024), min(elev.shape[0], 1024)),
+            Image.Resampling.BILINEAR,
+        ).save(proc / "preview_backdrop_snow.png")
+        print(f"Wrote {proc / 'preview_backdrop_snow.png'}")
+    else:
+        print("backdrop snow skip: no sources.snow")
+
+    bake_kw = dict(
+        snow_cfg=snow_cfg,
+        snow_light=snow_light,
+        snow_heavy=snow_heavy,
+        albedo_gain=float(cfg["albedo_gain"]),
+    )
     tex = bake_texture(
-        elev, wc, abs(float(meta["px"])), int(cfg["texture_size"]), ortho=ortho
+        elev,
+        wc,
+        cell_m,
+        int(cfg["texture_size"]),
+        ortho=ortho,
+        **bake_kw,
     )
     near_pack = None if args.skip_near_dgm else load_near_dgm(site)
     tex_near = None
@@ -911,13 +1017,17 @@ def main() -> None:
             abs(float(near_meta["px"])),
             int(cfg["near_texture_size"]),
             ortho=ortho_near if ortho_near is not None else ortho,
+            **bake_kw,
         )
+    mid_elev = crop_to_extent(elev, meta, mid_extent(site))
+    mid_wc = crop_to_extent(wc, meta, mid_extent(site)) if wc is not None else None
     tex_mid = bake_texture(
-        crop_to_extent(elev, meta, mid_extent(site)),
-        None,
-        abs(float(meta["px"])),
+        mid_elev,
+        mid_wc,
+        cell_m,
         int(cfg["mid_texture_size"]),
         ortho=ortho_mid if ortho_mid is not None else ortho,
+        **bake_kw,
     )
     write_previews(
         proc,

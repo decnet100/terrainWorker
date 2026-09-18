@@ -90,6 +90,7 @@ def backdrop_cfg(site: dict) -> dict:
         "n_rays": int(raw.get("n_rays", 2048)),
         "curvature_cc": float(raw.get("curvature_cc", 0.85714)),
         "texture_size": int(raw.get("texture_size", 2048)),
+        "albedo_gain": float(raw.get("albedo_gain", 0.58)),
         "extra_peaks": int(raw.get("extra_peaks", 4)),
     }
 
