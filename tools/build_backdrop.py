@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import re
 import sys
 import uuid
 from pathlib import Path
@@ -21,7 +22,7 @@ from xml.sax.saxutils import escape
 
 import numpy as np
 from PIL import Image, ImageDraw
-from scipy.ndimage import binary_dilation, map_coordinates, zoom
+from scipy.ndimage import binary_dilation, gaussian_filter, label, map_coordinates, median_filter, zoom
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
@@ -30,12 +31,15 @@ from fetch_backdrop import (  # noqa: E402
     dem_paths,
     fetch_backdrop,
     fetch_near_dgm,
+    fetch_near_dom,
     fetch_swissimage_ortho,
     load_backdrop_dem,
     load_near_dgm,
+    load_near_dom,
     mid_extent,
     mid_ortho_path,
     near_extent,
+    padded_extent,
     near_ortho_path,
     ortho_path,
     site_center,
@@ -76,6 +80,7 @@ _TILE_3 = (
 _SNOW_LIGHT_RGB = np.array([200, 210, 230], dtype=np.float32) / 255.0
 _SNOW_HEAVY_RGB = np.array([245, 245, 250], dtype=np.float32) / 255.0
 _WC_WATER = 80
+_WC_NO_SNOW = (10, 20, 80)  # trees, shrub, water — do not paint DGM snow on canopy
 
 # Muted alpine remap of ESA WorldCover classes (not the cartoony legend).
 WC_RGB = {
@@ -341,6 +346,171 @@ def _zoom_hw(arr: np.ndarray, size: int) -> np.ndarray:
     return zoom(arr, (size / arr.shape[0], size / arr.shape[1]), order=1)
 
 
+def _world_sample_grid(
+    elev: np.ndarray,
+    keep: np.ndarray,
+    meta: dict,
+    mesh_step_m: float,
+    z_order: int = 1,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Regular metric mesh grid. z_order=3 is cubic spline (not DEM-cell stride).
+
+    Stride-slicing ``elev[::k]`` is nearest-neighbour downsample and reads as
+    terraces on alpine slopes. Cubic samples the 2 m DGM at each vertex XY.
+    """
+    px, py = float(meta["px"]), float(meta["py"])
+    ox, oy = float(meta["origin_x"]), float(meta["origin_y"])
+    h0, w0 = elev.shape
+    x0 = ox + 0.5 * px
+    y0 = oy + 0.5 * py
+    x1 = ox + (w0 - 0.5) * px
+    y1 = oy + (h0 - 0.5) * py
+    step = max(1e-3, float(mesh_step_m))
+    nx = max(2, int(round(abs(x1 - x0) / step)) + 1)
+    ny = max(2, int(round(abs(y1 - y0) / step)) + 1)
+    xs = np.linspace(x0, x1, nx, dtype=np.float64)
+    ys = np.linspace(y0, y1, ny, dtype=np.float64)
+    xx, yy = np.meshgrid(xs, ys)
+    col = (xx - ox) / px - 0.5
+    row = (yy - oy) / py - 0.5
+    coords = np.vstack([row.ravel(), col.ravel()])
+    finite = np.isfinite(elev)
+    fill = float(np.nanmedian(elev)) if finite.any() else 0.0
+    zsrc = np.where(finite, elev, fill).astype(np.float64)
+    order = max(0, int(z_order))
+    z = map_coordinates(
+        zsrc,
+        coords,
+        order=order,
+        mode="nearest",
+        prefilter=order >= 3,
+    ).reshape(ny, nx)
+    k = map_coordinates(keep.astype(np.float32), coords, order=0, mode="nearest")
+    fin = map_coordinates(finite.astype(np.float32), coords, order=0, mode="nearest")
+    k = (k.reshape(ny, nx) > 0.5) & (fin.reshape(ny, nx) > 0.5) & np.isfinite(z)
+    return z, k, xs, ys
+
+
+def _align_to_grid(
+    src: np.ndarray,
+    src_meta: dict,
+    dst_shape: tuple[int, int],
+    dst_meta: dict,
+) -> np.ndarray:
+    """Bilinear-sample src onto the destination DGM grid."""
+    h, w = dst_shape
+    if src.shape == dst_shape and abs(float(src_meta.get("px", 0)) - float(dst_meta["px"])) < 0.05:
+        if (
+            abs(float(src_meta["origin_x"]) - float(dst_meta["origin_x"])) < 0.51
+            and abs(float(src_meta["origin_y"]) - float(dst_meta["origin_y"])) < 0.51
+        ):
+            return src
+    ox, oy = float(dst_meta["origin_x"]), float(dst_meta["origin_y"])
+    px, py = float(dst_meta["px"]), float(dst_meta["py"])
+    xs = ox + (np.arange(w, dtype=np.float64) + 0.5) * px
+    ys = oy + (np.arange(h, dtype=np.float64) + 0.5) * py
+    xx, yy = np.meshgrid(xs, ys)
+    col = (xx - float(src_meta["origin_x"])) / float(src_meta["px"]) - 0.5
+    row = (yy - float(src_meta["origin_y"])) / float(src_meta["py"]) - 0.5
+    coords = np.vstack([row.ravel(), col.ravel()])
+    finite = np.isfinite(src)
+    fill = float(np.nanmedian(src)) if finite.any() else 0.0
+    zsrc = np.where(finite, src, fill).astype(np.float64)
+    out = map_coordinates(zsrc, coords, order=1, mode="nearest", prefilter=False).reshape(h, w)
+    fin = map_coordinates(finite.astype(np.float32), coords, order=0, mode="nearest").reshape(h, w)
+    return np.where(fin > 0.5, out, np.nan)
+
+
+def _align_classes(
+    src: np.ndarray,
+    src_meta: dict,
+    dst_shape: tuple[int, int],
+    dst_meta: dict,
+) -> np.ndarray:
+    """Nearest-neighbor sample class rasters (WorldCover) onto a dest grid."""
+    h, w = dst_shape
+    if src.shape == dst_shape and abs(float(src_meta.get("px", 0)) - float(dst_meta["px"])) < 0.05:
+        if (
+            abs(float(src_meta["origin_x"]) - float(dst_meta["origin_x"])) < 0.51
+            and abs(float(src_meta["origin_y"]) - float(dst_meta["origin_y"])) < 0.51
+        ):
+            return src
+    ox, oy = float(dst_meta["origin_x"]), float(dst_meta["origin_y"])
+    px, py = float(dst_meta["px"]), float(dst_meta["py"])
+    xs = ox + (np.arange(w, dtype=np.float64) + 0.5) * px
+    ys = oy + (np.arange(h, dtype=np.float64) + 0.5) * py
+    xx, yy = np.meshgrid(xs, ys)
+    col = (xx - float(src_meta["origin_x"])) / float(src_meta["px"]) - 0.5
+    row = (yy - float(src_meta["origin_y"])) / float(src_meta["py"]) - 0.5
+    coords = np.vstack([row.ravel(), col.ravel()])
+    out = map_coordinates(src.astype(np.float64), coords, order=0, mode="nearest").reshape(h, w)
+    return np.rint(out).astype(np.uint8)
+
+
+def filter_near_canopy(ndsm: np.ndarray, cell_m: float, cfg: dict) -> np.ndarray:
+    """Drop <1 m, isolated masts (local-median spikes + tiny blobs), keep forest clumps."""
+    min_h = float(cfg.get("near_canopy_min_m", 1.0))
+    spike_m = float(cfg.get("near_canopy_spike_m", 8.0))
+    med_px = max(1, int(cfg.get("near_canopy_median_px", 5)))
+    min_area = float(cfg.get("near_canopy_min_area_m2", 40.0))
+    h = np.maximum(np.asarray(ndsm, dtype=np.float32), 0.0)
+    local = median_filter(h, size=med_px)
+    n_spike = int(np.sum(h > local + spike_m))
+    h = np.where(h > local + spike_m, local, h)
+    mask = h >= min_h
+    labeled, nlab = label(mask)
+    min_px = max(1, int(round(min_area / max(cell_m * cell_m, 1e-6))))
+    dropped = 0
+    if nlab:
+        counts = np.bincount(labeled.ravel())
+        keep_lbl = counts >= min_px
+        keep_lbl[0] = False
+        dropped = int(np.sum((counts[1:] > 0) & (counts[1:] < min_px)))
+        mask = keep_lbl[labeled]
+    out = np.where(mask, h, 0.0).astype(np.float32)
+    print(
+        f"near canopy >={min_h:.0f}m: {100.0 * float(mask.mean()):.1f}% of cells  "
+        f"max={float(out.max()):.1f}m  spikes={n_spike}  "
+        f"tiny blobs dropped={dropped} (<{min_px} px / {min_area:.0f} m²)"
+    )
+    return out
+
+
+def near_surface_with_canopy(
+    dgm: np.ndarray,
+    dgm_meta: dict,
+    site: dict,
+    cfg: dict,
+    proc: Path,
+) -> np.ndarray:
+    """DTM + filtered nDSM. Same mesh; Z bumps make the forest ridgeline."""
+    if not cfg.get("near_canopy", True):
+        print("near canopy skip: near_canopy=false")
+        return dgm
+    pack = load_near_dom(site)
+    if pack is None:
+        print("near canopy skip: no near DOM (fetch sources.dom)")
+        return dgm
+    dom, dom_meta = pack
+    dom_a = _align_to_grid(dom, dom_meta, dgm.shape, dgm_meta)
+    both = np.isfinite(dgm) & np.isfinite(dom_a)
+    ndsm = np.zeros(dgm.shape, dtype=np.float32)
+    ndsm[both] = np.maximum(dom_a[both] - dgm[both], 0.0).astype(np.float32)
+    cell = abs(float(dgm_meta["px"]))
+    canopy = filter_near_canopy(ndsm, cell, cfg)
+    hs, _ = _hillshade_slope(dgm, cell)
+    grey = (np.clip(hs, 0, 1) * 180).astype(np.float32)
+    prev = np.stack([grey, grey, grey], axis=-1)
+    t = np.clip(canopy / 25.0, 0.0, 1.0)[..., None]
+    tinted = (1.0 - 0.75 * t) * prev + 0.75 * t * np.array([40.0, 120.0, 50.0], dtype=np.float32)
+    Image.fromarray(np.clip(tinted, 0, 255).astype(np.uint8), mode="RGB").resize(
+        (min(dgm.shape[1], 1024), min(dgm.shape[0], 1024)),
+        Image.Resampling.BILINEAR,
+    ).save(proc / "preview_backdrop_near_canopy.png")
+    print(f"Wrote {proc / 'preview_backdrop_near_canopy.png'}")
+    return np.where(np.isfinite(dgm), dgm + canopy, dgm)
+
+
 def crop_to_extent(
     elev: np.ndarray, meta: dict, extent: tuple[float, float, float, float]
 ) -> np.ndarray:
@@ -378,6 +548,7 @@ def _snow_fraction(
     cell_m: float,
     snow_cfg: dict,
     wc: np.ndarray | None = None,
+    no_snow: np.ndarray | None = None,
 ) -> np.ndarray:
     finite = np.isfinite(elev)
     if not finite.any():
@@ -387,7 +558,10 @@ def _snow_fraction(
     snow, _, _ = compute_snow_proxy(z, float(cell_m), snow_cfg)
     snow = np.where(finite, snow, 0.0).astype(np.float32)
     if wc is not None and wc.shape == snow.shape:
-        snow = np.where(wc == _WC_WATER, 0.0, snow)
+        for code in _WC_NO_SNOW:
+            snow = np.where(wc == code, 0.0, snow)
+    if no_snow is not None and no_snow.shape == snow.shape:
+        snow = np.where(no_snow, 0.0, snow)
     return snow
 
 
@@ -400,11 +574,12 @@ def _tint_snow(
     snow_light: float,
     snow_heavy: float,
     wc: np.ndarray | None,
+    no_snow: np.ndarray | None = None,
 ) -> np.ndarray:
     """Lerp baked RGB toward biome snow colours using the DGM proxy."""
     if snow_cfg is None:
         return rgb
-    snow_img = _zoom_hw(_snow_fraction(elev, cell_m, snow_cfg, wc), size)
+    snow_img = _zoom_hw(_snow_fraction(elev, cell_m, snow_cfg, wc, no_snow), size)
     lo = float(snow_light)
     hi = float(snow_heavy)
     t = np.clip((snow_img - lo) / max(hi - lo, 1e-6), 0.0, 1.0)
@@ -412,6 +587,194 @@ def _tint_snow(
     col = (1.0 - t)[..., None] * _SNOW_LIGHT_RGB + t[..., None] * _SNOW_HEAVY_RGB
     amount = np.where(snow_img >= lo, 0.22 + 0.73 * t, 0.0)[..., None]
     return np.clip((1.0 - amount) * rgb + amount * col, 0.0, 1.0)
+
+
+# Sampled from the playable wedge (dry_meadow olive-brown) vs Swissimage green.
+_PLAYABLE_OLIVE = np.array([120, 108, 64], dtype=np.float32) / 255.0
+_SNOW_GRADE_RGB = np.array([245, 248, 255], dtype=np.float32) / 255.0
+
+
+def _detect_green_w(rgb: np.ndarray) -> np.ndarray:
+    r, g, b = rgb[..., 0], rgb[..., 1], rgb[..., 2]
+    share = g / (r + g + b + 1e-5)
+    return np.clip((share - (1.0 / 3.0)) / 0.03, 0.0, 1.0)
+
+
+def _tint_class(
+    rgb: np.ndarray, mask: np.ndarray, target: np.ndarray, mix: float, dark: float
+) -> np.ndarray:
+    graded = (1.0 - float(mix)) * rgb + float(mix) * target.astype(np.float32)
+    graded = graded * (1.0 - float(np.clip(dark, 0.0, 1.0)))
+    return np.where(mask[..., None], graded, rgb)
+
+
+def _forest_olive_rgb(cfg_or_rgb) -> np.ndarray:
+    raw = cfg_or_rgb
+    if isinstance(raw, dict):
+        raw = raw.get("forest_olive")
+    if raw is None:
+        return _PLAYABLE_OLIVE
+    arr = np.asarray(list(raw)[:3], dtype=np.float32)
+    if float(np.max(arr)) > 1.5:
+        arr = arr / 255.0
+    return arr
+
+
+def _apply_detect_grade(
+    rgb: np.ndarray,
+    elev: np.ndarray,
+    cell_m: float,
+    snow_cfg: dict | None,
+    snow_cut: float,
+    snow_mix: float,
+    grass_cut: float,
+    grass_mix: float,
+    grass_dark: float,
+    forest_mask: np.ndarray | None = None,
+    forest_mix: float | None = None,
+    forest_dark: float | None = None,
+    forest_olive: np.ndarray | None = None,
+) -> np.ndarray:
+    """Meadow olive, then BEV forest tint, snow on top."""
+    is_meadow = _detect_green_w(rgb) >= float(grass_cut)
+    forest = None
+    if forest_mask is not None:
+        forest = np.asarray(forest_mask, dtype=bool)
+        if forest.shape[:2] != rgb.shape[:2]:
+            forest = np.array(
+                Image.fromarray(forest.astype(np.uint8) * 255, mode="L").resize(
+                    (rgb.shape[1], rgb.shape[0]), Image.Resampling.NEAREST
+                )
+            ) > 127
+        is_meadow = is_meadow & ~forest
+    out = _tint_class(rgb, is_meadow, _PLAYABLE_OLIVE, grass_mix, grass_dark)
+    if forest is not None:
+        folive = forest_olive if forest_olive is not None else _PLAYABLE_OLIVE
+        fmix = grass_mix if forest_mix is None else float(forest_mix)
+        fdark = grass_dark if forest_dark is None else float(forest_dark)
+        out = _tint_class(out, forest, folive, fmix, fdark)
+    if snow_cfg is not None:
+        snow = _zoom_hw(_snow_fraction(elev, cell_m, snow_cfg, None, None), rgb.shape[0])
+        if snow.shape[:2] != rgb.shape[:2]:
+            snow = np.array(
+                Image.fromarray((np.clip(snow, 0, 1) * 255).astype(np.uint8)).resize(
+                    (rgb.shape[1], rgb.shape[0]), Image.Resampling.BILINEAR
+                ),
+                dtype=np.float32,
+            ) / 255.0
+        sm = float(np.clip(snow_mix, 0.0, 1.0)) * (snow >= float(snow_cut))
+        out = (1.0 - sm[..., None]) * out + sm[..., None] * _SNOW_GRADE_RGB
+    return np.clip(out, 0.0, 1.0)
+
+
+def _green_share_mask(rgb: np.ndarray) -> np.ndarray:
+    """Soft 0–1: G share of RGB above gray (1/3). Rock/snow ~0, meadow/forest high."""
+    r, g, b = rgb[..., 0], rgb[..., 1], rgb[..., 2]
+    tot = r + g + b + 1e-5
+    share = g / tot
+    return np.clip((share - (1.0 / 3.0) - 0.010) / 0.075, 0.0, 1.0).astype(np.float32)
+
+
+def _snow_block_map(
+    elev: np.ndarray,
+    cell_m: float,
+    size: int,
+    snow_cfg: dict | None,
+    snow_light: float,
+    wc: np.ndarray | None,
+    no_snow: np.ndarray | None = None,
+) -> np.ndarray:
+    """1 where the DGM snow proxy reaches compose snow_light (soft below)."""
+    if snow_cfg is None:
+        return np.zeros((size, size), dtype=np.float32)
+    snow = _zoom_hw(_snow_fraction(elev, cell_m, snow_cfg, wc, no_snow), size)
+    return np.clip(snow / max(float(snow_light), 1e-4), 0.0, 1.0).astype(np.float32)
+
+
+def _effect_mask(rgb: np.ndarray, snow_block: np.ndarray) -> np.ndarray:
+    return (_green_share_mask(rgb) * (1.0 - snow_block)).astype(np.float32)
+
+
+def _apply_base_color_masked(
+    rgb: np.ndarray, base_color: list[float] | None, mask: np.ndarray
+) -> np.ndarray:
+    if not base_color:
+        return rgb
+    bc = np.asarray(base_color[:3], dtype=np.float32)
+    if float(np.max(np.abs(bc - 1.0))) < 1e-3:
+        return rgb
+    m = mask.astype(np.float32)[..., None]
+    tinted = np.clip(rgb * bc, 0.0, 1.0)
+    return (1.0 - m) * rgb + m * tinted
+
+
+def _grade_playable_olive(rgb: np.ndarray, mix: float, mask: np.ndarray) -> np.ndarray:
+    w = mask.astype(np.float32) * float(mix)
+    return np.clip((1.0 - w[..., None]) * rgb + w[..., None] * _PLAYABLE_OLIVE, 0.0, 1.0)
+
+
+def _grade_ortho(rgb: np.ndarray, mode: str, mix: float, mask: np.ndarray) -> np.ndarray:
+    mode = (mode or "none").strip().lower()
+    if mode in ("playable_olive", "d"):
+        return _grade_playable_olive(rgb, mix, mask)
+    return rgb
+
+
+def _bbox_lip_weight(
+    elev: np.ndarray,
+    meta: dict,
+    size: int,
+    bbox: tuple[float, float, float, float],
+    fade_m: float,
+) -> np.ndarray:
+    """1 at the playable bbox edge, 0 by fade_m outside. Matches the near-ring seam."""
+    h0, w0 = elev.shape
+    px, py = float(meta["px"]), float(meta["py"])
+    ox, oy = float(meta["origin_x"]), float(meta["origin_y"])
+    xs = ox + np.linspace(0.5, w0 - 0.5, size, dtype=np.float64) * px
+    ys = oy + np.linspace(0.5, h0 - 0.5, size, dtype=np.float64) * py
+    xx, yy = np.meshgrid(xs, ys)
+    bx0, by0, bx1, by1 = (float(v) for v in bbox)
+    dx = np.maximum(bx0 - xx, 0.0) + np.maximum(xx - bx1, 0.0)
+    dy = np.maximum(by0 - yy, 0.0) + np.maximum(yy - by1, 0.0)
+    dist = np.sqrt(dx * dx + dy * dy)
+    fade = max(float(fade_m), 1.0)
+    return np.clip(1.0 - dist / fade, 0.0, 1.0).astype(np.float32)
+
+
+def _grade_near_lip(
+    rgb: np.ndarray, weight: np.ndarray, olive: float, darken: float, mask: np.ndarray
+) -> np.ndarray:
+    w = (weight * mask).astype(np.float32)[..., None]
+    out = (1.0 - float(olive) * w) * rgb + float(olive) * w * _PLAYABLE_OLIVE
+    return np.clip(out * (1.0 - float(darken) * w), 0.0, 1.0)
+
+
+def _normal_map(elev: np.ndarray, cell_m: float, size: int, strength: float = 0.65) -> np.ndarray:
+    """Tangent-space PNG (DirectX Y) from DEM slopes so ToD lights the ring like terrain."""
+    fill = float(np.nanmedian(elev)) if np.isfinite(elev).any() else 0.0
+    z = np.where(np.isfinite(elev), elev, fill).astype(np.float32)
+    z = gaussian_filter(z, sigma=1.4)
+    dz_dy, dz_dx = np.gradient(z, cell_m, cell_m)
+    dz_dy = -dz_dy
+    dx = _zoom_hw(dz_dx.astype(np.float32), size)
+    dy = _zoom_hw(dz_dy.astype(np.float32), size)
+    s = max(float(strength), 1e-4)
+    nx = -dx * s
+    ny = -dy * s
+    nz = np.ones_like(nx)
+    nlen = np.sqrt(nx * nx + ny * ny + nz * nz)
+    nlen = np.maximum(nlen, 1e-6)
+    nx, ny, nz = nx / nlen, ny / nlen, nz / nlen
+    rgb = np.stack(
+        [
+            nx * 0.5 + 0.5,
+            -ny * 0.5 + 0.5,
+            nz * 0.5 + 0.5,
+        ],
+        axis=-1,
+    )
+    return (np.clip(rgb, 0.0, 1.0) * 255.0).astype(np.uint8)
 
 
 def bake_texture(
@@ -424,6 +787,29 @@ def bake_texture(
     snow_cfg: dict | None = None,
     snow_light: float = 0.25,
     snow_heavy: float = 0.55,
+    ortho_grade: str = "none",
+    ortho_hillshade: float = 0.10,
+    ortho_gamma: float = 1.0,
+    olive_mix: float = 0.68,
+    elev_meta: dict | None = None,
+    playable_bbox: tuple[float, float, float, float] | None = None,
+    lip_fade_m: float = 0.0,
+    lip_olive: float = 0.40,
+    lip_darken: float = 0.12,
+    base_color: list[float] | None = None,
+    debug_green_black: bool = False,
+    no_snow: np.ndarray | None = None,
+    detect_grade: bool = False,
+    grass_cut: float = 0.5,
+    grass_mix: float = 0.4,
+    grass_dark: float = 0.4,
+    snow_cut: float = 0.50,
+    snow_mix: float = 0.65,
+    snow_elev: np.ndarray | None = None,
+    forest_mask: np.ndarray | None = None,
+    forest_mix: float | None = None,
+    forest_dark: float | None = None,
+    forest_olive: np.ndarray | None = None,
 ) -> np.ndarray:
     hs, steep = _hillshade_slope(elev, cell_m)
     tex_hs = _zoom_hw(hs.astype(np.float32), size)
@@ -436,9 +822,50 @@ def bake_texture(
                 Image.fromarray(ortho, mode="RGB").resize((size, size), Image.Resampling.BILINEAR)
             )
         rgb = ortho.astype(np.float32) / 255.0
-        # Photo is pre-lit; keep a darker floor so engine sun does not blow it out.
-        shade = float(albedo_gain) * (0.62 + 0.38 * tex_hs[..., None])
+        gamma = float(ortho_gamma)
+        if abs(gamma - 1.0) > 1e-4:
+            rgb = np.clip(rgb, 0.0, 1.0) ** gamma
+        # Photo is already sunlit. Keep albedo almost flat so ToD + normals shade it;
+        # albedo_gain still stops the engine sun from blowing the photo out.
+        amp = float(np.clip(ortho_hillshade, 0.0, 1.0))
+        shade = float(albedo_gain) * ((1.0 - amp) + amp * tex_hs[..., None])
         rgb = np.clip(rgb * shade, 0.0, 1.0)
+        snow_block = _snow_block_map(elev, cell_m, size, snow_cfg, snow_light, wc, no_snow)
+        if detect_grade:
+            raw = ortho.astype(np.float32) / 255.0
+            rgb = _apply_detect_grade(
+                raw,
+                snow_elev if snow_elev is not None else elev,
+                cell_m,
+                snow_cfg,
+                snow_cut,
+                snow_mix,
+                grass_cut,
+                grass_mix,
+                grass_dark,
+                forest_mask=forest_mask,
+                forest_mix=forest_mix,
+                forest_dark=forest_dark,
+                forest_olive=forest_olive,
+            )
+            rgb = np.clip(rgb * shade, 0.0, 1.0)
+            emask = np.zeros(rgb.shape[:2], dtype=np.float32)
+        elif debug_green_black:
+            r, g, b = rgb[..., 0], rgb[..., 1], rgb[..., 2]
+            share = g / (r + g + b + 1e-5)
+            w = np.clip((share - (1.0 / 3.0)) / 0.03, 0.0, 1.0)
+            rgb = rgb * (1.0 - w[..., None])
+            emask = np.zeros(rgb.shape[:2], dtype=np.float32)
+        else:
+            emask = _effect_mask(rgb, snow_block)
+            rgb = _grade_ortho(rgb, ortho_grade, olive_mix, emask)
+            if (
+                elev_meta is not None
+                and playable_bbox is not None
+                and float(lip_fade_m) > 0.0
+            ):
+                lip_w = _bbox_lip_weight(elev, elev_meta, size, playable_bbox, lip_fade_m)
+                rgb = _grade_near_lip(rgb, lip_w, lip_olive, lip_darken, emask)
     else:
         lut = np.zeros((256, 3), dtype=np.float32)
         # default alpine grey-green
@@ -471,10 +898,14 @@ def bake_texture(
             rgb = (1.0 - sn) * rgb + sn * snow
         shade = 0.52 + 0.48 * tex_hs[..., None]
         rgb = np.clip(rgb * shade, 0.0, 1.0)
+        snow_block = _snow_block_map(elev, cell_m, size, snow_cfg, snow_light, wc, no_snow)
+        emask = _effect_mask(rgb, snow_block)
 
-    rgb = _tint_snow(
-        rgb, elev, cell_m, size, snow_cfg, snow_light, snow_heavy, wc
-    )
+    if not detect_grade:
+        rgb = _tint_snow(
+            rgb, elev, cell_m, size, snow_cfg, snow_light, snow_heavy, wc, no_snow
+        )
+    rgb = _apply_base_color_masked(rgb, base_color, emask)
     return (rgb * 255.0).astype(np.uint8)
 
 
@@ -496,15 +927,11 @@ def build_meshes(
     snap_inner_bbox: bool = False,
     hm_rel: np.ndarray | None = None,
     lip_drop_m: float = 0.0,
+    z_order: int = 1,
 ) -> dict[str, tuple[list[tuple[float, float, float]], list[tuple[int, int, int]], list[tuple[float, float]]]]:
     """Quads assigned by face centre so N/S/E/W splits do not open radial gaps."""
-    px, py = float(meta["px"]), float(meta["py"])
-    stride = max(1, int(round(mesh_step_m / abs(px))))
-    z = elev[::stride, ::stride]
-    k = keep[::stride, ::stride]
+    z, k, xs, ys = _world_sample_grid(elev, keep, meta, mesh_step_m, z_order=z_order)
     h, w = z.shape
-    xs = float(meta["origin_x"]) + (np.arange(w, dtype=np.float64) * stride + 0.5) * px
-    ys = float(meta["origin_y"]) + (np.arange(h, dtype=np.float64) * stride + 0.5) * py
     if uv_bbox is None:
         uv_xmin, uv_ymin, uv_xmax, uv_ymax = [float(v) for v in meta["bbox"]]
     else:
@@ -700,33 +1127,174 @@ def write_collada(
     path.write_text(xml, encoding="utf-8", newline="\n")
 
 
-def write_material(path: Path, png_name: str, *, mat: str = MAT_NAME) -> None:
+def _tex_level_path(level_name: str, name: str) -> str:
+    if level_name:
+        return f"/levels/{level_name}/art/shapes/backdrop/{name}"
+    return name
+
+
+def write_material(
+    path: Path,
+    png_name: str,
+    *,
+    mat: str = MAT_NAME,
+    normal_name: str | None = None,
+    level_name: str = "",
+    base_color: list[float] | None = None,
+    detail_normal: str | None = None,
+    detail_scale: list[float] | None = None,
+) -> None:
     data: dict = {}
     if path.is_file() and path.stat().st_size:
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
             data = {}
+    stage: dict = {
+        "baseColorMap": _tex_level_path(level_name, png_name),
+        "baseColorFactor": list(base_color or [1.0, 1.0, 1.0])[:3] + [1.0],
+        "roughnessFactor": 0.88,
+        "metallicFactor": 0.0,
+        "emissiveFactor": [0.0, 0.0, 0.0],
+    }
+    if normal_name:
+        stage["normalMap"] = _tex_level_path(level_name, normal_name)
+    if detail_normal:
+        stage["detailNormalMap"] = detail_normal
+        stage["detailScale"] = list(detail_scale or [320.0, 320.0])
     data[mat] = {
         "name": mat,
         "mapTo": mat,
         "class": "Material",
         "persistentId": str(uuid.uuid5(uuid.NAMESPACE_URL, f"autoroad:backdrop:mat:{mat}")),
-        "Stages": [
-            {
-                "baseColorMap": png_name,
-                "baseColorFactor": [1.0, 1.0, 1.0, 1.0],
-                "roughnessFactor": 0.94,
-                "metallicFactor": 0.0,
-            },
-            {},
-            {},
-            {},
-        ],
+        "Stages": [stage, {}, {}, {}],
+        "annotation": "GRASS",
         "castShadows": False,
         "version": 1.5,
     }
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+
+def _write_ring_maps(
+    mesh_dir: Path,
+    *,
+    tex: np.ndarray,
+    nrm: np.ndarray,
+    tex_near: np.ndarray | None,
+    nrm_near: np.ndarray | None,
+    tex_mid: np.ndarray,
+    nrm_mid: np.ndarray,
+    level_name: str = "",
+    material_color: list[float] | None = None,
+    name_suffix: str = "",
+) -> tuple[str, str, str]:
+    png_name = f"backdrop_diffuse{name_suffix}.png"
+    png_n = f"backdrop_diffuse_n{name_suffix}.png"
+    png_near = f"backdrop_near{name_suffix}.png"
+    png_near_n = f"backdrop_near_n{name_suffix}.png"
+    png_mid = f"backdrop_mid{name_suffix}.png"
+    png_mid_n = f"backdrop_mid_n{name_suffix}.png"
+    mesh_dir.mkdir(parents=True, exist_ok=True)
+    mats_path = mesh_dir / "main.materials.json"
+    if mats_path.is_file():
+        mats_path.unlink()
+    Image.fromarray(tex, mode="RGB").save(mesh_dir / png_name)
+    Image.fromarray(nrm, mode="RGB").save(mesh_dir / png_n)
+    write_material(
+        mats_path,
+        png_name,
+        mat=MAT_NAME,
+        normal_name=png_n,
+        level_name=level_name,
+        base_color=material_color,
+    )
+    if tex_near is not None and nrm_near is not None:
+        Image.fromarray(tex_near, mode="RGB").save(mesh_dir / png_near)
+        Image.fromarray(nrm_near, mode="RGB").save(mesh_dir / png_near_n)
+        write_material(
+            mats_path,
+            png_near,
+            mat=MAT_NEAR,
+            normal_name=png_near_n,
+            level_name=level_name,
+            base_color=material_color,
+            detail_normal="/assets/materials/terrain/grass/ind_grass/t_ind_grass_nm.png",
+            detail_scale=[320.0, 320.0],
+        )
+    Image.fromarray(tex_mid, mode="RGB").save(mesh_dir / png_mid)
+    Image.fromarray(nrm_mid, mode="RGB").save(mesh_dir / png_mid_n)
+    write_material(
+        mats_path, png_mid, mat=MAT_MID, normal_name=png_mid_n, level_name=level_name, base_color=material_color
+    )
+    return png_name, png_near, png_mid
+
+
+def _tex_suffix(cfg: dict) -> str:
+    """New PNG names bust the engine filename cache."""
+    if cfg.get("detect_grade"):
+        src = "b" if str(cfg.get("forest_detect") or "green") == "bev" else "g"
+        return (
+            f"_m{int(round(float(cfg.get('grass_mix', 0.4)) * 100)):02d}"
+            f"d{int(round(float(cfg.get('grass_dark', 0.4)) * 100)):02d}"
+            f"s{int(round(float(cfg.get('snow_cut', 0.5)) * 100)):02d}"
+            f"{src}"
+            f"{int(round(float(cfg.get('forest_mix', 0.55)) * 100)):02d}"
+            f"{int(round(float(cfg.get('forest_dark', 0.28)) * 100)):02d}"
+        )
+    bits = []
+    if cfg.get("debug_green_black"):
+        bits.append("g2b")
+    if not cfg.get("snow_tint", True):
+        bits.append("ns")
+    return "_" + "".join(bits) if bits else ""
+
+
+def _retarget_dae_pngs(mesh_dir: Path, suffix: str) -> None:
+    """Point existing Collada init_from at the current albedo/normal filenames."""
+    pat = re.compile(r"(backdrop_(?:near|mid|diffuse)(?:_n)?)(?:_[A-Za-z0-9]+)?\.png")
+    n = 0
+    for path in mesh_dir.glob("backdrop*.dae"):
+        txt = path.read_text(encoding="utf-8")
+        nxt = pat.sub(lambda m: f"{m.group(1)}{suffix}.png", txt)
+        if nxt != txt:
+            path.write_text(nxt, encoding="utf-8", newline="\n")
+            n += 1
+    print(f"Retargeted {n} DAEs to *{suffix}.png")
+
+
+def _stamp_dae_cache(mesh_dir: Path, stamp: str) -> None:
+    marker = f"<!-- autoroad {stamp} -->"
+    n = 0
+    for path in mesh_dir.glob("backdrop*.dae"):
+        txt = path.read_text(encoding="utf-8")
+        start = txt.find("<!-- autoroad ")
+        if start >= 0:
+            end = txt.find("-->", start)
+            if end >= 0:
+                txt = txt[:start] + marker + txt[end + 3 :]
+            else:
+                txt = txt.replace("</COLLADA>", f"  {marker}\n</COLLADA>")
+        else:
+            txt = txt.replace("</COLLADA>", f"  {marker}\n</COLLADA>")
+        path.write_text(txt, encoding="utf-8", newline="\n")
+        n += 1
+    print(f"Stamped {n} DAEs cache={stamp}")
+
+
+def _copy_backdrop_textures(level_name: str, mesh_dir: Path, *, also_dae: bool = False) -> None:
+    user_level = USER_LEVELS / level_name
+    if not user_level.is_dir():
+        print(f"Level folder missing: {user_level} - maps in processed only")
+        return
+    art = user_level / "art" / "shapes" / "backdrop"
+    art.mkdir(parents=True, exist_ok=True)
+    n = 0
+    suffixes = {".png", ".json", ".dae"} if also_dae else {".png", ".json"}
+    for src in mesh_dir.iterdir():
+        if src.suffix.lower() in suffixes:
+            (art / src.name).write_bytes(src.read_bytes())
+            n += 1
+    print(f"Copied {n} backdrop files -> {art}")
 
 
 def _read_ndjson(path: Path) -> list[dict]:
@@ -881,6 +1449,11 @@ def main() -> None:
     ap.add_argument("--skip-worldcover", action="store_true")
     ap.add_argument("--skip-ortho", action="store_true")
     ap.add_argument("--skip-near-dgm", action="store_true")
+    ap.add_argument(
+        "--textures-only",
+        action="store_true",
+        help="Rebake PNG/materials only (no viewshed or mesh). Faster lighting iteration.",
+    )
     args = ap.parse_args()
 
     site = load_site()
@@ -905,7 +1478,15 @@ def main() -> None:
     else:
         if not args.skip_near_dgm:
             fetch_near_dgm(site)
+            fetch_near_dom(site)
         if not args.skip_ortho:
+            fetch_swissimage_ortho(
+                site,
+                dest=near_ortho_path(site),
+                size=int(cfg["near_texture_size"]),
+                extent=near_extent(site),
+                label="Swissimage near",
+            )
             fetch_swissimage_ortho(
                 site,
                 dest=mid_ortho_path(site),
@@ -918,17 +1499,25 @@ def main() -> None:
     z0 = _heightmap_z0(site)
     print(f"DEM {elev.shape} z={np.nanmin(elev):.1f}..{np.nanmax(elev):.1f}  playable z0={z0:.2f}")
 
-    count, observers = compute_viewshed(elev, meta, site, cfg)
-    keep_far = keep_far_mask(elev, count, meta, site, cfg)
-    keep_mid = keep_mid_mask(elev, meta, site, cfg)
-    keep_near = keep_near_mask(elev, meta, site, cfg)
-    print(
-        f"far keep={int(keep_far.sum())}/{keep_far.size} "
-        f"({100.0 * keep_far.mean():.1f}%)  "
-        f"mid keep={int(keep_mid.sum())}  "
-        f"near keep={int(keep_near.sum())}  "
-        f"near={cfg['near_m']:.0f}m mid={cfg['mid_m']:.0f}m"
-    )
+    if args.textures_only:
+        count = np.zeros(elev.shape, dtype=np.uint16)
+        observers = []
+        keep_far = np.zeros(elev.shape, dtype=bool)
+        keep_mid = np.zeros(elev.shape, dtype=bool)
+        keep_near = np.zeros(elev.shape, dtype=bool)
+        print("textures-only: skip viewshed")
+    else:
+        count, observers = compute_viewshed(elev, meta, site, cfg)
+        keep_far = keep_far_mask(elev, count, meta, site, cfg)
+        keep_mid = keep_mid_mask(elev, meta, site, cfg)
+        keep_near = keep_near_mask(elev, meta, site, cfg)
+        print(
+            f"far keep={int(keep_far.sum())}/{keep_far.size} "
+            f"({100.0 * keep_far.mean():.1f}%)  "
+            f"mid keep={int(keep_mid.sum())}  "
+            f"near keep={int(keep_near.sum())}  "
+            f"near={cfg['near_m']:.0f}m mid={cfg['mid_m']:.0f}m"
+        )
 
     wc = None
     wc_p = worldcover_path(site)
@@ -957,14 +1546,19 @@ def main() -> None:
         print(f"Ortho mid {mop.name} {ortho_mid.shape}")
 
     snow_cfg, snow_light, snow_heavy = _snow_compose_cfg(site)
+    if not cfg.get("snow_tint", True) and not cfg.get("detect_grade"):
+        snow_cfg = None
+        print("backdrop snow tint OFF")
     cell_m = abs(float(meta["px"]))
     if snow_cfg is not None:
+        snow_raw = _snow_fraction(elev, cell_m, snow_cfg, None)
         snow_far = _snow_fraction(elev, cell_m, snow_cfg, wc)
         print(
             f"backdrop snow preset={snow_cfg['preset']}  "
             f"light={snow_light:.2f} heavy={snow_heavy:.2f}  "
-            f"far ≥light={100.0 * float((snow_far >= snow_light).mean()):.1f}%  "
-            f"≥heavy={100.0 * float((snow_far >= snow_heavy).mean()):.1f}%"
+            f"far raw>=light={100.0 * float((snow_raw >= snow_light).mean()):.1f}%  "
+            f"wc-excl>=light={100.0 * float((snow_far >= snow_light).mean()):.1f}%  "
+            f">=heavy={100.0 * float((snow_far >= snow_heavy).mean()):.1f}%"
         )
         hs_s, _ = _hillshade_slope(elev, cell_m)
         grey = (np.clip(hs_s, 0, 1) * 180).astype(np.float32)
@@ -985,6 +1579,47 @@ def main() -> None:
         snow_light=snow_light,
         snow_heavy=snow_heavy,
         albedo_gain=float(cfg["albedo_gain"]),
+        ortho_grade=str(cfg.get("ortho_grade") or "none"),
+        ortho_hillshade=float(cfg.get("ortho_hillshade", 0.10)),
+        ortho_gamma=float(cfg.get("ortho_gamma", 1.0)),
+        olive_mix=float(cfg.get("olive_mix", 0.68)),
+        base_color=list(cfg.get("base_color") or [1.0, 1.0, 1.0]),
+        debug_green_black=bool(cfg.get("debug_green_black", False)),
+        detect_grade=bool(cfg.get("detect_grade", False)),
+        grass_cut=float(cfg.get("grass_cut", 0.5)),
+        grass_mix=float(cfg.get("grass_mix", 0.4)),
+        grass_dark=float(cfg.get("grass_dark", 0.4)),
+        snow_cut=float(cfg.get("snow_cut", 0.50)),
+        snow_mix=float(cfg.get("snow_mix", 0.65)),
+        forest_mix=float(cfg.get("forest_mix", cfg.get("grass_mix", 0.55))),
+        forest_dark=float(cfg.get("forest_dark", cfg.get("grass_dark", 0.28))),
+        forest_olive=_forest_olive_rgb(cfg),
+    )
+    use_bev = bool(cfg.get("detect_grade")) and str(cfg.get("forest_detect") or "green") == "bev"
+    if use_bev:
+        from fetch_bev_landcover import load_bev_forest_mask  # noqa: WPS433
+
+        print("detect-grade forest class = BEV hoch+mittel")
+    nrm_strength = float(cfg.get("normal_strength", 0.65))
+    print(
+        f"ortho grade={bake_kw['ortho_grade']} mix={bake_kw['olive_mix']:.2f}  "
+        f"gain={float(cfg['albedo_gain']):.2f} gamma={bake_kw['ortho_gamma']:.2f}  "
+        f"hillshade={bake_kw['ortho_hillshade']:.2f}  "
+        f"normal={nrm_strength:.2f} near_n={int(cfg.get('near_normal_size') or cfg['near_texture_size'])}  "
+        f"lip={float(cfg.get('lip_fade_m', 800.0)):.0f}m"
+        + ("  DEBUG green->black" if bake_kw.get("debug_green_black") else "")
+        + (
+            f"  detect-grade forest={cfg.get('forest_detect', 'green')} "
+            f"mix={bake_kw['grass_mix']:.2f}/{bake_kw['grass_dark']:.2f} "
+            f"snow-cut={bake_kw['snow_cut']:.2f} snow-mix={bake_kw['snow_mix']:.2f}"
+            if bake_kw.get("detect_grade")
+            else ""
+        )
+    )
+    far_forest = (
+        load_bev_forest_mask(site, (int(cfg["texture_size"]), int(cfg["texture_size"])), padded_extent(site))
+        if use_bev
+        else None
     )
     tex = bake_texture(
         elev,
@@ -992,10 +1627,13 @@ def main() -> None:
         cell_m,
         int(cfg["texture_size"]),
         ortho=ortho,
+        forest_mask=far_forest,
         **bake_kw,
     )
+    nrm = _normal_map(elev, cell_m, int(cfg["texture_size"]), nrm_strength)
     near_pack = None if args.skip_near_dgm else load_near_dgm(site)
     tex_near = None
+    nrm_near = None
     near_meshes: dict = {}
     keep_near_mesh = None
     if near_pack is None:
@@ -1003,32 +1641,114 @@ def main() -> None:
     else:
         near_elev, near_meta = near_pack
         keep_near_mesh = keep_near_mask(near_elev, near_meta, site, cfg)
+        near_surf = near_surface_with_canopy(near_elev, near_meta, site, cfg, proc)
         hm_n = int((site.get("beamng") or {}).get("mask_size") or 0)
         hm_rel, _max_h, hm_label = load_composed_or_dgm(processed_dir(site), hm_n)
         print(
             f"near DGM {near_elev.shape} keep={int(keep_near_mesh.sum())}/"
             f"{keep_near_mesh.size} "
             f"z={float(np.nanmin(near_elev)):.1f}..{float(np.nanmax(near_elev)):.1f} "
+            f"surf={float(np.nanmin(near_surf)):.1f}..{float(np.nanmax(near_surf)):.1f} "
             f"lip={hm_label}"
         )
+        near_wc = (
+            _align_classes(wc, meta, near_elev.shape, near_meta) if wc is not None else None
+        )
+        canopy_m = np.nan_to_num(near_surf.astype(np.float32) - near_elev.astype(np.float32), nan=0.0)
+        no_snow_near = canopy_m >= 1.0
+        if near_wc is not None:
+            print(
+                f"near snow exclude  wc10/20/80="
+                f"{int(((near_wc == 10) | (near_wc == 20) | (near_wc == 80)).sum())}  "
+                f"canopy>=1m={int(no_snow_near.sum())}"
+            )
+        near_sz = int(cfg["near_texture_size"])
+        near_forest = (
+            load_bev_forest_mask(site, (near_sz, near_sz), near_extent(site)) if use_bev else None
+        )
         tex_near = bake_texture(
-            near_elev,
-            None,
+            near_surf,
+            near_wc,
             abs(float(near_meta["px"])),
-            int(cfg["near_texture_size"]),
+            near_sz,
             ortho=ortho_near if ortho_near is not None else ortho,
+            elev_meta=near_meta,
+            playable_bbox=tuple(float(v) for v in site["bbox"]),
+            lip_fade_m=float(cfg.get("lip_fade_m", 800.0)),
+            lip_olive=float(cfg.get("lip_olive", 0.40)),
+            lip_darken=float(cfg.get("lip_darken", 0.12)),
+            no_snow=no_snow_near,
+            snow_elev=near_elev,
+            forest_mask=near_forest,
             **bake_kw,
+        )
+        if cfg.get("debug_lip_stripe"):
+            lip_w = _bbox_lip_weight(
+                near_surf,
+                near_meta,
+                tex_near.shape[0],
+                tuple(float(v) for v in site["bbox"]),
+                120.0,
+            )
+            tex_near = tex_near.copy()
+            tex_near[lip_w >= 0.35] = (220, 0, 180)
+            print("debug lip stripe ON (magenta) — texture-load test")
+        nrm_near = _normal_map(
+            near_surf,
+            abs(float(near_meta["px"])),
+            int(cfg.get("near_normal_size") or cfg["near_texture_size"]),
+            nrm_strength,
         )
     mid_elev = crop_to_extent(elev, meta, mid_extent(site))
     mid_wc = crop_to_extent(wc, meta, mid_extent(site)) if wc is not None else None
+    mid_sz = int(cfg["mid_texture_size"])
+    mid_forest = (
+        load_bev_forest_mask(site, (mid_sz, mid_sz), mid_extent(site)) if use_bev else None
+    )
     tex_mid = bake_texture(
         mid_elev,
         mid_wc,
         cell_m,
-        int(cfg["mid_texture_size"]),
+        mid_sz,
         ortho=ortho_mid if ortho_mid is not None else ortho,
+        forest_mask=mid_forest,
         **bake_kw,
     )
+    nrm_mid = _normal_map(mid_elev, cell_m, int(cfg["mid_texture_size"]), nrm_strength)
+    if args.textures_only:
+        Image.fromarray(tex, mode="RGB").save(proc / "preview_backdrop_diffuse.png")
+        if tex_near is not None:
+            Image.fromarray(tex_near, mode="RGB").save(proc / "preview_backdrop_near.png")
+        if nrm_near is not None:
+            Image.fromarray(nrm_near, mode="RGB").save(proc / "preview_backdrop_near_n.png")
+        Image.fromarray(tex_mid, mode="RGB").save(proc / "preview_backdrop_mid.png")
+        mesh_dir = proc / "backdrop_meshes"
+        _write_ring_maps(
+            mesh_dir,
+            tex=tex,
+            nrm=nrm,
+            tex_near=tex_near,
+            nrm_near=nrm_near,
+            tex_mid=tex_mid,
+            nrm_mid=nrm_mid,
+            level_name=level_name,
+            material_color=[1.0, 1.0, 1.0],
+            name_suffix=_tex_suffix(cfg),
+        )
+        stamp = (
+            f"gain{float(cfg['albedo_gain']):.2f}"
+            f"_g{float(cfg.get('ortho_gamma', 1.0)):.2f}"
+            f"_n{int(cfg.get('near_normal_size') or cfg['near_texture_size'])}"
+            f"{_tex_suffix(cfg)}"
+        )
+        _retarget_dae_pngs(mesh_dir, _tex_suffix(cfg))
+        _stamp_dae_cache(mesh_dir, stamp)
+        if args.no_inject:
+            print("Skipped level inject (--no-inject)")
+            return
+        _copy_backdrop_textures(level_name, mesh_dir, also_dae=True)
+        print("Backdrop textures+DAE retargeted (no remesh).")
+        return
     write_previews(
         proc,
         elev,
@@ -1047,20 +1767,30 @@ def main() -> None:
     print(f"Meshing far step={cfg['mesh_step_m']} m ...")
     meshes = build_meshes(elev, keep_far, meta, sc, z0, float(cfg["mesh_step_m"]))
     if keep_near_mesh is not None:
-        print(f"Meshing near step={cfg['near_step_m']} m (Tirol DGM, lip drop) ...")
+        print(
+            f"Meshing near step={cfg['near_step_m']} m cubic spline "
+            f"(Tirol DGM+canopy, lip drop, tiles={int(cfg['near_tiles'])}) ..."
+        )
         near_meshes = build_meshes(
-            near_elev,
+            near_surf,
             keep_near_mesh,
             near_meta,
             sc,
             z0,
             float(cfg["near_step_m"]),
-            split_quadrants=True,
+            split_tiles=int(cfg["near_tiles"]),
             uv_bbox=near_extent(site),
             snap_inner_bbox=True,
             hm_rel=hm_rel,
             lip_drop_m=float(cfg["near_lip_drop_m"]),
+            z_order=3,
         )
+        for q, (verts, _faces, _uvs) in near_meshes.items():
+            if len(verts) > COLLADA_MAX_VERTS:
+                print(
+                    f"  WARN {q}: {len(verts)} verts > {COLLADA_MAX_VERTS} "
+                    "(raise near_tiles or near_step_m)"
+                )
     print(f"Meshing mid step={cfg['mid_step_m']} m (Copernicus, always-keep) ...")
     mid_meshes = build_meshes(
         elev,
@@ -1075,25 +1805,24 @@ def main() -> None:
     if not meshes and not near_meshes and not mid_meshes:
         raise SystemExit("No backdrop triangles - viewshed mask empty?")
 
-    png_name = "backdrop_diffuse.png"
-    png_near = "backdrop_near.png"
-    png_mid = "backdrop_mid.png"
     mesh_dir = proc / "backdrop_meshes"
     mesh_dir.mkdir(parents=True, exist_ok=True)
     for leftover in mesh_dir.glob("backdrop_near_*.dae"):
         leftover.unlink()
     for leftover in mesh_dir.glob("backdrop_mid_*.dae"):
         leftover.unlink()
-    Image.fromarray(tex, mode="RGB").save(mesh_dir / png_name)
-    mats_path = mesh_dir / "main.materials.json"
-    if mats_path.is_file():
-        mats_path.unlink()
-    write_material(mats_path, png_name, mat=MAT_NAME)
-    if tex_near is not None:
-        Image.fromarray(tex_near, mode="RGB").save(mesh_dir / png_near)
-        write_material(mats_path, png_near, mat=MAT_NEAR)
-    Image.fromarray(tex_mid, mode="RGB").save(mesh_dir / png_mid)
-    write_material(mats_path, png_mid, mat=MAT_MID)
+    png_name, png_near, png_mid = _write_ring_maps(
+        mesh_dir,
+        level_name=level_name,
+        tex=tex,
+        nrm=nrm,
+        tex_near=tex_near,
+        nrm_near=nrm_near,
+        tex_mid=tex_mid,
+        nrm_mid=nrm_mid,
+        material_color=[1.0, 1.0, 1.0],
+        name_suffix=_tex_suffix(cfg),
+    )
 
     ts_entries = []
     for q, (verts, faces, uvs) in meshes.items():
@@ -1159,7 +1888,7 @@ def main() -> None:
     inject_backdrop(level_name, ts_entries)
     ensure_visible_distance(level_name, float(cfg["radius_m"]) + 0.6 * sc.terrain_extent)
     print(f"Injected {len(ts_entries)} backdrop TSStatics -> {level_name}")
-    print("Reload the level in BeamNG (do not save over items.level.json from an old session).")
+    print("Quit BeamNG fully and restart (do not save over items.level.json from an old session).")
 
 
 if __name__ == "__main__":

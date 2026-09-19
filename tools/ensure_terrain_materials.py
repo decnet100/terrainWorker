@@ -6,6 +6,7 @@ Recreates the editor recipes without World Editor:
                  → t_terrain_base_drymeadow_b.png
   ForestFloor  — clone Grass, baseColor = 50/50 mix of grass_b + mud_b
                  → t_terrain_base_mudgrass_b.png
+  SnowTirol    — clone snow, same maps, stronger ToD (less roughness, more normals)
 
 Usage:
   cd C:\\temp\\beamng_autoroad
@@ -44,6 +45,7 @@ USER_LEVELS = (
 _PID = {
     "dry_meadow": "34b8bfb3-909b-43a1-b3ef-7ebb45c3355e",
     "ForestFloor": "46d57ba4-2a05-43a7-825e-030a18f95409",
+    "SnowTirol": "7c1e9a20-4b6d-4f11-9a8e-2d5f0c8b1e44",
 }
 
 # Strength tweaks from the hand-tuned Fernpass materials
@@ -54,6 +56,16 @@ _DRY_MEADOW_TUNING = {
     "normalMacroStrength": [0.5, 0.3],
     "roughnessDetailStrength": [1.0, 0.0],
     "roughnessMacroStrength": [0.5, 0.5],
+}
+
+# Stock snow is very matte (roughness 0.8) and takes little sun. Meet the backdrop.
+_SNOW_TIROL_TUNING = {
+    "baseColorDetailStrength": [0.22, 0.0],
+    "baseColorMacroStrength": [0.22, 0.35],
+    "normalDetailStrength": [0.85, 0.1],
+    "normalMacroStrength": [1.0, 0.25],
+    "roughnessDetailStrength": [0.35, 0.0],
+    "roughnessMacroStrength": [0.30, 0.30],
 }
 
 _FOREST_FLOOR_TUNING = {
@@ -85,14 +97,18 @@ def _find_by_internal(data: dict[str, Any], name: str) -> tuple[str | None, dict
     return None, None
 
 
-def _clone_grass(data: dict[str, Any], level_name: str) -> dict[str, Any]:
-    _key, grass = _find_by_internal(data, "Grass")
-    if grass is None:
+def _clone_named(data: dict[str, Any], internal: str, level_name: str) -> dict[str, Any]:
+    _key, block = _find_by_internal(data, internal)
+    if block is None:
         raise SystemExit(
-            f"TerrainMaterial 'Grass' missing in level {level_name} — "
+            f"TerrainMaterial {internal!r} missing in level {level_name} — "
             "run tools/setup_beamng_level.py first"
         )
-    return dict(grass)
+    return dict(block)
+
+
+def _clone_grass(data: dict[str, Any], level_name: str) -> dict[str, Any]:
+    return _clone_named(data, "Grass", level_name)
 
 
 def _rewrite_level_paths(block: dict[str, Any], level_name: str) -> dict[str, Any]:
@@ -215,6 +231,37 @@ def ensure_forest_floor(data: dict[str, Any], terr: Path, level_name: str) -> No
     print("Ensured TerrainMaterial ForestFloor (Grass + mudgrass 50/50 baseColor)")
 
 
+def _dim_png(src: Path, dest: Path, gain: float) -> None:
+    rgb = np.asarray(Image.open(src).convert("RGB"), dtype=np.float32)
+    out = np.clip(rgb * float(gain), 0, 255).astype(np.uint8)
+    Image.fromarray(out, mode="RGB").save(dest)
+    print(
+        f"Wrote {dest.name}  albedo_gain={gain:.2f}  "
+        f"mean {rgb.mean():.0f} -> {out.mean():.0f}"
+    )
+
+
+def ensure_snow_tirol(data: dict[str, Any], terr: Path, level_name: str) -> None:
+    site = load_site()
+    gain = float((site.get("beamng") or {}).get("snow_albedo_gain", 0.75))
+    src = terr / "t_terrain_base_snow_b.png"
+    dest = terr / "t_terrain_base_snowtirol_b.png"
+    if not src.is_file():
+        raise SystemExit(f"Missing {src} — template snow base color")
+    _dim_png(src, dest, gain)
+    block = _rewrite_level_paths(_clone_named(data, "snow", level_name), level_name)
+    base = f"/levels/{level_name}/art/terrains"
+    block["baseColorBaseTex"] = f"{base}/{dest.name}"
+    block["annotation"] = "SNOW"
+    block["groundmodelName"] = "SNOW"
+    block.update(_SNOW_TIROL_TUNING)
+    _upsert(data, "SnowTirol", block)
+    print(
+        f"Ensured TerrainMaterial SnowTirol  albedo_gain={gain:.2f}  "
+        "(darker base = more sun/sky color)"
+    )
+
+
 def ensure_terrain_materials(user_level: Path, level_name: str) -> None:
     terr = user_level / "art" / "terrains"
     mats_path = terr / "main.materials.json"
@@ -223,6 +270,7 @@ def ensure_terrain_materials(user_level: Path, level_name: str) -> None:
     data = _load_mats(mats_path)
     ensure_dry_meadow(data, terr, level_name)
     ensure_forest_floor(data, terr, level_name)
+    ensure_snow_tirol(data, terr, level_name)
     mats_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
     print(f"Wrote {mats_path}")
 

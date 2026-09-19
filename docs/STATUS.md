@@ -44,7 +44,9 @@ Multi-map session (first portal switch): [ROADTRIP_TYROL.md](ROADTRIP_TYROL.md).
 
 ### Backdrop (horizon)
 
-- Three-ring Collada TSStatics (near Tirol DGM, mid/far Copernicus GLO-30 + viewshed). Fernpass Mega and Reschen are wired. Snow overlay uses the same DGM proxy as biomes. POC, already injects — [BACKDROP.md](BACKDROP.md)
+- Three-ring Collada TSStatics (near Tirol DGM + canopy, mid/far Copernicus GLO-30 + viewshed). Fernpass Mega and Reschen are wired.
+- Reschen detect-grade: meadow green-share + BEV hoch/mittel forest (near-ring WMS) + snow-proxy class. PNG previews before remesh — [BACKDROP.md](BACKDROP.md)
+- Playable snow: `SnowTirol` clone, `snow_albedo_gain` for ToD colour — [BEAMNG_IMPORT.md](BEAMNG_IMPORT.md#playable-snow-snowtirol)
 
 ### Other tools (present, still evolving)
 

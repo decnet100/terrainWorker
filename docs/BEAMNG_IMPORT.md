@@ -129,6 +129,25 @@ Preview after build: `preview_terrain_materials.png`.
 
 Official docs: [Terrain / heightmaps](https://docs.beamng.com/modding/levels/level_creation/section2/)
 
+### Playable snow (`SnowTirol`)
+
+Stock terrain `snow` is almost white (base albedo mean ~212/255) and very matte. It takes **little Time-of-Day / sky colour** compared with the backdrop (photo × `albedo_gain` on a normal PBR material). Do not edit stock `snow` — clone it.
+
+`tools/ensure_terrain_materials.py` writes `SnowTirol` (same maps, groundmodel `SNOW`):
+
+- darker base PNG `t_terrain_base_snowtirol_b.png` via `beamng.snow_albedo_gain` (Reschen `0.75` → mean ~159). **This is the colour-reception knob.** Lower = more sunset/sky tint. `1.0` = stock chalk.
+- less `roughness*Strength`, more `normal*Strength` (sheen / slope light — not the same as tint).
+
+Reschen: `snow_material: SnowTirol`. After the first name change, re-import `import/terrainPreset.json` so layer 8 is `SnowTirol`. Later albedo-gain tweaks only need:
+
+```powershell
+cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/reschen.yaml"; python tools\ensure_terrain_materials.py
+```
+
+Then **quit BeamNG** (materials stay in memory). No heightmap re-import.
+
+`compose_biomes.py` maps `SnowTirol` → groundmodel `SNOW`.
+
 ---
 
 ## 3. Guardrails

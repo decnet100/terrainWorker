@@ -76,12 +76,19 @@ def backdrop_cfg(site: dict) -> dict:
         "min_views": int(raw.get("min_views", 1)),
         "mesh_step_m": float(raw.get("mesh_step_m", 120.0)),
         "hole_pad_m": float(raw.get("hole_pad_m", 30.0)),
-        "near_m": float(raw.get("near_m", 1000.0)),
+        "near_m": float(raw.get("near_m", 2000.0)),
         "near_step_m": float(raw.get("near_step_m", 10.0)),
         "near_dgm_res_m": float(raw.get("near_dgm_res_m", 2.0)),
         "near_overlap_m": float(raw.get("near_overlap_m", 80.0)),
         "near_lip_drop_m": float(raw.get("near_lip_drop_m", 1.0)),
         "near_texture_size": int(raw.get("near_texture_size", 2048)),
+        "near_normal_size": int(raw.get("near_normal_size") or raw.get("near_texture_size") or 2048),
+        "near_tiles": int(raw.get("near_tiles", 3)),
+        "near_canopy": bool(raw.get("near_canopy", True)),
+        "near_canopy_min_m": float(raw.get("near_canopy_min_m", 1.0)),
+        "near_canopy_spike_m": float(raw.get("near_canopy_spike_m", 8.0)),
+        "near_canopy_median_px": int(raw.get("near_canopy_median_px", 5)),
+        "near_canopy_min_area_m2": float(raw.get("near_canopy_min_area_m2", 40.0)),
         "mid_m": float(raw.get("mid_m", 10000.0)),
         "mid_step_m": float(raw.get("mid_step_m", 50.0)),
         "mid_overlap_m": float(raw.get("mid_overlap_m", 150.0)),
@@ -91,6 +98,31 @@ def backdrop_cfg(site: dict) -> dict:
         "curvature_cc": float(raw.get("curvature_cc", 0.85714)),
         "texture_size": int(raw.get("texture_size", 2048)),
         "albedo_gain": float(raw.get("albedo_gain", 0.58)),
+        # >1 darkens midtones of the ortho (probe the pale-green seam).
+        "ortho_gamma": float(raw.get("ortho_gamma", 1.0)),
+        # 0 = flat albedo (engine + mesh/normal do the light). Old bake was 0.38.
+        "ortho_hillshade": float(raw.get("ortho_hillshade", 0.10)),
+        "normal_strength": float(raw.get("normal_strength", 0.32)),
+        # none | playable_olive (D): pull Swissimage greens toward dry_meadow olive
+        "ortho_grade": str(raw.get("ortho_grade") or "none").strip().lower(),
+        "olive_mix": float(raw.get("olive_mix", 0.68)),
+        "lip_fade_m": float(raw.get("lip_fade_m", 800.0)),
+        "lip_olive": float(raw.get("lip_olive", 0.40)),
+        "lip_darken": float(raw.get("lip_darken", 0.12)),
+        "debug_lip_stripe": bool(raw.get("debug_lip_stripe", False)),
+        "debug_green_black": bool(raw.get("debug_green_black", False)),
+        "snow_tint": bool(raw.get("snow_tint", True)),
+        "detect_grade": bool(raw.get("detect_grade", False)),
+        "forest_detect": str(raw.get("forest_detect") or "green").strip().lower(),
+        "grass_cut": float(raw.get("grass_cut", 0.5)),
+        "grass_mix": float(raw.get("grass_mix", 0.55)),
+        "grass_dark": float(raw.get("grass_dark", 0.4)),
+        "forest_mix": float(raw.get("forest_mix", raw.get("grass_mix", 0.55))),
+        "forest_dark": float(raw.get("forest_dark", raw.get("grass_dark", 0.4))),
+        "forest_olive": [float(v) for v in (raw.get("forest_olive") or [72, 88, 52])],
+        "snow_cut": float(raw.get("snow_cut", 0.40)),
+        "snow_mix": float(raw.get("snow_mix", 0.65)),
+        "base_color": [float(v) for v in (raw.get("base_color") or [1.0, 1.0, 1.0])],
         "extra_peaks": int(raw.get("extra_peaks", 4)),
     }
 
@@ -105,6 +137,30 @@ def padded_extent(site: dict) -> tuple[float, float, float, float]:
     cx, cy = site_center(site)
     r = cfg["radius_m"]
     return cx - r, cy - r, cx + r, cy + r
+
+
+def _extent_matches(
+    meta: dict | None,
+    extent: tuple[float, float, float, float],
+    *,
+    tol_m: float = 30.0,
+) -> bool:
+    if not meta:
+        return False
+    stored = meta.get("request_bbox") or meta.get("extent") or meta.get("bbox")
+    if not stored or len(stored) != 4:
+        return False
+    return all(abs(float(a) - float(b)) <= tol_m for a, b in zip(stored, extent))
+
+
+def _read_json(path: Path) -> dict | None:
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
 
 
 def near_extent(site: dict) -> tuple[float, float, float, float]:
@@ -143,8 +199,16 @@ def mid_ortho_path(site: dict) -> Path:
 
 
 def near_dgm_paths(site: dict) -> tuple[Path, Path]:
+    return near_raster_paths(site, "dgm")
+
+
+def near_dom_paths(site: dict) -> tuple[Path, Path]:
+    return near_raster_paths(site, "dom")
+
+
+def near_raster_paths(site: dict, kind: str) -> tuple[Path, Path]:
     proc = processed_dir(site)
-    return proc / "backdrop_near_dgm.tif", proc / "backdrop_near_dgm.meta.json"
+    return proc / f"backdrop_near_{kind}.tif", proc / f"backdrop_near_{kind}.meta.json"
 
 
 def _read_geotiff(path: Path, *, max_dim: int | None = None) -> GeoRaster:
@@ -347,14 +411,20 @@ def fetch_swissimage_ortho(
     cfg = backdrop_cfg(site)
     dest = dest or ortho_path(site)
     meta_p = dest.with_suffix(".meta.json")
-    if dest.is_file() and dest.stat().st_size > 1000 and not force:
+    size = int(size or cfg["texture_size"])
+    xmin, ymin, xmax, ymax = extent if extent is not None else padded_extent(site)
+    want = (xmin, ymin, xmax, ymax)
+    if (
+        dest.is_file()
+        and dest.stat().st_size > 1000
+        and not force
+        and _extent_matches(_read_json(meta_p), want)
+    ):
         print(f"Using cached {label} {dest}")
         return dest
     src = ((site.get("sources") or {}).get("backdrop_ortho") or {})
     url = str(src.get("url") or SWISSIMAGE_WMS)
     layer = str(src.get("layer") or SWISSIMAGE_LAYER)
-    size = int(size or cfg["texture_size"])
-    xmin, ymin, xmax, ymax = extent if extent is not None else padded_extent(site)
     west, south, east, north = _wgs84_bbox(site, (xmin, ymin, xmax, ymax))
     params = {
         "SERVICE": "WMS",
@@ -406,6 +476,7 @@ def fetch_swissimage_ortho(
                 "url": url,
                 "wgs84_bbox": [west, south, east, north],
                 "extent": [xmin, ymin, xmax, ymax],
+                "request_bbox": [xmin, ymin, xmax, ymax],
                 "size": size,
                 "attribution": "SWISSIMAGE Hintergrund (c) swisstopo, wms.geo.admin.ch",
             },
@@ -467,7 +538,15 @@ def _sanitize_tirol_dgm(arr: np.ndarray) -> np.ndarray:
 
 
 def load_near_dgm(site: dict) -> tuple[np.ndarray, dict] | None:
-    tif, meta_path = near_dgm_paths(site)
+    return _load_near_raster(site, "dgm")
+
+
+def load_near_dom(site: dict) -> tuple[np.ndarray, dict] | None:
+    return _load_near_raster(site, "dom")
+
+
+def _load_near_raster(site: dict, kind: str) -> tuple[np.ndarray, dict] | None:
+    tif, meta_path = near_raster_paths(site, kind)
     if not tif.is_file() or not meta_path.is_file():
         return None
     meta = json.loads(meta_path.read_text(encoding="utf-8"))
@@ -483,30 +562,54 @@ def load_near_dgm(site: dict) -> tuple[np.ndarray, dict] | None:
 
 def fetch_near_dgm(site: dict, *, force: bool = False) -> Path | None:
     """Tirol WCS DGM for the near ring. Cells without coverage stay empty."""
+    return _fetch_near_wcs(site, "dgm", force=force)
+
+
+def fetch_near_dom(site: dict, *, force: bool = False) -> Path | None:
+    """Tirol WCS DOM/DSM for the near ring (canopy silhouette)."""
+    if not ((site.get("sources") or {}).get("dom")):
+        print("near DOM skip: no sources.dom")
+        return None
+    return _fetch_near_wcs(site, "dom", force=force)
+
+
+def _fetch_near_wcs(site: dict, kind: str, *, force: bool = False) -> Path | None:
     cfg = backdrop_cfg(site)
-    tif, meta_path = near_dgm_paths(site)
-    if tif.is_file() and meta_path.is_file() and tif.stat().st_size > 1000 and not force:
-        print(f"Using cached near DGM {tif}")
-        return tif
+    label = "DGM near" if kind == "dgm" else "DOM near"
+    src_key = "dgm" if kind == "dgm" else "dom"
+    tif, meta_path = near_raster_paths(site, kind)
     xmin, ymin, xmax, ymax = near_extent(site)
+    want = (xmin, ymin, xmax, ymax)
+    if (
+        tif.is_file()
+        and meta_path.is_file()
+        and tif.stat().st_size > 1000
+        and not force
+        and _extent_matches(_read_json(meta_path), want)
+    ):
+        print(f"Using cached {label} {tif}")
+        return tif
+    if tif.is_file() and not force:
+        print(f"{label} cache extent stale — refetching")
     res = float(cfg["near_dgm_res_m"])
-    raw = ROOT / "data" / "raw" / f"dgm_{site_slug(site)}_near.tif"
+    raw = ROOT / "data" / "raw" / f"{src_key}_{site_slug(site)}_near.tif"
+    raw_stale = not _extent_matches(_read_json(raw.with_suffix(".meta.json")), want)
     try:
         fetch_terrain_coverage(
             site,
-            "dgm",
-            force=force,
-            label="DGM near",
-            default_stem="dgm_near",
+            src_key,
+            force=force or raw_stale,
+            label=label,
+            default_stem=f"{src_key}_near",
             bbox=(xmin, ymin, xmax, ymax),
             resolution_m=res,
             out_path=raw,
         )
     except SystemExit as ex:
-        print(f"near DGM skip: {ex}")
+        print(f"{label} skip: {ex}")
         return None
     except Exception as ex:  # noqa: BLE001
-        print(f"near DGM skip: {type(ex).__name__}: {ex}")
+        print(f"{label} skip: {type(ex).__name__}: {ex}")
         return None
     try:
         src = _read_geotiff(raw)
@@ -521,11 +624,11 @@ def fetch_near_dgm(site: dict, *, force: bool = False) -> Path | None:
     ymin = origin_y + h * py
     finite = int(np.isfinite(arr).sum())
     print(
-        f"  near DGM finite={finite}/{arr.size} "
+        f"  {label} finite={finite}/{arr.size} "
         f"({100.0 * finite / max(arr.size, 1):.1f}%)"
     )
     if finite == 0:
-        print("  near DGM: no valid samples (outside Tirol coverage?)")
+        print(f"  {label}: no valid samples (outside Tirol coverage?)")
         return None
     packed = np.where(np.isfinite(arr), arr, NODATA).astype(np.float32)
     tif.parent.mkdir(parents=True, exist_ok=True)
@@ -541,8 +644,9 @@ def fetch_near_dgm(site: dict, *, force: bool = False) -> Path | None:
                 "width": w,
                 "height": h,
                 "bbox": [origin_x, ymin, xmax, origin_y],
+                "request_bbox": list(want),
                 "nodata": NODATA,
-                "source": "tirol_wcs_dgm",
+                "source": f"tirol_wcs_{kind}",
                 "site": site_slug(site),
                 "finite": finite,
             },
@@ -652,6 +756,7 @@ def fetch_backdrop(
         )
     if not skip_near_dgm:
         fetch_near_dgm(site, force=force)
+        fetch_near_dom(site, force=force)
     return tif
 
 

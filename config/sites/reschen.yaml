@@ -78,7 +78,8 @@ beamng:
   dry_grass_material: dry_meadow
   forest_material: ForestFloor
   grass_material: Grass
-  snow_material: snow
+  snow_material: SnowTirol
+  snow_albedo_gain: 0.75     # 1=stock white (~212); lower = more ToD/sky color
   shoulder_m: 3.0
 
   roads:
@@ -204,6 +205,7 @@ beamng:
     bridge_match_pad_m: 1.5
     sides: steep
     centerline: gip
+    # Keine Planken/Poller auf Gassen/Forst/Rad, Parkplätzen (S-BP), Rampen (S-BR).
     steep_sides:
       sample_m: 80
       look_out_m: 6.0
@@ -280,12 +282,18 @@ beamng:
     viewshed_step_m: 50
     mesh_step_m: 120
     hole_pad_m: 30
-    near_m: 1000
+    near_m: 5000
     near_step_m: 15
     near_dgm_res_m: 2
     near_overlap_m: 80
     near_lip_drop_m: 1.0
     near_texture_size: 2048
+    near_normal_size: 4096     # 2 m DGM → finer ToD relief; albedo stays 2048
+    near_tiles: 5              # 5 km ring @ 15 m, stay under 65k verts/tile
+    near_canopy: true           # DOM−DGM bumps on the near mesh (forest ridgeline)
+    near_canopy_min_m: 1.0
+    near_canopy_spike_m: 8.0    # above local median → mast
+    near_canopy_min_area_m2: 40
     mid_m: 10000
     mid_step_m: 50
     mid_overlap_m: 150
@@ -294,7 +302,29 @@ beamng:
     n_rays: 2048
     curvature_cc: 0.85714
     texture_size: 2048
-    albedo_gain: 0.58        # snow overlay: sources.snow + compose.snow_*
+    albedo_gain: 0.58        # photo detail back; darkness is base_color
+    ortho_gamma: 1.0
+    ortho_hillshade: 0.10    # low: ToD + normals, not baked NW shade
+    normal_strength: 0.32
+    ortho_grade: none
+    olive_mix: 0.68
+    lip_fade_m: 800
+    lip_olive: 0.40
+    lip_darken: 0.12
+    debug_lip_stripe: false
+    debug_green_black: false
+    snow_tint: false
+    detect_grade: true
+    forest_detect: bev          # BEV hoch+mittel as forest; meadows stay green-share
+    grass_cut: 0.5
+    grass_mix: 0.55
+    grass_dark: 0.28
+    forest_mix: 0.45
+    forest_dark: 0.38
+    forest_olive: [72, 88, 52]   # BEV forest target RGB 0-255
+    snow_cut: 0.40
+    snow_mix: 0.65
+    base_color: [1.0, 1.0, 1.0]
 
   buildings:
     enabled: true
@@ -312,6 +342,8 @@ beamng:
   decal_roads:
     enabled: true
     centerline_source: gip
+    # named = DecalRoads only on STR_CODE (B180/L…); Gassen get terrain asphalt + road-bed.
+    gip_decals: named
     width_scale: 0.9
     material: Road_Asphalt
     texture_length: 6.0

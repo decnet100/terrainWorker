@@ -370,6 +370,7 @@ def _write_layer_maps(
         "Mud": "MUD",
         "Concrete": "CONCRETE",
         "snow": "SNOW",
+        "SnowTirol": "SNOW",
     }
     ground.setdefault(dirt_material, "DIRT")
     entries = []
