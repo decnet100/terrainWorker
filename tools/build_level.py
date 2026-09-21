@@ -23,6 +23,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
+from pipeline_catalog import CORE_STEP_IDS, STEPS_BY_ID, command_for  # noqa: E402
 
 USER_LEVELS = (
     Path.home()
@@ -34,19 +35,7 @@ USER_LEVELS = (
     / "levels"
 )
 
-STEPS: list[str] = [
-    "fetch_dgm",
-    "fetch_dom",
-    "fetch_bev_landcover",
-    "build_twi",
-    "build_snow_proxy",
-    "build_smoke",
-    "build_terrain_masks",
-    "setup_beamng_level",
-    "ensure_terrain_materials",
-    "compose_biomes",
-    "build_forest",
-]
+STEPS: list[str] = list(CORE_STEP_IDS)
 
 
 def _run(cmd: list[str], site: str) -> None:
@@ -60,37 +49,16 @@ def _run(cmd: list[str], site: str) -> None:
 
 
 def _cmd_for(step: str, site: str, level_name: str, *, force_setup: bool) -> list[str] | None:
-    py = sys.executable
-    if step == "fetch_dgm":
-        return [py, "tools/fetch_dgm.py"]
-    if step == "fetch_dom":
-        return [py, "tools/fetch_dom.py"]
-    if step == "fetch_bev_landcover":
-        return [py, "tools/fetch_bev_landcover.py"]
-    if step == "build_twi":
-        return [py, "tools/build_twi.py"]
-    if step == "build_snow_proxy":
-        return [py, "tools/build_snow_proxy.py"]
-    if step == "build_smoke":
-        return [py, "tools/build_smoke.py"]
-    if step == "build_terrain_masks":
-        return [py, "tools/build_terrain_masks.py"]
+    spec = STEPS_BY_ID.get(step)
+    if spec is None or not spec.core:
+        raise SystemExit(f"Unknown step {step}")
     if step == "setup_beamng_level":
         dst = USER_LEVELS / level_name
         if dst.is_dir() and not force_setup:
             print(f"\n=== setup_beamng_level SKIP (exists: {dst}) ===")
             return None
-        cmd = [py, "tools/setup_beamng_level.py", level_name, "--site", site]
-        if force_setup and dst.is_dir():
-            cmd.append("--force")
-        return cmd
-    if step == "ensure_terrain_materials":
-        return [py, "tools/ensure_terrain_materials.py", "--site", site]
-    if step == "compose_biomes":
-        return [py, "tools/compose_biomes.py"]
-    if step == "build_forest":
-        return [py, "tools/build_forest.py"]
-    raise SystemExit(f"Unknown step {step}")
+    flags = {"force": force_setup} if step == "setup_beamng_level" else {}
+    return command_for(spec, site_rel=site, level_name=level_name, flags=flags)
 
 
 def main() -> None:

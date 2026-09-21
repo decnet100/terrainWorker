@@ -1,7 +1,7 @@
 # Status and roadmap
 
 Snapshot after the Hahntennjoch smoke test and Fernpass Mega work (BeamNG 0.39).  
-Details: [BEAMNG_IMPORT.md](BEAMNG_IMPORT.md), [ROADS.md](ROADS.md), [ANNOTATIONS.md](ANNOTATIONS.md), [CONCEPT.md](CONCEPT.md), [GIP.md](GIP.md), [HEIGHTMAP_COMPOSE.md](HEIGHTMAP_COMPOSE.md), [BACKDROP.md](BACKDROP.md).  
+Details: [BEAMNG_IMPORT.md](BEAMNG_IMPORT.md), [ROADS.md](ROADS.md), [ANNOTATIONS.md](ANNOTATIONS.md), [CONCEPT.md](CONCEPT.md), [GIP.md](GIP.md), [STRUCTURES.md](STRUCTURES.md), [HEIGHTMAP_COMPOSE.md](HEIGHTMAP_COMPOSE.md), [BACKDROP.md](BACKDROP.md).  
 Multi-map session (first portal switch): [ROADTRIP_TYROL.md](ROADTRIP_TYROL.md).
 
 ## Done
@@ -69,6 +69,12 @@ Multi-map session (first portal switch): [ROADTRIP_TYROL.md](ROADTRIP_TYROL.md).
 - `config/site.yaml` and `data/raw|processed` stay local (gitignore)
 
 ## Quick commands
+
+Usual path is the step window (`tools/pipeline_gui.py`). The commands below are the same scripts, without the window.
+
+```powershell
+cd C:\temp\beamng_autoroad; python tools\pipeline_gui.py
+```
 
 ```powershell
 cd C:\temp\beamng_autoroad; python tools\seed_annotations.py

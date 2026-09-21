@@ -13,7 +13,13 @@
 
 ## Choose the active site
 
-**Default:** `config/site.yaml` (local, gitignore) = copy of Hahntennjoch.
+Usual path: pick the map in the step window. Core steps = `build_level.py`; extras (GIP, decals, structures, rails) are the later cards.
+
+```powershell
+cd C:\temp\beamng_autoroad; python tools\pipeline_gui.py
+```
+
+**CLI default:** `config/site.yaml` (local, gitignore) = copy of Hahntennjoch.
 
 ```powershell
 Copy-Item config\sites\hahntennjoch.yaml config\site.yaml -Force
@@ -43,7 +49,7 @@ $env:AUTOROAD_SITE = "config/sites/testarena.yaml"
 $env:AUTOROAD_SITE = "config/sites/reschen.yaml"
 ```
 
-Then, from the repo root:
+Same Core steps without the window:
 
 ```powershell
 cd C:\temp\beamng_autoroad; python tools\build_level.py --site config/sites/fernpass_mega.yaml
@@ -63,3 +69,5 @@ cd C:\temp\beamng_autoroad; python tools\build_smoke.py
 ```
 
 Processed output is split under `data/processed/<site.name>/`.
+
+Bridges, tunnels, galleries, ramps beside a deck: [docs/STRUCTURES.md](../docs/STRUCTURES.md).

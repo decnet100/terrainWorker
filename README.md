@@ -26,21 +26,39 @@ Site files: [config/sites/](config/sites/README.md). Processed output: `data/pro
 cd C:\temp\beamng_autoroad; python -m pip install -r requirements.txt
 ```
 
-**One-shot** (fresh clone → BeamNG user level with biomes, terrain materials, forest):
+Usual path is the **step window** at `tools/pipeline_gui.py`. It lists the same order as `build_level.py`, plus the later extras (GIP, decals, bridges, galleries, rails, backdrop, buildings). Tkinter is in the standard library; no extra package.
+
+```powershell
+cd C:\temp\beamng_autoroad; python tools\pipeline_gui.py
+```
+
+In the window:
+
+- **Map** picks a file under `config/sites/`. **Open YAML** / **Open processed** jump to that site.
+- Each card shows the YAML keys for the step, last run, and a **?** link into `docs/`.
+- **Core steps** runs the one-shot (`fetch_dgm` … `build_forest`). Same as `python tools\build_level.py --site …`.
+- **This step** runs only that card. **From here** runs every matching step from that card onward (skips steps the site does not configure).
+- Last-run times live in `data/processed/<site>/pipeline_runs.json` (gitignored). The last map is remembered in `data/processed/_pipeline_gui.json`.
+
+Shared step list: `tools/pipeline_catalog.py`. CLI flags on a card (`--force`, `--only`, …) match the script.
+
+Fernpass Mega uses **GIP** for the road axis (not OSM). After Core steps, use **From here** on Fetch GIP (or the cards for decals / bridges / galleries / rails).
+
+Level import: [docs/BEAMNG_IMPORT.md](docs/BEAMNG_IMPORT.md). Horizon meshes: [docs/BACKDROP.md](docs/BACKDROP.md). Structures: [docs/STRUCTURES.md](docs/STRUCTURES.md). Portal mod: [docs/ROADTRIP_TYROL.md](docs/ROADTRIP_TYROL.md). Site profiles: [config/sites/README.md](config/sites/README.md).
+
+### CLI (same steps, no window)
+
+Default site is a local copy of Hahntennjoch (`config/site.yaml`, gitignored). Pin a site for one session, or pass `--site`:
 
 ```powershell
 cd C:\temp\beamng_autoroad; python tools\build_level.py --site config/sites/fernpass_mega.yaml
 ```
 
-That runs DGM/DOM/BEV → TWI/snow → smoke/masks → level setup → `dry_meadow`/`ForestFloor` materials → compose biomes → forest. Steps: `python tools\build_level.py --list`. Resume with `--from`, single step with `--only`. Existing level folders are kept unless `--force-setup`.
-
-Default site is a local copy of Hahntennjoch (`config/site.yaml`, gitignored). To pin a site for one session:
-
 ```powershell
-cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/hahntennjoch.yaml"; python tools\fetch_osm.py; python tools\build_smoke.py
+cd C:\temp\beamng_autoroad; python tools\build_level.py --list
 ```
 
-Fernpass Mega uses **GIP** for the road axis (not OSM). After `build_level`, typical extras:
+Resume with `--from`, single core step with `--only`. Existing level folders are kept unless `--force-setup`.
 
 ```powershell
 cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/fernpass_mega.yaml"; python tools\fetch_gip.py
@@ -54,7 +72,6 @@ cd C:\temp\beamng_autoroad; python tools\init_annotations_gpkg.py
 cd C:\temp\beamng_autoroad; python tools\seed_annotations.py
 ```
 
-Level import: [docs/BEAMNG_IMPORT.md](docs/BEAMNG_IMPORT.md). Horizon meshes: [docs/BACKDROP.md](docs/BACKDROP.md). Portal mod: [docs/ROADTRIP_TYROL.md](docs/ROADTRIP_TYROL.md). Site profiles: [config/sites/README.md](config/sites/README.md).
 ## Docs
 
 - [docs/CONCEPT.md](docs/CONCEPT.md) — geodata → playable pass
@@ -63,6 +80,7 @@ Level import: [docs/BEAMNG_IMPORT.md](docs/BEAMNG_IMPORT.md). Horizon meshes: [d
 - [docs/SITE_DATA.md](docs/SITE_DATA.md) — WCS/WFS links, bbox, local tiles
 - [docs/ANNOTATIONS.md](docs/ANNOTATIONS.md) — GIS: road edge / guardrails / gaps
 - [docs/GIP.md](docs/GIP.md) — Tyrol road WFS / structures (cache)
+- [docs/STRUCTURES.md](docs/STRUCTURES.md) — Brücken, Tunnel, Galerien, Rampen neben der Platte
 - [docs/ROADS.md](docs/ROADS.md) — width, decals, road-bed
 - [docs/HEIGHTMAP_COMPOSE.md](docs/HEIGHTMAP_COMPOSE.md) — DGM + layers → composed PNG
 - [docs/BEAMNG_IMPORT.md](docs/BEAMNG_IMPORT.md) — create level, import terrain
