@@ -24,6 +24,7 @@ from pathlib import Path
 
 import numpy as np
 from PIL import Image
+from PIL import ImageDraw, ImageFont
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
@@ -260,6 +261,35 @@ def _write_palette(path: Path, colors: np.ndarray, *, swatch_px: int = 64) -> No
         img[:, i * swatch_px : (i + 1) * swatch_px, :] = colors[i][None, None, :]
     Image.fromarray(img, mode="RGB").save(path)
 
+def _write_palette_labeled(
+    path: Path,
+    colors: np.ndarray,
+    *,
+    labels: list[str],
+    swatch_px: int = 64,
+    label_h: int = 26,
+) -> None:
+    k = int(colors.shape[0])
+    if len(labels) != k:
+        raise ValueError("labels length must match colors")
+    w = swatch_px * k
+    h = swatch_px + label_h
+    img = Image.new("RGB", (w, h), (0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    font = ImageFont.load_default()
+    # swatches
+    for i in range(k):
+        x0 = i * swatch_px
+        draw.rectangle((x0, 0, x0 + swatch_px - 1, swatch_px - 1), fill=tuple(int(v) for v in colors[i]))
+    # labels
+    for i, text in enumerate(labels):
+        x0 = i * swatch_px + 2
+        y0 = swatch_px + 2
+        # tiny shadow for readability
+        draw.text((x0 + 1, y0 + 1), text, font=font, fill=(0, 0, 0))
+        draw.text((x0, y0), text, font=font, fill=(255, 255, 255))
+    img.save(path)
+
 
 def _auto_inputs_from_site(site: dict) -> tuple[Path | None, Path | None, Path]:
     """Try to locate default ortho/mask under processed/<site>/."""
@@ -421,6 +451,10 @@ def main() -> None:
         cid = int(c["id"])
         c["center_rgb"] = [int(v) for v in rgb_by_id[cid]]
         c["n_full"] = int(n_by_id[cid])
+        rock_px_full = int(rock_rgb.shape[0])
+        c["coverage_pct_full"] = (
+            float(100.0 * c["n_full"] / rock_px_full) if rock_px_full > 0 else 0.0
+        )
 
     rock_rgb_stats = _rgb_stats(rock_rgb)
     # "Normal" color should not be dominated by deep shadow pixels.
@@ -491,6 +525,17 @@ def main() -> None:
     palette_path = out_dir / f"rock_palette_k{k}.png"
     _write_palette(palette_path, rgb_centers, swatch_px=64)
     print(f"Wrote {palette_path}")
+
+    # Labeled palette (id / % / n_full)
+    labeled_path = out_dir / f"rock_palette_k{k}_labeled.png"
+    rock_px_full = int(rock_rgb.shape[0])
+    labels = []
+    for i in range(k):
+        n = int(counts_full[i])
+        pct = (100.0 * n / rock_px_full) if rock_px_full > 0 else 0.0
+        labels.append(f"{i} {pct:.1f}%\\n{n}")
+    _write_palette_labeled(labeled_path, rgb_centers, labels=labels, swatch_px=64, label_h=28)
+    print(f"Wrote {labeled_path}")
 
     # Build quantized preview image: rock pixels replaced by cluster RGB, others unchanged.
     out = ortho.reshape(-1, 3).copy()
