@@ -60,24 +60,39 @@ def _item_template(
     radius: float,
     collidable: bool,
     annotation: str | None = None,
+    wind_scale: float = 0.4,
+    trunk_bend: float = 0.03,
+    branch_amp: float = 0.02,
+    detail_amp: float = 0.2,
+    detail_freq: float = 5.0,
+    mass: float | None = None,
+    rigidity: float | None = None,
 ) -> dict:
-    return {
-        "class": "ForestItemData",
+    """Forest item tuned like driver_training douglasfir (gentle wind, stiff trunk)."""
+    obj: dict = {
+        "class": "TSForestItemData",
         "internalName": internal,
         "name": internal,
         "shapeFile": shape_vfs,
         "radius": radius,
         "collidable": collidable,
-        "windScale": 1.0 if collidable else 0.8,
-        "trunkBendScale": 0.45 if collidable else 0.05,
-        "branchAmp": 1.0 if collidable else 0.35,
-        "detailAmp": 0.25,
-        "detailFreq": 1.0,
+        "windScale": wind_scale,
+        "trunkBendScale": trunk_bend,
+        "branchAmp": branch_amp,
+        "detailAmp": detail_amp,
+        "detailFreq": detail_freq,
         "annotation": annotation or ("TREE" if collidable else "BUSH"),
     }
+    if mass is not None:
+        obj["mass"] = mass
+    if rigidity is not None:
+        obj["rigidity"] = rigidity
+    return obj
 
 
-def vendor_fir_pack(user_level: Path, level_name: str) -> dict[str, dict]:
+def vendor_fir_pack(
+    user_level: Path, level_name: str, *, cheap: bool = False
+) -> dict[str, dict]:
     """Copy douglasfir meshes + materials into this level."""
     if not DRIVER_TRAINING_ZIP.is_file():
         raise SystemExit(f"Missing {DRIVER_TRAINING_ZIP}")
@@ -112,27 +127,68 @@ def vendor_fir_pack(user_level: Path, level_name: str) -> dict[str, dict]:
                 raise SystemExit(f"Missing in driver_training.zip: {src}")
             (dest / name).write_bytes(z.read(src))
             n_copied += 1
-    print(f"Vendored douglasfir pack → {dest} ({n_copied} files)")
+    print(f"Vendored douglasfir pack -> {dest} ({n_copied} files)")
 
     base = f"/levels/{level_name}/{FIR_LOCAL_REL}"
+    if cheap:
+        print("Forest cheap mode: single LARGE fir, no collision, wind off")
+        return {
+            "autoroad_fir_large": _item_template(
+                "autoroad_fir_large",
+                f"{base}/{SHAPE_FILES['autoroad_fir_large']}",
+                radius=2.0,
+                collidable=False,
+                wind_scale=0.0,
+                trunk_bend=0.0,
+                branch_amp=0.0,
+                detail_amp=0.0,
+                detail_freq=1.0,
+                mass=70.0,
+                rigidity=150.0,
+                annotation="TREE",
+            ),
+        }
     return {
+        # Wind/bend matched to driver_training stock (was trunkBend 0.45 / branchAmp 1.0 → tip glitch)
         "autoroad_fir_small": _item_template(
             "autoroad_fir_small",
             f"{base}/{SHAPE_FILES['autoroad_fir_small']}",
             radius=1.5,
             collidable=True,
+            wind_scale=0.4,
+            trunk_bend=0.05,
+            branch_amp=0.03,
+            detail_amp=0.2,
+            detail_freq=5.0,
+            mass=10.0,
+            rigidity=20.0,
         ),
         "autoroad_fir_large": _item_template(
             "autoroad_fir_large",
             f"{base}/{SHAPE_FILES['autoroad_fir_large']}",
             radius=2.0,
             collidable=True,
+            wind_scale=0.4,
+            trunk_bend=0.03,
+            branch_amp=0.02,
+            detail_amp=0.2,
+            detail_freq=5.0,
+            mass=70.0,
+            rigidity=150.0,
         ),
         "autoroad_fir_bush": _item_template(
             "autoroad_fir_bush",
             f"{base}/{SHAPE_FILES['autoroad_fir_bush']}",
             radius=0.8,
             collidable=False,
+            wind_scale=0.5,
+            trunk_bend=0.1,
+            branch_amp=0.01,
+            detail_amp=0.2,
+            detail_freq=1.5,
+            mass=1.0,
+            rigidity=5.0,
+            annotation="BUSH",
         ),
     }
 
@@ -170,7 +226,7 @@ def vendor_dry_grass_pack(user_level: Path, level_name: str) -> dict[str, dict]:
             else:
                 (dest / name).write_bytes(z.read(src))
             n_copied += 1
-    print(f"Vendored dry_grass pack → {dest} ({n_copied} files)")
+    print(f"Vendored dry_grass pack -> {dest} ({n_copied} files)")
 
     base = f"/levels/{level_name}/{DRY_GRASS_LOCAL_REL}"
     items = {}
@@ -191,6 +247,7 @@ def _cfg(bng: dict) -> dict:
         "enabled": bool(raw.get("enabled", True)),
         "trees": bool(raw.get("trees", True)),
         "dry_grass": bool(raw.get("dry_grass", True)),
+        "cheap": bool(raw.get("cheap", False)),
         "spacing_high_m": float(raw.get("spacing_high_m") or 10.0),
         "spacing_scrub_m": float(raw.get("spacing_scrub_m") or 5.0),
         "spacing_meadow_m": float(raw.get("spacing_meadow_m") or 4.0),
@@ -252,22 +309,27 @@ def _candidate_cells(
     mpp: float,
     rng: np.random.Generator,
     jitter: float,
+    *,
+    max_candidates: int | None = None,
 ):
     step = max(1, int(round(spacing_m / mpp)))
     rows, cols = np.where(mask)
     if rows.size == 0:
         return []
-    cells = {}
-    for r, c in zip(rows.tolist(), cols.tolist()):
-        key = (r // step, c // step)
-        if key not in cells:
-            cells[key] = (r, c)
-    out = []
-    for r, c in cells.values():
-        jr = (rng.random() - 0.5) * 2.0 * jitter * step
-        jc = (rng.random() - 0.5) * 2.0 * jitter * step
-        out.append((r + jr, c + jc))
-    return out
+    # One seed per spacing cell (vectorized).
+    keys = (rows // step).astype(np.int64) * (mask.shape[1] // step + 1) + (
+        cols // step
+    ).astype(np.int64)
+    _, uniq = np.unique(keys, return_index=True)
+    rows = rows[uniq].astype(np.float64)
+    cols = cols[uniq].astype(np.float64)
+    if max_candidates is not None and rows.size > max_candidates:
+        pick = rng.choice(rows.size, size=int(max_candidates), replace=False)
+        rows = rows[pick]
+        cols = cols[pick]
+    jr = (rng.random(rows.size) - 0.5) * 2.0 * jitter * step
+    jc = (rng.random(cols.size) - 0.5) * 2.0 * jitter * step
+    return list(zip((rows + jr).tolist(), (cols + jc).tolist()))
 
 
 def scatter(site: dict, cfg: dict) -> dict[str, list[dict]]:
@@ -299,6 +361,7 @@ def scatter(site: dict, cfg: dict) -> dict[str, list[dict]]:
     meadow = meadow & ~clear & ~high & ~scrub
 
     grass_kinds = list(DRY_GRASS_SHAPES.keys())
+    cheap = bool(cfg.get("cheap"))
     placements: dict[str, list[dict]] = {
         "autoroad_fir_large": [],
         "autoroad_fir_small": [],
@@ -316,10 +379,17 @@ def scatter(site: dict, cfg: dict) -> dict[str, list[dict]]:
     meadow_total = 0
     max_items = int(cfg["max_items"])
     max_meadow = int(cfg["max_items_meadow"])
-    scrub_frac = float(np.clip(cfg["scrub_fraction"], 0.0, 0.9))
-    max_scrub = int(round(max_items * scrub_frac)) if cfg["trees"] else 0
-    max_high = max(0, max_items - max_scrub)
+    if cheap:
+        # All budget on one non-collidable bush type.
+        scrub_frac = 0.0
+        max_scrub = 0
+        max_high = max_items
+    else:
+        scrub_frac = float(np.clip(cfg["scrub_fraction"], 0.0, 0.9))
+        max_scrub = int(round(max_items * scrub_frac)) if cfg["trees"] else 0
+        max_high = max(0, max_items - max_scrub)
     jitter = float(cfg["jitter"])
+    cand_cap = max_items + max(1000, max_items // 10)
 
     def try_place(
         kind: str,
@@ -368,41 +438,76 @@ def scatter(site: dict, cfg: dict) -> dict[str, list[dict]]:
         return "ok"
 
     if cfg["trees"]:
-        high_cells = _candidate_cells(
-            high, float(cfg["spacing_high_m"]), mpp, rng, jitter
-        )
-        scrub_cells = _candidate_cells(
-            scrub, float(cfg["spacing_scrub_m"]), mpp, rng, jitter
-        )
-        rng.shuffle(high_cells)
-        rng.shuffle(scrub_cells)
-
-        for r, c in high_cells:
-            kind = "autoroad_fir_large" if rng.random() < 0.35 else "autoroad_fir_small"
-            status = try_place(
-                kind,
-                r,
-                c,
-                float(s_hi[0]),
-                float(s_hi[1]),
-                slope_limit=slope_max,
-                budget="high",
+        # Cheap density test: merge high+scrub, one large fir.
+        if cheap:
+            dense = high | scrub
+            high_cells = _candidate_cells(
+                dense,
+                float(cfg["spacing_high_m"]),
+                mpp,
+                rng,
+                jitter,
+                max_candidates=cand_cap,
             )
-            if status == "full":
-                break
-
-        for r, c in scrub_cells:
-            status = try_place(
-                "autoroad_fir_bush",
-                r,
-                c,
-                float(s_sc[0]),
-                float(s_sc[1]),
-                slope_limit=slope_max,
-                budget="scrub",
+            rng.shuffle(high_cells)
+            for r, c in high_cells:
+                status = try_place(
+                    "autoroad_fir_large",
+                    r,
+                    c,
+                    float(s_hi[0]),
+                    float(s_hi[1]),
+                    slope_limit=slope_max,
+                    budget="high",
+                )
+                if status == "full":
+                    break
+        else:
+            high_cells = _candidate_cells(
+                high,
+                float(cfg["spacing_high_m"]),
+                mpp,
+                rng,
+                jitter,
+                max_candidates=cand_cap,
             )
-            if status == "full":
-                break
+            scrub_cells = _candidate_cells(
+                scrub,
+                float(cfg["spacing_scrub_m"]),
+                mpp,
+                rng,
+                jitter,
+                max_candidates=cand_cap,
+            )
+            rng.shuffle(high_cells)
+            rng.shuffle(scrub_cells)
+
+            for r, c in high_cells:
+                kind = "autoroad_fir_large" if rng.random() < 0.35 else "autoroad_fir_small"
+                status = try_place(
+                    kind,
+                    r,
+                    c,
+                    float(s_hi[0]),
+                    float(s_hi[1]),
+                    slope_limit=slope_max,
+                    budget="high",
+                )
+                if status == "full":
+                    break
+
+            for r, c in scrub_cells:
+                status = try_place(
+                    "autoroad_fir_bush",
+                    r,
+                    c,
+                    float(s_sc[0]),
+                    float(s_sc[1]),
+                    slope_limit=slope_max,
+                    budget="scrub",
+                )
+                if status == "full":
+                    break
 
     if cfg["dry_grass"]:
         meadow_cells = _candidate_cells(
@@ -475,7 +580,7 @@ def ensure_forest_object(user_level: Path) -> None:
         with items_path.open("w", encoding="utf-8", newline="\n") as f:
             for r in rows:
                 f.write(json.dumps(r, separators=(",", ":")) + "\n")
-        print(f"Created Forest theForest → {items_path}")
+        print(f"Created Forest theForest -> {items_path}")
 
     lo_items = user_level / "main" / "MissionGroup" / "level_objects" / "items.level.json"
     lines = []
@@ -517,53 +622,96 @@ def write_forest4(user_level: Path, proc: Path, placements: dict[str, list[dict]
         with path.open("w", encoding="utf-8", newline="\n") as f:
             for row in rows:
                 f.write(json.dumps(row, separators=(",", ":")) + "\n")
-        (proc / fname).write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
+        # Skip duplicating huge cheap dumps into processed/
+        if len(rows) <= 80000:
+            (proc / fname).write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
         print(f"Wrote {path} ({len(rows)} items)")
 
 
 def main() -> None:
+    import argparse
+
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument(
+        "--cheap",
+        action="store_true",
+        help="Density stress: one LARGE fir shape, no collision (overrides YAML cheap)",
+    )
+    args = ap.parse_args()
+
     site = load_site()
     bng = site.get("beamng") or {}
     level_name = str(bng.get("level_name") or "").strip()
     if not level_name:
         raise SystemExit("beamng.level_name missing")
     cfg = _cfg(bng)
+    if args.cheap:
+        cfg["cheap"] = True
     if not cfg["enabled"]:
         raise SystemExit("forest.enabled is false")
+    if cfg["cheap"]:
+        cfg["dry_grass"] = False
+        cfg["max_items_meadow"] = 0
+        print(
+            f"Forest CHEAP density test: max_items={cfg['max_items']} "
+            f"spacing_high={cfg['spacing_high_m']}m"
+        )
 
     proc = processed_dir(site)
     if cfg["trees"] and not (proc / "mask_forest_high.png").is_file():
-        raise SystemExit("Missing mask_forest_*.png — run tools/build_terrain_masks.py first")
+        raise SystemExit("Missing mask_forest_*.png - run tools/build_terrain_masks.py first")
     if cfg["dry_grass"] and not (
         (proc / "mask_biome_meadow_dry.png").is_file()
         or (proc / "mask_biome_veg_niedrig.png").is_file()
     ):
         raise SystemExit(
-            "Missing mask_biome_meadow_dry.png — run tools/compose_biomes.py first"
+            "Missing mask_biome_meadow_dry.png - run tools/compose_biomes.py first"
         )
 
     placements = scatter(site, cfg)
+    n_trees = sum(
+        len(v)
+        for k, v in placements.items()
+        if k.startswith("autoroad_fir")
+    )
     meta = {
         "level": level_name,
         "counts": {k: len(v) for k, v in placements.items()},
+        "total_trees": n_trees,
         "cfg": cfg,
+        "eval_notes": {
+            "phase": "cheap_imposters" if cfg.get("cheap") else "normal",
+            "howto": [
+                "Quit BeamNG fully, then load the level (forest JSON + managedItemData).",
+                "Note FPS standing in dense forest and while driving ~80 km/h.",
+                "Note load time / hitch when forest chunks stream in.",
+            ],
+            "fps_standing": None,
+            "fps_driving": None,
+            "load_notes": None,
+            "looks_dense_enough": None,
+        },
     }
     (proc / "forest_scatter_summary.json").write_text(
         json.dumps(meta, indent=2), encoding="utf-8"
     )
+    print(f"Wrote {proc / 'forest_scatter_summary.json'} (total_trees={n_trees})")
 
     user_level = USER_LEVELS / level_name
     if not user_level.is_dir():
         raise SystemExit(f"Level folder missing: {user_level}")
+    from setup_beamng_level import disable_template_forest  # noqa: WPS433
+
+    disable_template_forest(user_level)
     ensure_forest_object(user_level)
     items: dict[str, dict] = {}
     if cfg["trees"]:
-        items.update(vendor_fir_pack(user_level, level_name))
+        items.update(vendor_fir_pack(user_level, level_name, cheap=bool(cfg["cheap"])))
     if cfg["dry_grass"]:
         items.update(vendor_dry_grass_pack(user_level, level_name))
     write_managed(user_level, items)
     write_forest4(user_level, proc, placements)
-    print("Reload the level in BeamNG (Forest object loads forest/*.forest4.json).")
+    print("Quit BeamNG fully and restart - Forest object loads forest/*.forest4.json.")
 
 
 if __name__ == "__main__":

@@ -159,7 +159,7 @@ def smooth_twi(twi: np.ndarray, cellsize: float, smooth_m: float) -> np.ndarray:
     sigma_px = float(smooth_m) / max(float(cellsize), 1e-6)
     out = gaussian_filter(np.asarray(twi, dtype=np.float64), sigma=sigma_px, mode="nearest")
     print(
-        f"TWI smoothed σ={smooth_m:g} m ({sigma_px:.2f} px): "
+        f"TWI smoothed sigma={smooth_m:g} m ({sigma_px:.2f} px): "
         f"min={float(out.min()):.2f} max={float(out.max()):.2f} "
         f"p50={float(np.percentile(out, 50)):.2f}"
     )

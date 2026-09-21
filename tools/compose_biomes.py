@@ -3,8 +3,9 @@
   1. Disjoint biome masks (Forest / Biome tool)
   2. Refined terrain material layerMaps (soft surfaces only)
 
-Hard surfaces (asphalt, concrete, bridge/gallery rock, BEV water) are never
-overwritten by nDSM/TWI/snow.
+Hard surfaces (asphalt, concrete, gallery rock, BEV water) are never
+overwritten by nDSM/TWI/snow. Bridge spans only omit the road stroke;
+they do not force rock.
 
 Usage:
   cd C:\\temp\\beamng_autoroad; $env:AUTOROAD_SITE = \"config/sites/fernpass_mega.yaml\"; python tools\\compose_biomes.py
@@ -483,24 +484,43 @@ def main() -> None:
         print(f"Level folder missing, skip material vendor: {user_level}")
 
     bev = _load_raster(proc / "landcover_bev.tif", size, nearest=True).astype(np.uint8)
+    try:
+        from fetch_bev_landcover import (  # noqa: WPS433
+            _cfg as _bev_cfg,
+            report_incomplete_landcover,
+        )
+
+        bev_cfg = _bev_cfg(site)
+        report_incomplete_landcover(
+            bev,
+            where=str(proc / "landcover_bev.tif"),
+            max_nodata_frac=float(bev_cfg["max_nodata_frac"]),
+            allow_incomplete=True,  # fetch already gated; here warn only
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"BEV nodata check skipped: {exc}")
     ndsm = _load_raster(proc / "ndsm.tif", size).astype(np.float32)
     twi = _load_raster(proc / "twi.tif", size).astype(np.float32)
     snow = _load_raster(proc / "snow_proxy.tif", size).astype(np.float32)
 
     asphalt = _load_u8_mask(proc / "mask_asphalt.png", size)
+    forest_gravel = _load_u8_mask(proc / "mask_forest_gravel.png", size)
     settlement = _load_u8_mask(proc / "mask_settlement.png", size)
     building_bev = bev == BEV_BUILDING
     rock = _load_u8_mask(proc / "mask_rock.png", size)
-    bridge = _load_u8_mask(proc / "mask_bridge_under.png", size)
     gallery = _load_u8_mask(proc / "mask_gallery_roof.png", size)
-    struct_rock = bridge | gallery | rock
-    kill = asphalt | settlement | building_bev | bridge | gallery
+    # Bridge under-mask is omit-only (asphalt already punched in mask_asphalt).
+    # Do not force rock or biome-kill under the deck.
+    struct_rock = gallery | rock
+    kill = asphalt | forest_gravel | settlement | building_bev | gallery
 
     soft = _assign_soft(bev, ndsm, twi, rock, cfg)
     biome = _apply_snow_kill(soft, ndsm, snow, kill, cfg)
     mats = _biome_to_materials(
         biome, soft, asphalt, settlement | building_bev, struct_rock
     )
+    if forest_gravel.any():
+        mats[forest_gravel] = CLASS_DIRT
 
     # Biome PNGs (disjoint)
     for name, bid in BIOME_ID.items():
@@ -577,7 +597,7 @@ def main() -> None:
             "ndsm.tif",
             "twi.tif",
             "snow_proxy.tif",
-            "mask_asphalt/settlement/rock/bridge/gallery",
+            "mask_asphalt/settlement/rock/gallery",
         ],
         "notes": [
             "Biomes are exclusive (one ID per pixel).",

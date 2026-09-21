@@ -9,7 +9,7 @@ Does:
   - rewrite /levels/template → /levels/<name> in text assets
   - set info.json title (Freeroam list)
   - remove ocean WaterPlanes
-  - strip template backdrop / groundcover clutter
+  - strip template backdrop / groundcover / floating pac_rock forest
   - set theTerrain writable path + position 0,0,0
   - move spawn near origin
   - optionally copy processed import/ assets for matching site
@@ -187,9 +187,20 @@ def patch_info_json(dst: Path, level: str, title: str | None, size_m: int | None
     data["authors"] = "autoroad"
     data["isAuxiliary"] = False
     data["supportsTraffic"] = False
+    data["supportsTimeOfDay"] = True
     if size_m:
         data["size"] = [size_m, size_m]
-    # keep preview filename if present
+    preview = (data.get("previews") or ["template_preview.png"])[0]
+    data["defaultSpawnPointName"] = data.get("defaultSpawnPointName") or "spawns_default"
+    if not data.get("spawnPoints"):
+        data["spawnPoints"] = [
+            {
+                "name": "Default",
+                "translationId": "Default",
+                "objectname": "spawns_default",
+                "preview": preview,
+            }
+        ]
     info_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     print(f"Updated info.json title={data['title']!r} isAuxiliary=false")
 
@@ -204,6 +215,43 @@ def clear_oceans(dst: Path) -> None:
             cleared += len(rows) - len(keep)
             print(f"  removed ocean/WaterPlane from {path.relative_to(dst)}")
     print(f"Removed {cleared} water object(s)")
+
+
+def disable_template_forest(dst: Path) -> None:
+    """Rename template rock/bush Forest dumps so they do not spawn.
+
+    The template scatters ``pac_rock_*`` at the old −512/−512 origin and
+    template Z (~100 m). After our heightmap import they float. Fernpass
+    already keeps these as ``*.for_bak``; do the same on every setup/forest
+    build so World Editor Save is not required to hide them.
+    """
+    forest_dir = dst / "forest"
+    n = 0
+    if forest_dir.is_dir():
+        for path in list(forest_dir.glob("*.forest4.json")):
+            stem = path.name.lower()
+            if stem.startswith("autoroad_"):
+                continue
+            if not (stem.startswith("pac_rock_") or stem.startswith("tro_")):
+                continue
+            bak = path.with_name(path.name + ".for_bak")
+            if bak.exists():
+                path.unlink()
+            else:
+                path.replace(bak)
+            n += 1
+            print(f"  disabled template forest {path.name}")
+    leftover = dst / "template.forest.json"
+    if leftover.is_file():
+        bak = leftover.with_name("template.forest.json.for_bak")
+        if bak.exists():
+            leftover.unlink()
+        else:
+            leftover.replace(bak)
+        n += 1
+        print("  disabled template.forest.json")
+    if n:
+        print(f"Disabled {n} template forest file(s)")
 
 
 def strip_template_props(dst: Path) -> None:
@@ -240,6 +288,8 @@ def strip_template_props(dst: Path) -> None:
                 )
             _write_ndjson(path, keep)
             print(f"  cleared groundcover in {rel} (kept {len(keep)} forest/wind)")
+
+    disable_template_forest(dst)
 
 
 def patch_terrain_block(dst: Path, level: str, max_height: float | None) -> None:
@@ -313,6 +363,7 @@ def patch_spawn(dst: Path, site: dict | None = None) -> None:
     if not rows:
         rows = [
             {
+                "name": "spawns_default",
                 "class": "SpawnSphere",
                 "__parent": "PlayerDropPoints",
                 "position": [x, y, z],
@@ -322,12 +373,73 @@ def patch_spawn(dst: Path, site: dict | None = None) -> None:
             }
         ]
     else:
+        named = False
         for r in rows:
-            if r.get("class") == "SpawnSphere":
-                r["position"] = [x, y, z]
-                r["enabled"] = "1"
+            if r.get("class") != "SpawnSphere":
+                continue
+            r["position"] = [x, y, z]
+            r["enabled"] = "1"
+            if not r.get("name"):
+                r["name"] = "spawns_default"
+            named = True
+            break
+        if not named:
+            rows[0]["name"] = rows[0].get("name") or "spawns_default"
     _write_ndjson(path, rows)
     print(f"  spawn → [{x:.2f}, {y:.2f}, {z:.2f}]")
+
+
+def _tod_items_path(dst: Path) -> Path | None:
+    for rel in (
+        Path("main/MissionGroup/level_objects/sky_and_sun/items.level.json"),
+        Path("main/MissionGroup/sky_and_sun/items.level.json"),
+    ):
+        p = dst / rel
+        if p.is_file():
+            return p
+    return None
+
+
+def patch_time_of_day(dst: Path, site: dict | None) -> None:
+    """Point TimeOfDay at the site WGS84 center (northern-hemisphere sun path)."""
+    if not site:
+        return
+    from site_coords import wgs84_center  # noqa: WPS433
+
+    path = _tod_items_path(dst)
+    if path is None:
+        print("  TimeOfDay: no sky_and_sun items (skip)")
+        return
+    lat, lon = wgs84_center(site)
+    info_path = dst / "info.json"
+    year, month, day = 2026, 6, 20
+    if info_path.is_file():
+        info = json.loads(info_path.read_text(encoding="utf-8"))
+        date = info.get("defaultDate") or {}
+        year = int(date.get("year") or year)
+        month = int(date.get("month") or month)
+        day = int(date.get("day") or day)
+    rows = _read_ndjson(path)
+    changed = False
+    for row in rows:
+        if row.get("class") != "TimeOfDay":
+            continue
+        row["latitude"] = round(lat, 5)
+        row["longitude"] = round(lon, 5)
+        row["axisTilt"] = 23.44
+        row["utcOffset"] = "2"
+        row["dstRule"] = "eu"
+        row["azimuthOverride"] = 0
+        row["celestialProfile"] = "earth"
+        row["year"] = year
+        row["month"] = month
+        row["day"] = day
+        changed = True
+    if changed:
+        _write_ndjson(path, rows)
+        print(f"  TimeOfDay lat={lat:.4f} lon={lon:.4f} utc+2 {year}-{month:02d}-{day:02d}")
+    else:
+        print("  TimeOfDay: object missing (skip)")
 
 
 def sync_import_assets(dst: Path, site: dict | None) -> None:
@@ -475,9 +587,10 @@ def main() -> None:
     else:
         print("  kept props (--keep-props)")
 
-    print("Terrain / spawn:")
+    print("Terrain / spawn / sky:")
     patch_terrain_block(dst, level, max_h)
     patch_spawn(dst, site)
+    patch_time_of_day(dst, site)
 
     # Drop bulky unused template_source.zip if present
     junk = dst / "template_source.zip"

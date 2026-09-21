@@ -254,7 +254,7 @@ def write_site_yaml(
             "shoulder_m": src_bng.get("shoulder_m", 3.0),
             "road_terrain": src_bng.get("road_terrain", "asphalt"),
             "bridges": bridges,
-            "galleries": {"defaults": {"approach_conform": False}, "items": []},
+            "galleries": {"defaults": {}, "items": []},
             "guardrails": rails,
             "water": {"enabled": False},
             "forest": {"enabled": False},

@@ -22,7 +22,7 @@ from xml.sax.saxutils import escape
 
 import numpy as np
 from PIL import Image, ImageDraw
-from scipy.ndimage import binary_dilation, gaussian_filter, label, map_coordinates, median_filter, zoom
+from scipy.ndimage import binary_closing, binary_dilation, gaussian_filter, label, map_coordinates, median_filter, zoom
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
@@ -30,10 +30,14 @@ from fetch_backdrop import (  # noqa: E402
     backdrop_cfg,
     dem_paths,
     fetch_backdrop,
+    fetch_mid_dgm,
+    fetch_mid_dom,
     fetch_near_dgm,
     fetch_near_dom,
     fetch_swissimage_ortho,
     load_backdrop_dem,
+    load_mid_dgm,
+    load_mid_dom,
     load_near_dgm,
     load_near_dom,
     mid_extent,
@@ -304,12 +308,65 @@ def keep_mid_mask(elev: np.ndarray, meta: dict, site: dict, cfg: dict) -> np.nda
     return np.isfinite(elev) & _bbox_rect(xx, yy, site, outer) & ~_bbox_rect(xx, yy, site, inner)
 
 
+def _fill_split_channels(
+    keep: np.ndarray,
+    finite: np.ndarray,
+    row_c: int,
+    col_c: int,
+    max_gap_px: int,
+) -> np.ndarray:
+    """Fill N/S and E/W bays up to max_gap_px where keep exists on both sides.
+
+    Morphological closing cannot fill a channel that opens into the mid hole.
+    The far east 0.9 km gap at the quadrant split is such a bay.
+    """
+    if max_gap_px <= 0:
+        return keep
+    out = keep.copy()
+    h, w = keep.shape
+    row_c = int(np.clip(row_c, 0, h - 1))
+    col_c = int(np.clip(col_c, 0, w - 1))
+    for c in range(w):
+        north = np.flatnonzero(keep[:row_c, c])
+        south = np.flatnonzero(keep[row_c + 1 :, c]) + (row_c + 1)
+        if north.size == 0 or south.size == 0:
+            continue
+        r_n = int(north.max())
+        r_s = int(south.min())
+        if 0 < (r_s - r_n) <= max_gap_px + 1:
+            sl = slice(r_n + 1, r_s)
+            out[sl, c] = out[sl, c] | finite[sl, c]
+    for r in range(h):
+        west = np.flatnonzero(keep[r, :col_c])
+        east = np.flatnonzero(keep[r, col_c + 1 :]) + (col_c + 1)
+        if west.size == 0 or east.size == 0:
+            continue
+        c_w = int(west.max())
+        c_e = int(east.min())
+        if 0 < (c_e - c_w) <= max_gap_px + 1:
+            sl = slice(c_w + 1, c_e)
+            out[r, sl] = out[r, sl] | finite[r, sl]
+    return out
+
+
 def keep_far_mask(
     elev: np.ndarray, count: np.ndarray, meta: dict, site: dict, cfg: dict
 ) -> np.ndarray:
     min_views = max(1, int(cfg["min_views"]))
     keep = np.isfinite(elev) & (count >= min_views)
-    keep = binary_dilation(keep, iterations=4)
+    n_raw = int(keep.sum())
+    cell = max(1e-3, abs(float(meta["px"])))
+    close_m = max(0.0, float(cfg.get("viewshed_close_m", 600.0)))
+    pad_m = max(0.0, float(cfg.get("viewshed_pad_m", 100.0)))
+    stitch_m = max(0.0, float(cfg.get("viewshed_stitch_m", 2500.0)))
+    close_iter = int(round(close_m / (2.0 * cell))) if close_m > 0.0 else 0
+    pad_iter = int(round(pad_m / cell)) if pad_m > 0.0 else 0
+    stitch_px = int(round(stitch_m / cell)) if stitch_m > 0.0 else 0
+    if close_iter > 0:
+        keep = binary_closing(keep, iterations=close_iter)
+    if pad_iter > 0:
+        keep = binary_dilation(keep, iterations=pad_iter)
+    n_morph = int(keep.sum())
     cx, cy = site_center(site)
     radius = float(cfg["radius_m"])
     xx, yy = _world_grids(elev, meta)
@@ -319,6 +376,16 @@ def keep_far_mask(
         float(cfg["mid_m"]) - float(cfg["mid_overlap_m"]),
     )
     keep &= ~_bbox_rect(xx, yy, site, far_hole)
+    col_c, row_c = _xy_to_pixel(meta, cx, cy)
+    n_pre = int(keep.sum())
+    keep = _fill_split_channels(
+        keep, np.isfinite(elev), int(round(row_c)), int(round(col_c)), stitch_px
+    )
+    print(
+        f"  far keep close={close_iter}px (~{close_m:.0f}m holes) "
+        f"pad={pad_iter}px stitch={stitch_px}px "
+        f"raw={n_raw} morph={n_morph} hole={n_pre} final={int(keep.sum())}"
+    )
     return keep
 
 
@@ -397,7 +464,7 @@ def _align_to_grid(
     dst_shape: tuple[int, int],
     dst_meta: dict,
 ) -> np.ndarray:
-    """Bilinear-sample src onto the destination DGM grid."""
+    """Cubic-spline sample src onto the destination DGM grid."""
     h, w = dst_shape
     if src.shape == dst_shape and abs(float(src_meta.get("px", 0)) - float(dst_meta["px"])) < 0.05:
         if (
@@ -416,7 +483,7 @@ def _align_to_grid(
     finite = np.isfinite(src)
     fill = float(np.nanmedian(src)) if finite.any() else 0.0
     zsrc = np.where(finite, src, fill).astype(np.float64)
-    out = map_coordinates(zsrc, coords, order=1, mode="nearest", prefilter=False).reshape(h, w)
+    out = map_coordinates(zsrc, coords, order=3, mode="nearest", prefilter=True).reshape(h, w)
     fin = map_coordinates(finite.astype(np.float32), coords, order=0, mode="nearest").reshape(h, w)
     return np.where(fin > 0.5, out, np.nan)
 
@@ -469,7 +536,7 @@ def filter_near_canopy(ndsm: np.ndarray, cell_m: float, cfg: dict) -> np.ndarray
         mask = keep_lbl[labeled]
     out = np.where(mask, h, 0.0).astype(np.float32)
     print(
-        f"near canopy >={min_h:.0f}m: {100.0 * float(mask.mean()):.1f}% of cells  "
+        f"canopy >={min_h:.0f}m: {100.0 * float(mask.mean()):.1f}% of cells  "
         f"max={float(out.max()):.1f}m  spikes={n_spike}  "
         f"tiny blobs dropped={dropped} (<{min_px} px / {min_area:.0f} m²)"
     )
@@ -509,6 +576,50 @@ def near_surface_with_canopy(
     ).save(proc / "preview_backdrop_near_canopy.png")
     print(f"Wrote {proc / 'preview_backdrop_near_canopy.png'}")
     return np.where(np.isfinite(dgm), dgm + canopy, dgm)
+
+
+def mid_surface_with_canopy(
+    elev: np.ndarray,
+    elev_meta: dict,
+    site: dict,
+    cfg: dict,
+    proc: Path,
+) -> np.ndarray:
+    """Copernicus DTM + filtered Tirol nDSM (0 outside AT coverage)."""
+    if not cfg.get("mid_canopy", True):
+        print("mid canopy skip: mid_canopy=false")
+        return elev
+    dgm_pack = load_mid_dgm(site)
+    dom_pack = load_mid_dom(site)
+    if dgm_pack is None or dom_pack is None:
+        print("mid canopy skip: no mid DGM/DOM (fetch sources.dom)")
+        return elev
+    dgm, dgm_meta = dgm_pack
+    dom, dom_meta = dom_pack
+    if dom.shape != dgm.shape:
+        dom = _align_to_grid(dom, dom_meta, dgm.shape, dgm_meta)
+    both = np.isfinite(dgm) & np.isfinite(dom)
+    ndsm = np.zeros(dgm.shape, dtype=np.float32)
+    ndsm[both] = np.maximum(dom[both] - dgm[both], 0.0).astype(np.float32)
+    cell = abs(float(dgm_meta["px"]))
+    canopy = filter_near_canopy(ndsm, cell, cfg)
+    aligned = _align_to_grid(canopy.astype(np.float64), dgm_meta, elev.shape, elev_meta)
+    add = np.nan_to_num(aligned, nan=0.0).astype(np.float32)
+    hs, _ = _hillshade_slope(elev, abs(float(elev_meta["px"])))
+    grey = (np.clip(hs, 0, 1) * 180).astype(np.float32)
+    prev = np.stack([grey, grey, grey], axis=-1)
+    t = np.clip(add / 25.0, 0.0, 1.0)[..., None]
+    tinted = (1.0 - 0.75 * t) * prev + 0.75 * t * np.array([40.0, 120.0, 50.0], dtype=np.float32)
+    Image.fromarray(np.clip(tinted, 0, 255).astype(np.uint8), mode="RGB").resize(
+        (min(elev.shape[1], 1024), min(elev.shape[0], 1024)),
+        Image.Resampling.BILINEAR,
+    ).save(proc / "preview_backdrop_mid_canopy.png")
+    n_on = int((add >= 1.0).sum())
+    print(
+        f"Wrote {proc / 'preview_backdrop_mid_canopy.png'}  "
+        f"mid nDSM>=1m on Copernicus={n_on} cells"
+    )
+    return np.where(np.isfinite(elev), elev + add, elev)
 
 
 def crop_to_extent(
@@ -1479,6 +1590,9 @@ def main() -> None:
         if not args.skip_near_dgm:
             fetch_near_dgm(site)
             fetch_near_dom(site)
+            if cfg.get("mid_canopy", True):
+                fetch_mid_dgm(site)
+                fetch_mid_dom(site)
         if not args.skip_ortho:
             fetch_swissimage_ortho(
                 site,
@@ -1699,7 +1813,8 @@ def main() -> None:
             int(cfg.get("near_normal_size") or cfg["near_texture_size"]),
             nrm_strength,
         )
-    mid_elev = crop_to_extent(elev, meta, mid_extent(site))
+    mid_surf = mid_surface_with_canopy(elev, meta, site, cfg, proc)
+    mid_elev = crop_to_extent(mid_surf, meta, mid_extent(site))
     mid_wc = crop_to_extent(wc, meta, mid_extent(site)) if wc is not None else None
     mid_sz = int(cfg["mid_texture_size"])
     mid_forest = (
@@ -1791,9 +1906,9 @@ def main() -> None:
                     f"  WARN {q}: {len(verts)} verts > {COLLADA_MAX_VERTS} "
                     "(raise near_tiles or near_step_m)"
                 )
-    print(f"Meshing mid step={cfg['mid_step_m']} m (Copernicus, always-keep) ...")
+    print(f"Meshing mid step={cfg['mid_step_m']} m (Copernicus+nDSM, always-keep) ...")
     mid_meshes = build_meshes(
-        elev,
+        mid_surf,
         keep_mid,
         meta,
         sc,

@@ -31,7 +31,7 @@ import requests
 import tifffile as tiff
 from PIL import Image
 from pyproj import Transformer
-from scipy.ndimage import map_coordinates
+from scipy.ndimage import distance_transform_edt, map_coordinates
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
@@ -91,11 +91,19 @@ def backdrop_cfg(site: dict) -> dict:
         "near_canopy_min_area_m2": float(raw.get("near_canopy_min_area_m2", 40.0)),
         "mid_m": float(raw.get("mid_m", 10000.0)),
         "mid_step_m": float(raw.get("mid_step_m", 50.0)),
+        "mid_dgm_res_m": float(raw.get("mid_dgm_res_m", 8.0)),
+        "mid_canopy": bool(raw.get("mid_canopy", raw.get("near_canopy", True))),
         "mid_overlap_m": float(raw.get("mid_overlap_m", 150.0)),
         "mid_texture_size": int(raw.get("mid_texture_size", 2048)),
         "mid_tiles": int(raw.get("mid_tiles", 3)),
         "n_rays": int(raw.get("n_rays", 2048)),
         "curvature_cc": float(raw.get("curvature_cc", 0.85714)),
+        # Fill internal viewshed holes up to this width (50 m cells: 600 m → 6 close iters).
+        "viewshed_close_m": float(raw.get("viewshed_close_m", 600.0)),
+        # Extra outer pad after closing (old path was 4×50 m dilation, no close).
+        "viewshed_pad_m": float(raw.get("viewshed_pad_m", 100.0)),
+        # Fill N/S and E/W channels outside the mid hole where keep exists on both sides.
+        "viewshed_stitch_m": float(raw.get("viewshed_stitch_m", 2500.0)),
         "texture_size": int(raw.get("texture_size", 2048)),
         "albedo_gain": float(raw.get("albedo_gain", 0.58)),
         # >1 darkens midtones of the ortho (probe the pale-green seam).
@@ -206,9 +214,17 @@ def near_dom_paths(site: dict) -> tuple[Path, Path]:
     return near_raster_paths(site, "dom")
 
 
-def near_raster_paths(site: dict, kind: str) -> tuple[Path, Path]:
+def ring_raster_paths(site: dict, ring: str, kind: str) -> tuple[Path, Path]:
     proc = processed_dir(site)
-    return proc / f"backdrop_near_{kind}.tif", proc / f"backdrop_near_{kind}.meta.json"
+    return proc / f"backdrop_{ring}_{kind}.tif", proc / f"backdrop_{ring}_{kind}.meta.json"
+
+
+def near_raster_paths(site: dict, kind: str) -> tuple[Path, Path]:
+    return ring_raster_paths(site, "near", kind)
+
+
+def mid_raster_paths(site: dict, kind: str) -> tuple[Path, Path]:
+    return ring_raster_paths(site, "mid", kind)
 
 
 def _read_geotiff(path: Path, *, max_dim: int | None = None) -> GeoRaster:
@@ -464,7 +480,9 @@ def fetch_swissimage_ortho(
     coords = np.vstack([row.ravel(), col.ravel()])
     out = np.empty((size, size, 3), dtype=np.uint8)
     for i in range(3):
-        samp = map_coordinates(src_img[:, :, i], coords, order=1, mode="nearest", prefilter=False)
+        samp = map_coordinates(
+            src_img[:, :, i], coords, order=3, mode="nearest", prefilter=True
+        )
         out[:, :, i] = np.clip(samp.reshape(size, size), 0, 255)
     dest.parent.mkdir(parents=True, exist_ok=True)
     Image.fromarray(out, mode="RGB").save(dest)
@@ -494,7 +512,10 @@ def _sample_into(
     ys: np.ndarray,
     src: GeoRaster,
     to_src: Transformer,
+    *,
+    order: int = 3,
 ) -> None:
+    """Warp one source tile onto dest. Default cubic spline; WorldCover uses order=0."""
     lon, lat = to_src.transform(xs.ravel(), ys.ravel())
     lon = np.asarray(lon, dtype=np.float64).reshape(xs.shape)
     lat = np.asarray(lat, dtype=np.float64).reshape(ys.shape)
@@ -506,13 +527,38 @@ def _sample_into(
         return
     coords = np.vstack([row[inside], col[inside]])
     src_f = np.asarray(src.data, dtype=np.float64)
-    vals = map_coordinates(src_f, coords, order=1, mode="nearest", prefilter=False)
+    order = max(0, int(order))
+    if order == 0:
+        vals = map_coordinates(src_f, coords, order=0, mode="nearest")
+    else:
+        finite = np.isfinite(src_f) & (src_f > -1000) & (src_f < 9000)
+        fill = float(np.median(src_f[finite])) if finite.any() else 0.0
+        zsrc = np.where(finite, src_f, fill)
+        vals = map_coordinates(
+            zsrc, coords, order=order, mode="nearest", prefilter=order >= 3
+        )
+        valid = map_coordinates(
+            finite.astype(np.float32), coords, order=0, mode="nearest"
+        )
+        vals = np.where(valid > 0.5, vals, np.nan)
     bad = ~np.isfinite(vals) | (vals < -1000) | (vals > 9000)
     vals = np.where(bad, np.nan, vals)
     slot = dest[inside]
     take = ~np.isfinite(slot) & np.isfinite(vals)
     slot[take] = vals[take]
     dest[inside] = slot
+
+
+def _fill_short_nodata(arr: np.ndarray, max_px: int = 2) -> np.ndarray:
+    """Copy nearest finite neighbour into 1–2 px gaps (GLO-30 1° tile seams)."""
+    nan = ~np.isfinite(arr)
+    if not nan.any() or nan.all():
+        return arr
+    dist, (ri, ci) = distance_transform_edt(nan, return_indices=True)
+    out = arr.copy()
+    take = nan & (dist <= max_px)
+    out[take] = arr[ri[take], ci[take]]
+    return out
 
 
 def load_backdrop_dem(site: dict) -> tuple[np.ndarray, dict]:
@@ -538,15 +584,23 @@ def _sanitize_tirol_dgm(arr: np.ndarray) -> np.ndarray:
 
 
 def load_near_dgm(site: dict) -> tuple[np.ndarray, dict] | None:
-    return _load_near_raster(site, "dgm")
+    return _load_ring_raster(site, "near", "dgm")
 
 
 def load_near_dom(site: dict) -> tuple[np.ndarray, dict] | None:
-    return _load_near_raster(site, "dom")
+    return _load_ring_raster(site, "near", "dom")
 
 
-def _load_near_raster(site: dict, kind: str) -> tuple[np.ndarray, dict] | None:
-    tif, meta_path = near_raster_paths(site, kind)
+def load_mid_dgm(site: dict) -> tuple[np.ndarray, dict] | None:
+    return _load_ring_raster(site, "mid", "dgm")
+
+
+def load_mid_dom(site: dict) -> tuple[np.ndarray, dict] | None:
+    return _load_ring_raster(site, "mid", "dom")
+
+
+def _load_ring_raster(site: dict, ring: str, kind: str) -> tuple[np.ndarray, dict] | None:
+    tif, meta_path = ring_raster_paths(site, ring, kind)
     if not tif.is_file() or not meta_path.is_file():
         return None
     meta = json.loads(meta_path.read_text(encoding="utf-8"))
@@ -562,7 +616,7 @@ def _load_near_raster(site: dict, kind: str) -> tuple[np.ndarray, dict] | None:
 
 def fetch_near_dgm(site: dict, *, force: bool = False) -> Path | None:
     """Tirol WCS DGM for the near ring. Cells without coverage stay empty."""
-    return _fetch_near_wcs(site, "dgm", force=force)
+    return _fetch_ring_wcs(site, "dgm", "near", force=force)
 
 
 def fetch_near_dom(site: dict, *, force: bool = False) -> Path | None:
@@ -570,15 +624,31 @@ def fetch_near_dom(site: dict, *, force: bool = False) -> Path | None:
     if not ((site.get("sources") or {}).get("dom")):
         print("near DOM skip: no sources.dom")
         return None
-    return _fetch_near_wcs(site, "dom", force=force)
+    return _fetch_ring_wcs(site, "dom", "near", force=force)
+
+
+def fetch_mid_dgm(site: dict, *, force: bool = False) -> Path | None:
+    """Tirol WCS DGM for the mid envelope (nDSM only; mesh DTM stays Copernicus)."""
+    return _fetch_ring_wcs(site, "dgm", "mid", force=force)
+
+
+def fetch_mid_dom(site: dict, *, force: bool = False) -> Path | None:
+    if not ((site.get("sources") or {}).get("dom")):
+        print("mid DOM skip: no sources.dom")
+        return None
+    return _fetch_ring_wcs(site, "dom", "mid", force=force)
 
 
 def _fetch_near_wcs(site: dict, kind: str, *, force: bool = False) -> Path | None:
+    return _fetch_ring_wcs(site, kind, "near", force=force)
+
+
+def _fetch_ring_wcs(site: dict, kind: str, ring: str, *, force: bool = False) -> Path | None:
     cfg = backdrop_cfg(site)
-    label = "DGM near" if kind == "dgm" else "DOM near"
+    label = f"{'DGM' if kind == 'dgm' else 'DOM'} {ring}"
     src_key = "dgm" if kind == "dgm" else "dom"
-    tif, meta_path = near_raster_paths(site, kind)
-    xmin, ymin, xmax, ymax = near_extent(site)
+    tif, meta_path = ring_raster_paths(site, ring, kind)
+    xmin, ymin, xmax, ymax = near_extent(site) if ring == "near" else mid_extent(site)
     want = (xmin, ymin, xmax, ymax)
     if (
         tif.is_file()
@@ -591,8 +661,8 @@ def _fetch_near_wcs(site: dict, kind: str, *, force: bool = False) -> Path | Non
         return tif
     if tif.is_file() and not force:
         print(f"{label} cache extent stale — refetching")
-    res = float(cfg["near_dgm_res_m"])
-    raw = ROOT / "data" / "raw" / f"{src_key}_{site_slug(site)}_near.tif"
+    res = float(cfg["near_dgm_res_m"] if ring == "near" else cfg.get("mid_dgm_res_m", 8.0))
+    raw = ROOT / "data" / "raw" / f"{src_key}_{site_slug(site)}_{ring}.tif"
     raw_stale = not _extent_matches(_read_json(raw.with_suffix(".meta.json")), want)
     try:
         fetch_terrain_coverage(
@@ -600,10 +670,12 @@ def _fetch_near_wcs(site: dict, kind: str, *, force: bool = False) -> Path | Non
             src_key,
             force=force or raw_stale,
             label=label,
-            default_stem=f"{src_key}_near",
+            default_stem=f"{src_key}_{ring}",
             bbox=(xmin, ymin, xmax, ymax),
             resolution_m=res,
             out_path=raw,
+            allow_incomplete=True,
+            accept_all_nodata=True,
         )
     except SystemExit as ex:
         print(f"{label} skip: {ex}")
@@ -685,10 +757,14 @@ def fetch_backdrop(
         for p in tiles:
             src = _read_geotiff(p)
             print(f"  {p.name} {src.data.shape[1]}x{src.data.shape[0]}")
-            _sample_into(out, xx, yy, src, to_src)
+            _sample_into(out, xx, yy, src, to_src, order=3)
+        n_nan = int((~np.isfinite(out)).sum())
+        out = _fill_short_nodata(out, max_px=2)
+        n_nan_after = int((~np.isfinite(out)).sum())
         finite = int(np.isfinite(out).sum())
         print(
-            f"  DEM finite={finite}/{out.size} "
+            f"  DEM cubic spline + {n_nan - n_nan_after} seam fills  "
+            f"finite={finite}/{out.size} leftover_nan={n_nan_after} "
             f"z={float(np.nanmin(out)):.1f}..{float(np.nanmax(out)):.1f}"
         )
         arr = np.where(np.isfinite(out), out, NODATA).astype(np.float32)
@@ -731,7 +807,7 @@ def fetch_backdrop(
                 to_src = Transformer.from_crs(
                     str(site.get("crs", "EPSG:31254")), "EPSG:4326", always_xy=True
                 )
-                _sample_into(out, xx, yy, src, to_src)
+                _sample_into(out, xx, yy, src, to_src, order=0)
                 codes = np.where(np.isfinite(out), np.rint(out), 0).astype(np.uint8)
                 tiff.imwrite(wc_out, codes)
                 print(f"Wrote {wc_out} finite={(codes > 0).sum()}/{codes.size}")
@@ -757,6 +833,9 @@ def fetch_backdrop(
     if not skip_near_dgm:
         fetch_near_dgm(site, force=force)
         fetch_near_dom(site, force=force)
+        if backdrop_cfg(site).get("mid_canopy", True):
+            fetch_mid_dgm(site, force=force)
+            fetch_mid_dom(site, force=force)
     return tif
 
 

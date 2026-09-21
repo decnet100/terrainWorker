@@ -64,6 +64,19 @@ def annotations_gpkg(site: dict | None = None) -> Path:
     return p if p.is_absolute() else ROOT / p
 
 
+def wgs84_center(site: dict | None = None) -> tuple[float, float]:
+    """BBox midpoint as (latitude, longitude) degrees."""
+    from pyproj import Transformer
+
+    site = site or load_site()
+    xmin, ymin, xmax, ymax = map(float, site["bbox"])
+    to_wgs = Transformer.from_crs(
+        str(site.get("crs", "EPSG:31254")), "EPSG:4326", always_xy=True
+    )
+    lon, lat = to_wgs.transform(0.5 * (xmin + xmax), 0.5 * (ymin + ymax))
+    return float(lat), float(lon)
+
+
 class SiteCoords:
     """Map between site CRS (absolute meters) and BeamNG terrain XY."""
 
