@@ -60,6 +60,9 @@ sources:
       waldflaeche:
         url: "https://services3.arcgis.com/hG7UfxX49PQ8XkXh/arcgis/rest/services/Waldflaeche/FeatureServer/0"
         label: Waldfläche
+  tiris_buildings:
+    type: featureserver
+    url: "https://services3.arcgis.com/hG7UfxX49PQ8XkXh/arcgis/rest/services/Gebaeude/FeatureServer/0"
 
 beamng:
   meters_per_pixel: 1.0

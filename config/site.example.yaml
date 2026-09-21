@@ -79,6 +79,11 @@ sources:
     # include: bbox              # full Verkehrswege layer in site.bbox (FeatureServer)
     # str_codes: [L13, B179]     # fallback / explicit instead of spatial intersect
 
+  # Roofprints (default for beamng.buildings). URL is also the code default.
+  # tiris_buildings:
+  #   type: featureserver
+  #   url: "https://services3.arcgis.com/hG7UfxX49PQ8XkXh/arcgis/rest/services/Gebaeude/FeatureServer/0"
+
 beamng:
   meters_per_pixel: 1.0          # heightmap resolution in the level (starting value)
   # max_height is derived from the DGM
@@ -100,6 +105,9 @@ beamng:
   #     L*: 7.0               # all Landesstraßen; Decal/terrain *= width_scale
   #   lanes_by_str_code:
   #     B179: 3               # 3+ lanes → not the 8 m two-lane B* default
+  # buildings:                   # default source tiris, eave_inset_m 0.9
+  #   enabled: true
+  #   source: osm                # only if you want Overpass footprints
   # Optional: BEV×nDSM×TWI×snow → exclusive biomes + soft terrain (compose_biomes.py)
   # compose:
   #   ndsm_canopy_m: 5.0

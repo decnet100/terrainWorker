@@ -1,0 +1,421 @@
+# Imst / Tarrenz (B189 Mieminger Straße) — 8000×8000 m crop on 8192² @ 1 m/px.
+# Aktivieren:  $env:AUTOROAD_SITE="config/sites/imst.yaml"
+# User bbox (0.5 m corners snapped to integer metres). WGS84 ~47.231,10.681 – 47.302,10.787.
+name: tirol-imst-8192
+crs: EPSG:31254
+bbox:
+  - 26316.0
+  - 232503.0
+  - 34316.0
+  - 240503.0
+# Absolute GHA (m) at DGM-bbox center — replace after first DGM fetch if needed.
+center_z_m: 830.0
+
+sources:
+  dgm:
+    type: wcs
+    url: "https://gis.tirol.gv.at/arcgis/services/Service_Public/terrain/MapServer/WCSServer"
+    coverage: "Gelaendemodell_50cm_M28"
+    version: "1.0.0"
+    resolution_m: 1.0
+  dom:
+    type: wcs
+    url: "https://gis.tirol.gv.at/arcgis/services/Service_Public/terrain/MapServer/WCSServer"
+    coverage: "Oberflaechenmodell_50cm_M28"
+    version: "1.0.0"
+    resolution_m: 1.0
+  twi:
+    smooth_m: 10.0
+  bev_landcover:
+    type: wms
+    url: "https://data.bev.gv.at/geoserver/INSdataLC/ows"
+    layer: LC.LandCoverRaster
+  snow:
+    type: dgm_proxy
+    preset: november
+  ortho:
+    type: wcs
+    url: "https://gis.tirol.gv.at/arcgis/services/Service_Public/orthofoto/MapServer/WCSServer"
+    coverage: "Aktuell_RGB"
+    resolution_m: 1.0
+  backdrop_ortho:
+    type: wms
+    url: "https://wms.geo.admin.ch/"
+    layer: ch.swisstopo.swissimage
+    version: "1.3.0"
+  roads:
+    type: osm
+  gip:
+    type: wfs
+    url: "https://dservices3.arcgis.com/hG7UfxX49PQ8XkXh/arcgis/services/Verkehrswege/WFSServer"
+    type_name: "Verkehrswege:Verkehrswege"
+    str_code: B189                 # Mieminger Straße Imst–Tarrenz–Nassereith (trunk)
+    include: bbox                  # ganzer Verkehrswege-Layer in site.bbox
+  strassennetz:
+    type: wfs
+    url: "https://dservices3.arcgis.com/hG7UfxX49PQ8XkXh/arcgis/services/Strassennetz/WFSServer"
+    type_name: "Strassennetz:Strassennetz"
+    str_code: B189
+  landuse:
+    type: bev
+    layers:
+      landnutzung:
+        url: "https://services3.arcgis.com/hG7UfxX49PQ8XkXh/arcgis/rest/services/Landnutzung/FeatureServer/0"
+        label: Landnutzung
+      waldflaeche:
+        url: "https://services3.arcgis.com/hG7UfxX49PQ8XkXh/arcgis/rest/services/Waldflaeche/FeatureServer/0"
+        label: Waldfläche
+  tiris_buildings:
+    type: featureserver
+    url: "https://services3.arcgis.com/hG7UfxX49PQ8XkXh/arcgis/rest/services/Gebaeude/FeatureServer/0"
+
+beamng:
+  meters_per_pixel: 1.0
+  level_name: autoroad_imst_8192
+  mask_size: 8192
+  slope_rock_deg: 40
+  slope_rock_open_px: 1
+  road_width_scale: 0.9
+  lane_width_m: 3.75
+  default_lanes: 2
+  road_terrain: asphalt
+  dirt_material: gravel
+  dry_grass_material: dry_meadow
+  forest_material: ForestFloor
+  grass_material: Grass
+  snow_material: SnowTirol
+  snow_albedo_gain: 0.75     # 1=stock white (~212); lower = more ToD/sky color
+  shoulder_m: 3.0
+
+  roads:
+    spine_start_oid: null
+    spine_next: []
+    # Widths and not-tunnel flags: data/roads/ (no per-level OID list).
+    # This crop is the out-of-the-box check after Fernpass / Reschen.
+
+  compose:
+    ndsm_canopy_m: 5.0
+    ndsm_scrub_m: 1.5
+    ndsm_clearing_m: 1.0
+    twi_wet: 5.0
+    snow_light: 0.25
+    snow_heavy: 0.55
+
+  bridges:
+    defaults:
+      profile: road_spline
+      centerline: gip
+      width_m: 7.5
+      width_from_road: false
+      depth_m: 0.4
+      node_z_is_top: true
+      extend_before_m: 0.0
+      extend_after_m: 0.0
+      under_inset_m: 5.0
+      gip_pad_m: 10.0
+      auto_span: true
+      span_dip_m: 0.45
+      span_search_m: 40.0
+      solid_run_m: 3.0
+      free_span: linear
+      corner_up_m: 0.25
+      corner_down_m: 0.06
+      corner_band: 0.2
+      abut_tol_m: 0.25
+      abut_run_m: 3.0
+      abut_search_m: 40.0
+      abut_snap_z: true
+      approach_conform: true
+      approach_conform_pad_m: 0.5
+      approach_conform_falloff_m: 1.5
+      approach_conform_sink_m: 0.02
+      approach_conform_max_delta_m: 1.0
+      approach_conform_deck_raise_m: 16.0
+      step_m: 1.0
+      crossfall_max: 0.12
+      style:
+        understructure: none
+        edge: none
+      materials:
+        top: Asphalt
+        bottom: Concrete
+        side: Concrete
+        texture_length: 6.0
+        detail_scale: 4.0
+    gip_extra: []
+    items: []
+
+  galleries:
+    merge_abutting: true
+    merge_tol_m: 15.0
+    defaults:
+      centerline: gip
+      width_m: 7.5
+      width_from_road: true
+      clear_height_m: 4.5
+      roof_thickness_m: 0.5
+      wall_thickness_m: 0.4
+      overhang_m: 1.0
+      extend_before_m: 2.0
+      extend_after_m: 2.0
+      step_m: 2.0
+      open_side: left
+      deck_enabled: true
+      deck_width_extra_m: 0.5
+      deck_open_extra_m: 0.8
+      deck_extend_m: 12.0
+      approach_mode: marry
+      approach_lift_m: 0.015
+      portal_ease_m: 4.0
+      portal_frame: block
+      portal_block_m: 0.7
+      portal_depth_m: 1.0
+      portal_overhang_m: 0.8
+      portal_clear_extra_m: 0.25
+      portal_collar: false
+      hole_mode: none
+      blend_open_dgm: true
+      fan_rpm: 60
+      style:
+        shell: gallery
+        columns: rect
+        edge: none
+        portal: block
+      materials:
+        top: Asphalt
+        bottom: Concrete
+        side: Concrete
+        collar: GalleryRock
+        texture_length: 6.0
+        detail_scale: 4.0
+    items: []
+
+  guardrails:
+    enabled: true
+    style: sections
+    spacing_m: 25.0
+    post_shape: reflector
+    post_scale: 0.7
+    section_shape: "/art/shapes/objects/italy_guardrails_common_section.dae"
+    mesh_length_m: 3.1
+    section_length_m: 4.2
+    curve_r15_m: 15.0
+    curve_r10_m: 10.0
+    curve_step_r15_m: 2.8
+    curve_step_r10_m: 2.2
+    abut_overlap_m: 0.08
+    curvature_window_m: 8.0
+    lateral_extra_m: 0.25
+    z_sample_inward_m: 0.35
+    bridge_deck_z: true
+    bridge_lateral_extra_m: 0.0
+    bridge_match_pad_m: 1.5
+    sides: steep
+    centerline: gip
+    # Keine Planken/Poller auf Gassen/Forst/Rad, Parkplätzen (S-BP), Rampen (S-BR).
+    steep_sides:
+      sample_m: 80
+      look_out_m: 6.0
+      drop_m: 2.5
+      min_hits: 1
+      fallback: both
+    highways: [secondary, primary, tertiary, trunk, motorway]
+    z_lift_m: 0.05
+    pivot_ground_offset_m: 0.0
+    align_pitch: true
+    snap_to_heightmap: true
+    face_y_outward: true
+    yaw_flip_right: false
+    clip_galleries: true
+    stop_before_gallery_m: 3.0
+    gallery_clip_pad_m: 2.0
+    # Mündungen: nur Seite zur fremden Achse; Tunnel/Brücken-Δz nicht öffnen
+    clip_centerlines: false
+    open_junctions: true
+    junction_join_m: 4.0
+    junction_mouth_m: 12.0
+    junction_z_sep_m: 3.0
+    clip_tunnels: true
+    tunnel_clip_pad_m: 25.0
+    rules:
+      - match: { lanes: ">2" }
+        sides: both
+      # Tunnel zuletzt (überschreibt lanes>2) — keine Rails auf Röhre/Berg
+      - match: { objekt: [S-BT, S-AT] }
+        sides: none
+      - match: { kunstbauten: [Tunnel, Unterflur] }
+        sides: none
+
+  water:
+    enabled: true
+    flowing: none
+    standing: waterblock
+    shore_inset_m: 1.0
+    standing_max_side_m: 2500.0
+    standing_tile_m: 128.0
+    standing_xy_pad: 0.08
+    standing_depress_m: 5.0
+    standing_depress_blend_m: 6.0
+    wide_flowing_min_width_m: 0.0
+    depth_m: 10.5
+    surface_lift_m: 0.15
+    waterlevel_z_offset_m: -4.0
+    min_area_m2: 40.0
+    grid_element_size: 4.0
+
+  forest:
+    enabled: true
+    trees: true
+    dry_grass: false
+    spacing_high_m: 9.0
+    spacing_scrub_m: 4.5
+    spacing_meadow_m: 5.0
+    slope_max_deg: 42.0
+    slope_max_meadow_deg: 38.0
+    clear_road_m: 4.0
+    max_items: 60000
+    max_items_meadow: 0
+    scrub_fraction: 0.35
+    scale_high: [0.85, 1.3]
+    scale_scrub: [0.65, 1.1]
+    seed: 13
+
+  backdrop:
+    radius_m: 40000
+    observer_grid: 5
+    observer_z_extra_m: 10
+    extra_peaks: 4
+    min_views: 1
+    viewshed_step_m: 50
+    mesh_step_m: 120
+    hole_pad_m: 30
+    near_m: 5000
+    near_step_m: 15
+    near_dgm_res_m: 2
+    near_overlap_m: 80
+    near_lip_drop_m: 1.0
+    near_texture_size: 2048
+    near_normal_size: 4096     # 2 m DGM → finer ToD relief; albedo stays 2048
+    near_tiles: 5              # 5 km ring @ 15 m, stay under 65k verts/tile
+    near_canopy: true           # DOM−DGM bumps on the near mesh (forest ridgeline)
+    near_canopy_min_m: 1.0
+    near_canopy_spike_m: 8.0    # above local median → mast
+    near_canopy_min_area_m2: 40
+    mid_m: 10000
+    mid_step_m: 50
+    mid_overlap_m: 150
+    mid_texture_size: 2048
+    mid_tiles: 3
+    mid_canopy: true            # Tirol DOM−DGM nDSM on Copernicus mid mesh
+    mid_dgm_res_m: 8            # WCS for nDSM only (mesh stays 50 m)
+    n_rays: 2048
+    curvature_cc: 0.85714
+    texture_size: 2048
+    albedo_gain: 0.58        # photo detail back; darkness is base_color
+    ortho_gamma: 1.0
+    ortho_hillshade: 0.10    # low: ToD + normals, not baked NW shade
+    normal_strength: 0.32
+    ortho_grade: none
+    olive_mix: 0.68
+    lip_fade_m: 800
+    lip_olive: 0.40
+    lip_darken: 0.12
+    debug_lip_stripe: false
+    debug_green_black: false
+    snow_tint: false
+    detect_grade: true
+    forest_detect: bev          # BEV hoch+mittel as forest; meadows stay green-share
+    grass_cut: 0.5
+    grass_mix: 0.55
+    grass_dark: 0.28
+    forest_mix: 0.45
+    forest_dark: 0.38
+    forest_olive: [72, 88, 52]   # BEV forest target RGB 0-255
+    snow_cut: 0.40
+    snow_mix: 0.65
+    base_color: [1.0, 1.0, 1.0]
+
+  buildings:
+    enabled: true
+    default_height_m: 8.0
+    level_height_m: 3.0
+    min_area_m2: 25.0
+    max_area_m2: 8000.0
+    max_items: 5000
+    sink_m: 1.5
+    height_jitter: 0.12
+    gable_chance: 0.72
+    gable_fill_min: 0.88
+    style_seed: 17
+
+  decal_roads:
+    enabled: true
+    centerline_source: gip
+    # named = DecalRoads on STR_CODE (B189/B171/L…) and S-A/S-AR. S-AT bores stay off.
+    gip_decals: named
+    width_scale: 0.9
+    material: Road_Asphalt
+    texture_length: 6.0
+    detail_scale: 4.0
+    render_priority: 10
+    drivability: 1.0
+    improved_spline: true
+    densify_max_step_m: 10.0
+    decal_bias: 0.20
+    z_bias: 0.02
+    snap_to_heightmap: true
+    z_lift_m: 0.03
+    snap_max_raise_m: 2.0
+    road_bed_conform: true
+    road_bed_pad_m: 1.0
+    road_bed_falloff_m: 3.0
+    road_bed_sink_m: 0.08
+    road_bed_max_delta_m: 2.0
+    road_bed_max_raise_m: 2.0
+    road_bed_max_cut_m: 2.0
+    road_bed_smooth_m: 12.0
+    road_bed_items:
+      - match: { str_code: L* }
+        pad_m: 3.0
+        falloff_m: 2.5
+        sink_m: 0.08
+        max_raise_m: 10.0
+        max_cut_m: 10.0
+        smooth_m: 20.0
+    over_objects: false
+    start_end_fade: [0.0, 0.0]
+    stitch_abutting: true
+    stitch_tol_m: 1.25
+    width_fill_dip_m: 40.0
+    width_blend_m: 25.0
+    max_decal_length_m: 300.0
+    clip_galleries: true
+    stop_before_gallery_m: 2.0
+    gallery_clip_pad_m: 1.0
+    clip_bridges: true
+    deck_decals: true
+    deck_decal_overlap_m: 1.0
+    road_bed_skip_bridge_unders: true
+    road_bed_conform_bridge_decks: true
+    road_bed_bridge_deck_raise_m: 16.0
+    road_bed_bridge_pad_m: 2.0
+    highways: [secondary, primary, tertiary, trunk, motorway, unclassified]
+    centerline:
+      enabled: true
+      style: dashed
+      width_m: 0.15
+      material: Road_Line_White
+      dash_m: 3.0
+      gap_m: 6.0
+      render_priority: 25
+      decal_bias: 0.22
+
+annotations:
+  gpkg: data/annotations/tirol-imst-8192.gpkg
+  guardrail_source: heuristic
+
+notes: |
+  8000×8000 m CRS crop on 8192² heightmap @ 1 m/px (BeamNG power-of-two).
+  Out-of-the-box check: widths from data/roads/, no OID overrides.
+  Trunk B189; also B171, L246 (Hahntennjoch 1. Teil), L245 (Tarrenzer Straße).
+  python tools/build_level.py --site config/sites/imst.yaml
