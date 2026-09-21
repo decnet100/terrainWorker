@@ -315,21 +315,21 @@ def main() -> None:
     ap.add_argument("--ortho", default="", help="Orthophoto RGB image (PNG/JPG).")
     ap.add_argument("--mask", default="", help="Rock mask (PNG, white=rock).")
     ap.add_argument("--out", default="", help="Output directory (default: processed/<site>/rock_color_clusters).")
-    ap.add_argument("--k-start", type=int, default=3, help="Initial cluster count.")
-    ap.add_argument("--k-max", type=int, default=12, help="Maximum cluster count.")
+    ap.add_argument("--k-start", type=int, default=None, help="Initial cluster count.")
+    ap.add_argument("--k-max", type=int, default=None, help="Maximum cluster count.")
     ap.add_argument(
         "--threshold",
         type=float,
-        default=10.0,
+        default=None,
         help="Stop when each cluster ΔE76 p95 is <= threshold (Lab space).",
     )
     ap.add_argument(
         "--spread-p",
         type=float,
-        default=95.0,
+        default=None,
         help="Percentile used for the spread check (e.g. 95).",
     )
-    ap.add_argument("--max-samples", type=int, default=250_000, help="Max pixels sampled from the mask.")
+    ap.add_argument("--max-samples", type=int, default=None, help="Max pixels sampled from the mask.")
     ap.add_argument("--seed", type=int, default=1337, help="Random seed for sampling and kmeans++.")
     ap.add_argument("--dry-run", action="store_true", help="Compute metrics, but do not write images.")
     args = ap.parse_args()
@@ -348,10 +348,29 @@ def main() -> None:
         except Exception:  # noqa: BLE001
             site = None
         if site is not None:
+            # Pipeline integration: opt-in via YAML unless the user passed explicit inputs.
+            # This keeps build_level fast by default.
+            bng = site.get("beamng") or {}
+            rc = bng.get("rock_color_clusters") or {}
+            enabled = bool(rc.get("enabled", False))
+            if not enabled and not (args.ortho or args.mask or args.out):
+                print("Rock color clustering: disabled (set beamng.rock_color_clusters.enabled: true).")
+                return
             auto_ortho, auto_mask, auto_out = _auto_inputs_from_site(site)
             ortho_p = ortho_p or auto_ortho
             mask_p = mask_p or auto_mask
             out_dir = out_dir or auto_out
+            # YAML defaults (only where CLI did not specify a value)
+            if args.k_start is None:
+                args.k_start = int(rc.get("k_start", 3))
+            if args.k_max is None:
+                args.k_max = int(rc.get("k_max", 12))
+            if args.threshold is None:
+                args.threshold = float(rc.get("threshold", 10.0))
+            if args.spread_p is None:
+                args.spread_p = float(rc.get("spread_p", 95.0))
+            if args.max_samples is None:
+                args.max_samples = int(rc.get("max_samples", 250_000))
 
     if ortho_p is None:
         raise SystemExit("Missing --ortho (and no processed/<site> default ortho found).")
@@ -376,7 +395,7 @@ def main() -> None:
     rock_rgb = flat_rgb[flat_rock]
 
     rng = np.random.default_rng(int(args.seed))
-    max_samples = int(args.max_samples)
+    max_samples = int(args.max_samples) if args.max_samples is not None else 250_000
     if rock_rgb.shape[0] > max_samples:
         sel = rng.choice(rock_rgb.shape[0], size=max_samples, replace=False)
         rock_rgb_s = rock_rgb[sel]
@@ -384,11 +403,11 @@ def main() -> None:
         rock_rgb_s = rock_rgb
     x_lab = _rgb_u8_to_lab(rock_rgb_s)
 
-    k_start = max(1, int(args.k_start))
-    k_max = max(k_start, int(args.k_max))
-    spread_p = float(args.spread_p)
+    k_start = max(1, int(args.k_start) if args.k_start is not None else 3)
+    k_max = max(k_start, int(args.k_max) if args.k_max is not None else 12)
+    spread_p = float(args.spread_p) if args.spread_p is not None else 95.0
     spread_p = float(np.clip(spread_p, 50.0, 99.9))
-    threshold = float(args.threshold)
+    threshold = float(args.threshold) if args.threshold is not None else 10.0
 
     chosen = None
     for k in range(k_start, k_max + 1):

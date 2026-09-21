@@ -27,6 +27,27 @@ Schreibt nach `data/processed/<site>/rock_color_clusters/` (oder `--out`):
 - `rock_quantized_kK.png`: Quantisierte Vorschau (nur Fels-Pixel ersetzt)
 - `rock_class_XX_kK.png`: Klassenmasken (weiß = Pixel dieser Klasse)
 
+## Pipeline-Integration (build_level.py)
+
+`build_level.py` läuft nur „core“-Steps. Dafür ist das Feature **opt-in** über YAML:
+
+```yaml
+beamng:
+  rock_color_clusters:
+    enabled: true
+    ortho_size_px: 2048   # Preview-Größe (fetch_ortho)
+    k_start: 3
+    k_max: 12
+    threshold: 15.5
+    spread_p: 95
+    max_samples: 250000
+```
+
+Wenn `enabled: true` gesetzt ist, laufen in der Pipeline zusätzlich:
+
+- `fetch_ortho` → schreibt `data/processed/<site>/ortho.png`
+- `cluster_rock_colors` → schreibt `rock_color_clusters/*`
+
 ## Beispiele (PowerShell)
 
 ### Mit Site-Defaults (wenn vorhanden)

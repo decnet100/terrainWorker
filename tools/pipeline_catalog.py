@@ -76,6 +76,25 @@ STEPS: tuple[Step, ...] = (
         core=True,
     ),
     Step(
+        id="fetch_ortho",
+        title="Fetch ortho preview",
+        summary="Low-res orthophoto preview (playable bbox) for color analytics.",
+        script="tools/fetch_ortho.py",
+        group="1  Raw data",
+        docs="docs/SITE_DATA.md",
+        yaml_keys=(
+            "sources.ortho.type",
+            "sources.ortho.coverage",
+            "sources.ortho.resolution_m",
+            "beamng.rock_color_clusters.enabled",
+            "beamng.rock_color_clusters.ortho_size_px",
+        ),
+        outputs=("data/processed/{slug}/ortho.png",),
+        flags=(Flag("force", "--force", "bool", "Re-download, ignore cache"),),
+        core=True,
+        needs="sources.ortho",
+    ),
+    Step(
         id="fetch_dom",
         title="Fetch DOM",
         summary="Surface model for vegetation height (nDSM = DOM − DGM).",
@@ -130,9 +149,24 @@ STEPS: tuple[Step, ...] = (
         needs="sources.gip",
     ),
     Step(
+        id="fetch_landcover",
+        title="Fetch Landnutzung",
+        summary="Tirol traffic and land-use polygons (needed before GIP width samples).",
+        script="tools/fetch_landcover.py",
+        group="1  Raw data",
+        docs="docs/ROADS.md",
+        yaml_keys=(
+            "sources.landuse.type",
+            "sources.landuse.layers.landnutzung.url",
+        ),
+        outputs=("data/processed/{slug}/landcover_index.json",),
+        flags=(Flag("force", "--force", "bool", "Re-download even if cache exists"),),
+        needs="tirol_landcover",
+    ),
+    Step(
         id="measure_gip_widths",
         title="Measure GIP widths",
-        summary="Sample Landnutzung traffic polygons at three points per GIP OBJECTID; store in data/roads/gip_widths.json.",
+        summary="Three Landnutzung cross-sections per GIP OBJECTID → data/roads/gip_widths.json (shared, not per map).",
         script="tools/measure_gip_widths.py",
         group="1  Raw data",
         docs="docs/ROADS.md",
@@ -141,7 +175,10 @@ STEPS: tuple[Step, ...] = (
             "beamng.roads.width_by_str_code",
         ),
         outputs=("data/roads/gip_widths.json",),
-        flags=(Flag("force", "--force", "bool", "Re-measure OBJECTIDs already in the catalog"),),
+        flags=(
+            Flag("force", "--force", "bool", "Re-measure OBJECTIDs already in the catalog"),
+            Flag("all_known", "--all-known", "bool", "Fernpass + Reschen + Imst"),
+        ),
         needs="sources.gip",
     ),
     Step(
@@ -206,7 +243,7 @@ STEPS: tuple[Step, ...] = (
     Step(
         id="build_smoke",
         title="Heightmap and axis",
-        summary="DGM → 16-bit PNG and roads_beamng.json. Also runs masks and guardrails at the end.",
+        summary="DGM → 16-bit PNG. Axis from GIP when the site uses it; Overpass only for OSM sites. Then masks and guardrails.",
         script="tools/build_smoke.py",
         group="2  Terrain and axis",
         docs="docs/ROADS.md",
@@ -253,6 +290,17 @@ STEPS: tuple[Step, ...] = (
         group="2  Terrain and axis",
         docs="docs/ROCK_COLOR_CLUSTERS.md",
         outputs=("data/processed/{slug}/rock_color_clusters/rock_colors_k3.json",),
+        yaml_keys=(
+            "beamng.rock_color_clusters.enabled",
+            "beamng.rock_color_clusters.ortho_size_px",
+            "beamng.rock_color_clusters.k_start",
+            "beamng.rock_color_clusters.k_max",
+            "beamng.rock_color_clusters.threshold",
+            "beamng.rock_color_clusters.spread_p",
+            "beamng.rock_color_clusters.max_samples",
+        ),
+        core=True,
+        needs="beamng.rock_color_clusters",
     ),
     Step(
         id="setup_beamng_level",
@@ -487,7 +535,7 @@ STEPS: tuple[Step, ...] = (
     Step(
         id="build_buildings",
         title="Buildings",
-        summary="Footprints → TSStatic nearby / simplified in the distance.",
+        summary="TIRIS roofprints, walls inset 0.9 m from the eave. OSM only if source: osm.",
         script="tools/build_buildings.py",
         group="6  Horizon and settlement",
         docs="docs/CONCEPT.md",
@@ -495,6 +543,7 @@ STEPS: tuple[Step, ...] = (
             "beamng.buildings.enabled",
             "beamng.buildings.source",
             "beamng.buildings.eave_inset_m",
+            "sources.tiris_buildings.url",
         ),
         needs="beamng.buildings",
     ),
@@ -560,6 +609,17 @@ def is_applicable(step: Step, site: dict) -> bool:
             return True
         lu = str(nested_get(site, "sources.landuse.type") or "").lower()
         return lu in ("bev", "bev_wms", "bev_landcover")
+    if need == "beamng.rock_color_clusters":
+        rc = nested_get(site, "beamng.rock_color_clusters")
+        return bool(isinstance(rc, dict) and rc.get("enabled"))
+    if need == "tirol_landcover":
+        lu = str(nested_get(site, "sources.landuse.type") or "featureserver").lower()
+        if lu in ("osm", "none", "off"):
+            return False
+        return bool(
+            nested_get(site, "sources.landuse.layers.landnutzung")
+            or nested_get(site, "sources.landuse")
+        )
     val = nested_get(site, need)
     if val is None:
         return False
@@ -603,6 +663,29 @@ def config_rows(step: Step, site: dict) -> list[tuple[str, str]]:
             continue
         seen.add(path)
         rows.append((path, format_value(nested_get(site, path))))
+    if step.id == "build_buildings":
+        rows = [
+            (
+                key,
+                (
+                    "tiris (default)"
+                    if key == "beamng.buildings.source" and value == "—"
+                    else "0.9 (default)"
+                    if key == "beamng.buildings.eave_inset_m" and value == "—"
+                    else value
+                ),
+            )
+            for key, value in rows
+        ]
+    if step.id == "measure_gip_widths":
+        try:
+            from gip_catalog import load_widths  # noqa: WPS433
+
+            segs = (load_widths(force=True).get("segments") or {})
+            applied = sum(1 for s in segs.values() if isinstance(s, dict) and s.get("applied"))
+            rows.append(("data/roads/gip_widths.json", f"{len(segs)} segments ({applied} applied)"))
+        except Exception:
+            rows.append(("data/roads/gip_widths.json", "—"))
     if step.id == "build_bridges":
         items = nested_get(site, "beamng.bridges") or {}
         extra = [k for k in items if k != "defaults"]
