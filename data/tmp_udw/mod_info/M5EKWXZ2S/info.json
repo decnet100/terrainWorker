@@ -1,0 +1,89 @@
+{
+    "attachments": [
+        {
+            "data_filename": "1308704.png",
+            "original_filename": "upload_2026-6-16_13-16-10.png",
+            "thumb_filename": "thumbs\/1308704.jpg"
+        },
+        {
+            "data_filename": "1313457.png",
+            "original_filename": "upload_2026-7-6_7-10-48.png",
+            "thumb_filename": "thumbs\/1313457.jpg"
+        },
+        {
+            "data_filename": "1313458.png",
+            "original_filename": "upload_2026-7-6_7-11-5.png",
+            "thumb_filename": "thumbs\/1313458.jpg"
+        }
+    ],
+    "resource_id": 38321,
+    "current_version_id": 71011,
+    "download_count": 0,
+    "resource_version_id": 71434,
+    "version_string": "2.2 (0.39.3)",
+    "last_update": 1785848737,
+    "rating_avg": 3.77778,
+    "rating_count": 0,
+    "rating_sum": 0,
+    "resource_category_id": 10,
+    "resource_date": 1781695677,
+    "review_count": 9,
+    "tag_line": "Dynamic weather with active forecasts, realistic storm systems, bundled with a clean UI.",
+    "update_count": 4,
+    "path": "M5EKWXZ2S\/71011\/",
+    "filename": "universal_dynamic_weather_jaybeam.zip",
+    "title": "Universal Dynamic Weather",
+    "user_id": 801781,
+    "username": "JayBeam",
+    "tagid": "M5EKWXZ2S",
+    "message": "[B][I][SIZE=7][COLOR=#ff0000][U]FIXED FOR 0.39[\/U][\/COLOR]\n\nFixed in 2.0.1 \u2014 please update the mod and the app will show in UI Apps again[\/SIZE][\/I][\/B]\n\nRain that rolls in, storms that darken the sky, fog that settles over the road and then clears to sunshine an hour later. Universal Dynamic Weather turns the fixed skies of any map into weather that lives and changes while you drive.\n[ATTACH=full]1313457[\/ATTACH]\nPick a condition whenever you want, from clear and overcast through fog, drizzle, rain, thunderstorm and heavy storm. Or turn on the forecast and let the weather move through those conditions on its own, easing from calm to stormy and back the way real weather does. You decide how fast it changes, and with the forecast mix you decide how often each kind of weather shows up, so one drive can stay mostly clear and the next can be a wet grey grind.\n[ATTACH=full]1313460[\/ATTACH]\nWhen you want to set the scene exactly, open the custom builder. Rain, fog, cloud, thunder and wind each get their own slider, and the weather builds live as you drag them. A light drizzle under heavy cloud with no thunder, or a dry day with a howling wind, whatever you are after, you can build it.\n[ATTACH=full]1313458[\/ATTACH]\nThe wind is real. It pushes your car as you drive, stronger in the heavier weather, coming in gusts and shifting direction so it never feels like a fixed force, with the current speed shown right in the panel. Grip and the wet look of the road change with the conditions too, so a downpour is something you feel through the wheel, not just something you see. You can set the time of day and hold it wherever you like, from a bright morning to the middle of a stormy night, and rain, wind and thunder all come with sound that follows the weather.\n[ATTACH=full]1313459[\/ATTACH]\nStorms actually feel like storms now. The sky goes dark, the sun and its glare fall away, and the rain comes down heavy across the whole view.\n\nEverything runs from the Dynamic Weather app in the UI Apps menu, rebuilt to match the look of the game. There is nothing to type and no console needed. Add the app once, pick a preset or build your own, and drive. By JayBeam.\n[ATTACH=full]1313461[\/ATTACH]\n[ATTACH=full]1313462[\/ATTACH]\n\nThere's a JayBeam Discord for updates, help, and feature ideas across all my mods. Anyone's welcome: [URL]https:\/\/discord.gg\/EPRqvaT2aB[\/URL]",
+    "category_title": "",
+    "prefix_title": "Beta",
+    "via": "packed by repo on Mon, 10 Aug 2026 14:05:23 GMT",
+    "hashes": [
+        [
+            "lua\/ge\/extensions\/jbWeather.lua",
+            "eb085c433a443b6a"
+        ],
+        [
+            "ui\/modules\/apps\/jbWeather\/app.js",
+            "bb6d40ba7d722a2b"
+        ],
+        [
+            "ui\/modules\/apps\/jbWeather\/app.json",
+            "31536c257fc71226"
+        ],
+        [
+            "art\/weather\/jbweather.json",
+            "45e23dd3bad0011b"
+        ],
+        [
+            "sounds\/jbw_thunder1.ogg",
+            "76b46cc637a71829"
+        ],
+        [
+            "sounds\/jbw_rain2.ogg",
+            "f6d4c1a5958687b7"
+        ],
+        [
+            "sounds\/jbw_rain_int2.ogg",
+            "505143e0bba3c325"
+        ],
+        [
+            "sounds\/jbw_thunder3.ogg",
+            "d16686a20c1a01af"
+        ],
+        [
+            "sounds\/jbw_thunder2.ogg",
+            "f6c1a2e746dc945a"
+        ],
+        [
+            "sounds\/credits.txt",
+            "44a353da79d3abce"
+        ],
+        [
+            "sounds\/jbw_wind2.ogg",
+            "44744295b93dd979"
+        ]
+    ]
+}

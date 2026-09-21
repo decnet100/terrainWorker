@@ -23,7 +23,7 @@ Die Klasse steht in **`OBJEKT`**, nicht im Straßennamen. `KUNSTBAUTEN` ist Frei
 
 Galerien stehen in `OBJEKT` oft als Tunnel. Dann entscheidet der **Name** (`Galerie` in `KUNSTBAUTEN` oder `STRNAME`).
 
-Oberflächenstücke, deren Name „Tunnel“ enthält, aber frei liegen, gehören nach `beamng.roads.not_tunnel_objectids`.
+Oberflächenstücke, deren Name „Tunnel“ enthält, aber frei liegen, gehören nach `data/roads/gip_overrides.yaml` (`not_tunnel_objectids`). Die Site-YAML kann dieselbe Liste ergänzen.
 
 Zwei parallele GIP-Hälften (Richtungsfahrbahnen) **nicht** getrennt als zwei Tunnel bauen. Stattdessen eine Mittelachse:
 
@@ -138,7 +138,7 @@ Muster **Landecker** (`config/sites/reschen.yaml`): Bohrloch und freie A12 sind 
 ```yaml
 beamng:
   roads:
-    not_tunnel_objectids: [227552, 227576, 229085]
+    # Surface A12 oids: data/roads/gip_overrides.yaml (not_tunnel_objectids)
     unify:
       - id: landecker
         objectids: [227551, 235599]

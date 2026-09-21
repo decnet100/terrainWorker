@@ -143,6 +143,9 @@ def parse_side_cut_preserve(*parts: dict | None) -> dict:
             pad = float(part["pad_m"])
     if not found:
         objekts = set(_SUBORDINATE_LANE_OBJEKT)
+    from gip_catalog import catalog_side_cut_oids  # noqa: WPS433
+
+    oids |= catalog_side_cut_oids()
     return {"objekt": objekts, "objectid": oids, "pad_m": pad}
 
 
@@ -200,10 +203,15 @@ def gip_is_gravel_path(road: dict) -> bool:
 
 
 def not_tunnel_objectids(site: dict | None = None) -> set[int]:
-    """GIP OBJECTIDs that stay surface even if the road name says Tunnel."""
+    """GIP OBJECTIDs that stay surface even if the road name says Tunnel.
+
+    Union of ``data/roads/gip_overrides.yaml`` and site YAML (YAML may add more).
+    """
     site = site or load_site()
+    from gip_catalog import catalog_not_tunnel_oids  # noqa: WPS433
+
     raw = ((site.get("beamng") or {}).get("roads") or {}).get("not_tunnel_objectids") or []
-    out: set[int] = set()
+    out: set[int] = set(catalog_not_tunnel_oids())
     for x in raw:
         try:
             out.add(int(x))
@@ -817,7 +825,7 @@ def _gip_segment_width_m(
     by_lanes: dict[str, float] | None = None,
     lane_width_m: float = 3.75,
 ) -> float:
-    """Objekt / STR_CODE defaults; YAML ``width_by_str_code`` wins on named roads."""
+    """Objekt / STR_CODE class defaults (no Landnutzung measurement)."""
     default_m = float(default_m)
     objekt = str(props.get("OBJEKT") or "").upper().strip()
     code = str(props.get("STR_CODE") or "").strip()
@@ -840,6 +848,57 @@ def _gip_segment_width_m(
             return float(lanes) * float(lane_width_m)
         return 8.0
     return default_m
+
+
+def resolve_gip_width_m(
+    props: dict,
+    default_m: float,
+    *,
+    by_code: dict[str, float] | None = None,
+    by_lanes: dict[str, float] | None = None,
+    lane_width_m: float = 3.75,
+    site: dict | None = None,
+) -> tuple[float, str]:
+    """Width in metres and source tag.
+
+    Order: site OID → catalog OID → Landnutzung mean → site/catalog STR_CODE
+    → class default.
+    """
+    from gip_catalog import (  # noqa: WPS433
+        catalog_width_by_objectid,
+        catalog_width_by_str_code,
+        measured_width_m,
+        site_width_by_objectid,
+    )
+
+    oid_raw = props.get("OBJECTID")
+    if oid_raw is not None:
+        try:
+            oid = int(oid_raw)
+        except (TypeError, ValueError):
+            oid = None
+        if oid is not None:
+            sw = site_width_by_objectid(site).get(oid)
+            if sw is not None:
+                return float(sw), "site_oid"
+            cw = catalog_width_by_objectid().get(oid)
+            if cw is not None:
+                return float(cw), "catalog_oid"
+            mw = measured_width_m(oid)
+            if mw is not None:
+                return float(mw), "landnutzung"
+    merged = dict(catalog_width_by_str_code())
+    merged.update(by_code or {})
+    return (
+        _gip_segment_width_m(
+            props,
+            default_m,
+            by_code=merged,
+            by_lanes=by_lanes,
+            lane_width_m=lane_width_m,
+        ),
+        "class",
+    )
 
 
 def load_gip_road_segments(site: dict, *, width_m: float | None = None) -> dict:
@@ -907,12 +966,13 @@ def load_gip_road_segments(site: dict, *, width_m: float | None = None) -> dict:
                 for i in range(len(poly) - 1)
             ),
         )
-        w_seg = _gip_segment_width_m(
+        w_seg, w_src = resolve_gip_width_m(
             props,
             width_m,
             by_code=by_code,
             by_lanes=by_lanes,
             lane_width_m=lane_width_m,
+            site=site,
         )
         nodes = []
         for x, y in piece:
@@ -945,6 +1005,8 @@ def load_gip_road_segments(site: dict, *, width_m: float | None = None) -> dict:
             "kunstbauten": props.get("KUNSTBAUTEN"),
             "objekt": props.get("OBJEKT"),
             "source": "gip",
+            "width_source": w_src,
+            "width_m": round(w_seg, 2),
             "length_m": round(length, 2),
             "lanes": (
                 1.0
@@ -967,9 +1029,14 @@ def load_gip_road_segments(site: dict, *, width_m: float | None = None) -> dict:
     proc = processed_dir(site)
     out = proc / "gip_roads_beamng.json"
     out.write_text(json.dumps(roads, indent=2), encoding="utf-8")
+    src_counts: dict[str, int] = {}
+    for road in roads.values():
+        src = str(road.get("width_source") or "?")
+        src_counts[src] = src_counts.get(src, 0) + 1
     print(
         f"GIP guardrail centerlines: {len(roads)} OBJECTIDs from {path.name} "
-        f"(skipped_short={skipped_short} str_codes={dict(str_counts)}) "
+        f"(skipped_short={skipped_short} str_codes={dict(str_counts)} "
+        f"width_source={src_counts}) "
         f"-> {out.relative_to(Path(__file__).resolve().parents[1])}"
     )
     return roads
@@ -1552,7 +1619,7 @@ def is_gip_tunnel_segment(road: dict, site: dict | None = None) -> bool:
     """True for tunnel/gallery Kunstbauten or S-AT/S-BT/S-BG/S-LT.
 
     ``STRNAME`` is ignored (A12 approach pieces are titled “Landecker Tunnel”
-    without being underground). YAML ``not_tunnel_objectids`` wins.
+    without being underground). Catalog + YAML ``not_tunnel_objectids`` win.
     """
     skip = not_tunnel_objectids(site)
     oids: list[int] = []

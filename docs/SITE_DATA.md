@@ -66,6 +66,7 @@ C:\temp\beamng_autoroad\
   config\sites\             # named profiles
   data\raw\                 # original downloads (large, gitignore)
   data\processed\           # heightmap, road JSON, masks
+  data\roads\               # central GIP catalog (widths, not-tunnel)
   data\annotations\         # GPX/GeoJSON/GPKG: tunnels, edges, …
   docs\
 ```

@@ -7,7 +7,7 @@ local M = {}
 local SESSION_PATH = "settings/tirolrunde/session.json"
 local PORTALS_PATH = "/lua/ge/extensions/tirolrunde/portals.json"
 -- Bump this when Lua changes; shown on load so a stale in-memory copy is obvious.
-local LUA_REV = "2026-09-18e"
+local LUA_REV = "2026-09-20b"
 -- 24x: 1 real hour = 1 game day (radio hour = 150 s). Weather tick stays UDW's real-time clock.
 local DAY_LENGTH_S = 3600
 
@@ -21,6 +21,11 @@ local worldReady = false
 local restoreArmed = false
 local restoreTries = 0
 local udwResumeLeft = nil
+-- UV Rotate Animation on the rotor material; Lua spin stays off.
+local FAN_RPM = 0
+local FAN_RAD_PER_S = FAN_RPM * math.pi / 30
+local fanRotors = nil
+local fanAngle = 0
 
 local function now()
   return os.clock()
@@ -569,6 +574,72 @@ local function applyPendingRestore()
   return true
 end
 
+local function col3(mat, i)
+  local c = mat:getColumn(i)
+  return vec3(c.x, c.y, c.z)
+end
+
+local function collectFanRotors()
+  fanRotors = {}
+  fanAngle = 0
+  if not scenetree or not scenetree.findClassObjects then
+    return
+  end
+  local names = scenetree.findClassObjects("TSStatic") or {}
+  for _, name in ipairs(names) do
+    if type(name) == "string" and name:find("__fanrotor_", 1, true) then
+      local obj = scenetree.findObject(name)
+      if obj and obj.getTransform then
+        local t = obj:getTransform()
+        local shape = tostring(obj.shapeName or obj:getField("shapeName", 0) or "")
+        local dir = 1
+        if shape:find("ccw", 1, true) then
+          dir = -1
+        end
+        fanRotors[#fanRotors + 1] = {
+          id = obj:getId(),
+          pos = obj:getPosition(),
+          x = col3(t, 0),
+          y = col3(t, 1),
+          z = col3(t, 2),
+          dir = dir,
+        }
+      end
+    end
+  end
+  log("I", "tirolrunde", "fan rotors " .. tostring(#fanRotors) .. " @ " .. tostring(FAN_RPM) .. " rpm")
+end
+
+local function tickFanRotors(dt)
+  if FAN_RPM == 0 then
+    return
+  end
+  if fanRotors == nil then
+    collectFanRotors()
+  end
+  if not fanRotors or #fanRotors == 0 then
+    return
+  end
+  fanAngle = fanAngle + (dt or 0) * FAN_RAD_PER_S
+  local c = math.cos(fanAngle)
+  local s = math.sin(fanAngle)
+  for i = 1, #fanRotors do
+    local f = fanRotors[i]
+    local obj = scenetree.findObjectById and scenetree.findObjectById(f.id)
+    if obj and obj.setTransform then
+      local sd = s * f.dir
+      local y2 = f.y * c + f.z * sd
+      local z2 = f.z * c - f.y * sd
+      local mat = MatrixF(true)
+      mat:setColumn(0, f.x)
+      mat:setColumn(1, y2)
+      mat:setColumn(2, z2)
+      mat:setColumn(3, f.pos)
+      obj:setTransform(mat)
+    end
+  end
+end
+
 local function onExtensionLoaded()
   loadPortals()
   math.randomseed(os.time())
@@ -583,6 +654,7 @@ local function onWorldReadyState(state)
   if state == 2 then
     loadPortals()
     hideAllArcs()
+    fanRotors = nil
     restoreArmed = true
     restoreTries = 0
   end
@@ -600,6 +672,7 @@ local function onClientEndMission()
   dwellGate = nil
   dwellAcc = 0
   udwResumeLeft = nil
+  fanRotors = nil
   hideAllArcs()
 end
 
@@ -621,6 +694,7 @@ local function onUpdate(dtReal)
   if not worldReady then
     return
   end
+  tickFanRotors(dtReal)
   tickUdwResume(dtReal)
   local level = currentLevel()
   if not level then

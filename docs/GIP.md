@@ -46,8 +46,8 @@ beamng:
     #   - from_oid: 3852
     #     to_oid: 3901
     #     note: "stay on B179 after the bridge"
-    # width_by_str_code:
-    #   L*: 7.0               # all Landesstraßen (node metres, before width_scale)
+    # width_by_objectid:          # rare per-level exception; else data/roads/
+    #   12345: 9.0
     # lanes_by_str_code:
     #   B179: 3               # 3+ lanes → skip the 8 m two-lane Bundesstraße default
 ```
@@ -253,8 +253,7 @@ Parallel tubes that only share a mouth are **not** auto-merged (`merge_abutting`
 ```yaml
 beamng:
   roads:
-    # Surface A12 pieces whose STRNAME is “Landecker Tunnel” but have no Kunstbauten
-    not_tunnel_objectids: [227552, 227576, 229085, 234513, 235597]
+    # Surface A12 pieces: data/roads/gip_overrides.yaml (not_tunnel_objectids)
     unify:
       - id: landecker
         objectids: [227551, 235599]   # the two S-AT halves

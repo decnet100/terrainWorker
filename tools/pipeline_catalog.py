@@ -129,6 +129,21 @@ STEPS: tuple[Step, ...] = (
         needs="sources.gip",
     ),
     Step(
+        id="measure_gip_widths",
+        title="Measure GIP widths",
+        summary="Sample Landnutzung traffic polygons at three points per GIP OBJECTID; store in data/roads/gip_widths.json.",
+        script="tools/measure_gip_widths.py",
+        group="1  Raw data",
+        docs="docs/ROADS.md",
+        yaml_keys=(
+            "beamng.roads.width_by_objectid",
+            "beamng.roads.width_by_str_code",
+        ),
+        outputs=("data/roads/gip_widths.json",),
+        flags=(Flag("force", "--force", "bool", "Re-measure OBJECTIDs already in the catalog"),),
+        needs="sources.gip",
+    ),
+    Step(
         id="fetch_strassennetz",
         title="Fetch road network",
         summary="Smoothed provincial axes (only where the site uses the network instead of GIP).",

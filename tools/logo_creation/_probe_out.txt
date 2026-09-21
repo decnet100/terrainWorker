@@ -1,0 +1,5 @@
+named=None
+used=Sans-serif
+before=0
+after=1
+offsets=(True, offset_x=35, offset_y=320)

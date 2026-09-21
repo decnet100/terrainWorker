@@ -1,0 +1,608 @@
+[
+  {
+    "internalName": "Asphalt",
+    "groundmodel": "GROUNDMODEL_ASPHALT1",
+    "annotation": "ASPHALT",
+    "detail": "t_asphalt_b.png",
+    "levels": [
+      "driver_training",
+      "gridmap_v2",
+      "hirochi_raceway",
+      "template",
+      "west_coast_usa"
+    ]
+  },
+  {
+    "internalName": "asphalt",
+    "groundmodel": "ASPHALT",
+    "annotation": "ASPHALT",
+    "detail": "t_asphalt_02_b.png",
+    "levels": [
+      "east_coast_usa",
+      "italy",
+      "johnson_valley"
+    ]
+  },
+  {
+    "internalName": "asphalt2",
+    "groundmodel": "ASPHALT",
+    "annotation": "ASPHALT",
+    "detail": "t_asphalt_03_b.png",
+    "levels": [
+      "east_coast_usa",
+      "italy",
+      "johnson_valley"
+    ]
+  },
+  {
+    "internalName": "Asphalt_prepped",
+    "groundmodel": "ASPHALT_PREPPED",
+    "annotation": "ASPHALT",
+    "detail": "t_asphalt_02_b.png",
+    "levels": [
+      "template"
+    ]
+  },
+  {
+    "internalName": "asphalt_prepped",
+    "groundmodel": "ASPHALT_PREPPED",
+    "annotation": "ASPHALT",
+    "detail": "t_asphalt_b.png",
+    "levels": [
+      "west_coast_usa"
+    ]
+  },
+  {
+    "internalName": "Asphalt_wet",
+    "groundmodel": "SLIPPERY",
+    "annotation": "ASPHALT",
+    "detail": "t_asphalt_b.png",
+    "levels": [
+      "driver_training"
+    ]
+  },
+  {
+    "internalName": "BeachSand",
+    "groundmodel": "BEACHSAND",
+    "annotation": "",
+    "detail": "t_beachsand_b.png",
+    "levels": [
+      "Cliff",
+      "gridmap_v2",
+      "hirochi_raceway",
+      "Industrial",
+      "italy",
+      "jungle_rock_island",
+      "small_island",
+      "template",
+      "west_coast_usa"
+    ]
+  },
+  {
+    "internalName": "concrete",
+    "groundmodel": "ASPHALT",
+    "annotation": "ASPHALT",
+    "detail": "t_concrete_damaged_b.png",
+    "levels": [
+      "automation_test_track"
+    ]
+  },
+  {
+    "internalName": "Concrete",
+    "groundmodel": "CONCRETE",
+    "annotation": "ASPHALT",
+    "detail": "t_concrete_damaged_b.png",
+    "levels": [
+      "derby",
+      "driver_training",
+      "gridmap_v2",
+      "Industrial",
+      "jungle_rock_island",
+      "small_island",
+      "template"
+    ]
+  },
+  {
+    "internalName": "Dirt",
+    "groundmodel": "DIRT",
+    "annotation": "",
+    "detail": "t_dirt_rocky_b.png",
+    "levels": [
+      "east_coast_usa",
+      "gridmap_v2",
+      "johnson_valley",
+      "jungle_rock_island",
+      "template"
+    ]
+  },
+  {
+    "internalName": "dirt",
+    "groundmodel": "DIRT",
+    "annotation": "",
+    "detail": "t_dirt_jri_b.png",
+    "levels": [
+      "hirochi_raceway",
+      "Industrial",
+      "west_coast_usa"
+    ]
+  },
+  {
+    "internalName": "dirt_dusty",
+    "groundmodel": "DIRT_DUSTY",
+    "annotation": "",
+    "detail": "t_dirt_crumbly_b.png",
+    "levels": [
+      "automation_test_track",
+      "derby",
+      "small_island"
+    ]
+  },
+  {
+    "internalName": "dirt_grass",
+    "groundmodel": "DIRT_GRASS",
+    "annotation": "GRASS",
+    "detail": "t_dirt_dry_grass_b.png",
+    "levels": [
+      "automation_test_track",
+      "Cliff",
+      "derby",
+      "driver_training",
+      "east_coast_usa",
+      "hirochi_raceway",
+      "Industrial",
+      "johnson_valley",
+      "small_island",
+      "Utah",
+      "west_coast_usa"
+    ]
+  },
+  {
+    "internalName": "dirt_loose",
+    "groundmodel": "DIRT_LOOSE",
+    "annotation": "",
+    "detail": "t_dirt_crumbly_b.png",
+    "levels": [
+      "automation_test_track",
+      "driver_training",
+      "Industrial",
+      "italy",
+      "johnson_valley",
+      "jungle_rock_island",
+      "small_island",
+      "Utah",
+      "west_coast_usa"
+    ]
+  },
+  {
+    "internalName": "dirt_loose_dusty",
+    "groundmodel": "DIRT",
+    "annotation": "",
+    "detail": "t_dirt_crumbly_b.png",
+    "levels": [
+      "italy",
+      "johnson_valley",
+      "Utah"
+    ]
+  },
+  {
+    "internalName": "dirt_rocky",
+    "groundmodel": "DIRT_ROCKY",
+    "annotation": "COBBLESTONE",
+    "detail": "t_dirt_rocky_b.png",
+    "levels": [
+      "johnson_valley",
+      "Utah"
+    ]
+  },
+  {
+    "internalName": "dirt_rocky_large",
+    "groundmodel": "DIRT_ROCKY_LARGE",
+    "annotation": "ROCK",
+    "detail": "t_debris_concrete_tile_b.png",
+    "levels": [
+      "Industrial",
+      "johnson_valley",
+      "jungle_rock_island",
+      "small_island",
+      "template",
+      "Utah"
+    ]
+  },
+  {
+    "internalName": "dirt_sandy",
+    "groundmodel": "DIRT_SANDY",
+    "annotation": "",
+    "detail": "t_dirt_sandy_b.png",
+    "levels": [
+      "johnson_valley",
+      "Utah"
+    ]
+  },
+  {
+    "internalName": "forest",
+    "groundmodel": "FOREST",
+    "annotation": "GRASS",
+    "detail": "t_moss_b.png",
+    "levels": [
+      "automation_test_track",
+      "Cliff"
+    ]
+  },
+  {
+    "internalName": "Forest",
+    "groundmodel": "GRASS",
+    "annotation": "GRASS",
+    "detail": "t_forest_floor_b.png",
+    "levels": [
+      "driver_training",
+      "east_coast_usa",
+      "hirochi_raceway",
+      "Industrial",
+      "jungle_rock_island",
+      "west_coast_usa"
+    ]
+  },
+  {
+    "internalName": "forest_floor",
+    "groundmodel": "GRASS2",
+    "annotation": "GRASS",
+    "detail": "t_dirt_dry_grassy_b.png",
+    "levels": [
+      "derby",
+      "east_coast_usa",
+      "hirochi_raceway",
+      "Industrial",
+      "italy",
+      "jungle_rock_island"
+    ]
+  },
+  {
+    "internalName": "grass",
+    "groundmodel": "GRASS",
+    "annotation": "GRASS",
+    "detail": "t_moss_b.png",
+    "levels": [
+      "automation_test_track",
+      "west_coast_usa"
+    ]
+  },
+  {
+    "internalName": "Grass",
+    "groundmodel": "GRASS",
+    "annotation": "",
+    "detail": "t_grass1_b.png",
+    "levels": [
+      "Cliff",
+      "derby",
+      "driver_training",
+      "east_coast_usa",
+      "gridmap_v2",
+      "hirochi_raceway",
+      "Industrial",
+      "italy",
+      "johnson_valley",
+      "jungle_rock_island",
+      "small_island",
+      "template",
+      "Utah"
+    ]
+  },
+  {
+    "internalName": "grass2",
+    "groundmodel": "GRASS2",
+    "annotation": "GRASS",
+    "detail": "t_moss_b.png",
+    "levels": [
+      "automation_test_track",
+      "west_coast_usa"
+    ]
+  },
+  {
+    "internalName": "Grass2",
+    "groundmodel": "GRASS",
+    "annotation": "",
+    "detail": "t_grass2_b.png",
+    "levels": [
+      "Cliff",
+      "derby",
+      "driver_training",
+      "east_coast_usa",
+      "gridmap_v2",
+      "hirochi_raceway",
+      "Industrial",
+      "italy",
+      "johnson_valley",
+      "jungle_rock_island",
+      "small_island",
+      "template",
+      "Utah"
+    ]
+  },
+  {
+    "internalName": "grass3",
+    "groundmodel": "GRASS3",
+    "annotation": "GRASS",
+    "detail": "t_dirt_dry_grassy_b.png",
+    "levels": [
+      "automation_test_track"
+    ]
+  },
+  {
+    "internalName": "Grass3",
+    "groundmodel": "GRASS",
+    "annotation": "GRASS",
+    "detail": "t_grass2_b.png",
+    "levels": [
+      "driver_training",
+      "east_coast_usa",
+      "hirochi_raceway",
+      "Industrial",
+      "italy",
+      "Utah"
+    ]
+  },
+  {
+    "internalName": "grass4",
+    "groundmodel": "GRASS",
+    "annotation": "GRASS",
+    "detail": "t_dirt_crumbly_b.png",
+    "levels": [
+      "automation_test_track"
+    ]
+  },
+  {
+    "internalName": "Grass4",
+    "groundmodel": "GRASS",
+    "annotation": "GRASS",
+    "detail": "t_grass1_b.png",
+    "levels": [
+      "driver_training",
+      "east_coast_usa",
+      "italy"
+    ]
+  },
+  {
+    "internalName": "Gravel",
+    "groundmodel": "GRAVEL",
+    "annotation": "ROCK",
+    "detail": "t_concrete_damaged_b.png",
+    "levels": [
+      "Industrial"
+    ]
+  },
+  {
+    "internalName": "gravel",
+    "groundmodel": "GRAVEL",
+    "annotation": "",
+    "detail": "t_dirt_rocky_b.png",
+    "levels": [
+      "template",
+      "west_coast_usa"
+    ]
+  },
+  {
+    "internalName": "GRAVEL",
+    "groundmodel": "GRAVEL",
+    "annotation": "",
+    "detail": "t_gravel_b.png",
+    "levels": [
+      "Utah"
+    ]
+  },
+  {
+    "internalName": "gravel_wet",
+    "groundmodel": "GRAVEL_WET",
+    "annotation": "",
+    "detail": "t_pebbles_b.png",
+    "levels": [
+      "jungle_rock_island"
+    ]
+  },
+  {
+    "internalName": "groundmodel_asphalt1",
+    "groundmodel": "ASPHALT",
+    "annotation": "ASPHALT",
+    "detail": "t_asphalt_b.color.png",
+    "levels": [
+      "automation_test_track",
+      "derby",
+      "Industrial",
+      "italy",
+      "johnson_valley",
+      "jungle_rock_island",
+      "small_island",
+      "template",
+      "Utah"
+    ]
+  },
+  {
+    "internalName": "GROUNDMODEL_ASPHALT1",
+    "groundmodel": "GROUNDMODEL_ASPHALT1",
+    "annotation": "ASPHALT",
+    "detail": "t_asphalt_02_b.png",
+    "levels": [
+      "east_coast_usa"
+    ]
+  },
+  {
+    "internalName": "groundmodel_asphalt_old",
+    "groundmodel": "ASPHALT",
+    "annotation": "ASPHALT",
+    "detail": "t_asphalt_b.png",
+    "levels": [
+      "italy"
+    ]
+  },
+  {
+    "internalName": "ice",
+    "groundmodel": "SNOW",
+    "annotation": "",
+    "detail": "t_asphalt_b.png",
+    "levels": [
+      "automation_test_track"
+    ]
+  },
+  {
+    "internalName": "marble",
+    "groundmodel": "ROCK",
+    "annotation": "ROCK",
+    "detail": "t_marble_b.png",
+    "levels": [
+      "italy"
+    ]
+  },
+  {
+    "internalName": "mud",
+    "groundmodel": "MUD",
+    "annotation": "MUD",
+    "detail": "t_mud_b.png",
+    "levels": [
+      "automation_test_track"
+    ]
+  },
+  {
+    "internalName": "Mud",
+    "groundmodel": "MUD",
+    "annotation": "MUD",
+    "detail": "t_mud_b.png",
+    "levels": [
+      "derby",
+      "driver_training",
+      "east_coast_usa",
+      "gridmap_v2",
+      "hirochi_raceway",
+      "Industrial",
+      "jungle_rock_island",
+      "small_island",
+      "template"
+    ]
+  },
+  {
+    "internalName": "Pebbles",
+    "groundmodel": "GRAVEL_WET",
+    "annotation": "",
+    "detail": "t_jri_asphalt_b.png",
+    "levels": [
+      "jungle_rock_island"
+    ]
+  },
+  {
+    "internalName": "Rock",
+    "groundmodel": "ROCK",
+    "annotation": "",
+    "detail": "t_dirt_rocks_large_b.png",
+    "levels": [
+      "Cliff",
+      "gridmap_v2",
+      "Industrial",
+      "italy",
+      "jungle_rock_island",
+      "small_island",
+      "Utah"
+    ]
+  },
+  {
+    "internalName": "ROCK",
+    "groundmodel": "ROCK",
+    "annotation": "ROCK",
+    "detail": "t_rock_eca_b.png",
+    "levels": [
+      "east_coast_usa",
+      "hirochi_raceway"
+    ]
+  },
+  {
+    "internalName": "rock",
+    "groundmodel": "ROCK",
+    "annotation": "ROCK",
+    "detail": "t_rocks_pac_b.png",
+    "levels": [
+      "template"
+    ]
+  },
+  {
+    "internalName": "Rock_cliff",
+    "groundmodel": "ROCK",
+    "annotation": "ROCK",
+    "detail": "t_rocks_pac_b.png",
+    "levels": [
+      "automation_test_track",
+      "Cliff",
+      "driver_training",
+      "jungle_rock_island",
+      "west_coast_usa"
+    ]
+  },
+  {
+    "internalName": "rocks_large",
+    "groundmodel": "GRAVEL_WET",
+    "annotation": "ROCK",
+    "detail": "t_pebbles_b.png",
+    "levels": [
+      "east_coast_usa"
+    ]
+  },
+  {
+    "internalName": "RockyDirt",
+    "groundmodel": "DIRT_ROCKY",
+    "annotation": "",
+    "detail": "t_dirt_rocky_b.png",
+    "levels": [
+      "Cliff",
+      "derby",
+      "east_coast_usa",
+      "Industrial",
+      "italy",
+      "small_island"
+    ]
+  },
+  {
+    "internalName": "rockydirt",
+    "groundmodel": "DIRT_ROCKY",
+    "annotation": "",
+    "detail": "t_dirt_crumbly_b.png",
+    "levels": [
+      "johnson_valley"
+    ]
+  },
+  {
+    "internalName": "Sand",
+    "groundmodel": "BEACHSAND",
+    "annotation": "SAND",
+    "detail": "t_sand_b.png",
+    "levels": [
+      "automation_test_track"
+    ]
+  },
+  {
+    "internalName": "sand",
+    "groundmodel": "SAND",
+    "annotation": "",
+    "detail": "t_wet_sand_b.png",
+    "levels": [
+      "Cliff",
+      "johnson_valley",
+      "Utah"
+    ]
+  },
+  {
+    "internalName": "snow",
+    "groundmodel": "SNOW",
+    "annotation": "",
+    "detail": "t_snow_b.png",
+    "levels": [
+      "automation_test_track",
+      "template"
+    ]
+  },
+  {
+    "internalName": "test",
+    "groundmodel": "TEST",
+    "annotation": "",
+    "detail": "",
+    "levels": [
+      "glow_city",
+      "smallgrid"
+    ]
+  }
+]

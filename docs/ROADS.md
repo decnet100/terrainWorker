@@ -24,19 +24,32 @@ Related: [BEAMNG_IMPORT.md](BEAMNG_IMPORT.md), [GIP.md](GIP.md) (**centerline so
 | `S-AR` / `S-AP` / `S-BR` / `S-BP` | 1 × `lane_width_m` | subordinate lane; no own rails; solid edge lines, no dashed center |
 | `B*` Bundesstraße, 2 Fahrbahnen | 8.0 m | full kit |
 | `B*` with `lanes_by_str_code` ≥ 3 | `lanes × lane_width_m` | full kit |
-| `L*` | site default or `width_by_str_code` | full kit |
+| `L*` | site default, catalog `L*: 7.0`, or Landnutzung sample | full kit |
 
-YAML `beamng.roads.width_by_str_code` / `lanes_by_str_code` override named roads (exact or `L*`). Example: Reschen `L*: 7.0` → Decal/terrain `6.3` at `width_scale: 0.9`.
+YAML `beamng.roads.width_by_objectid` (rare) and `data/roads/gip_overrides.yaml` override a named piece. Example: catalog `L*: 7.0` when Landnutzung has no usable sample; Decal/terrain still multiply `width_scale` (Reschen 0.9 → 6.3 m).
 
 ### Where is what?
 
 | Place | Content |
 |-------|---------|
-| Site YAML | formula / defaults (`lane_width_m`, `default_lanes`, optional `lanes_by_highway`) |
-| `data/raw/osm_roads_*.json` | raw OSM (`lanes`, `width`, geometry) — Overpass cache |
-| `data/processed/.../roads_beamng.json` | **final** node widths `[x,y,z,width]` — what decals / masks / guardrails use |
+| `data/roads/gip_widths.json` | six Landnutzung samples per GIP OBJECTID + mean width |
+| `data/roads/gip_overrides.yaml` | not-tunnel flags, extra side-cut OIDs, rare width overrides, `L*: 7.0` fallback |
+| Site YAML | level crop, materials, MeshRoad recipes; optional `width_by_objectid` |
+| `data/processed/.../gip_roads_beamng.json` | **final** node widths `[x,y,z,width]` — what decals / masks / guardrails use |
 
-YAML does **not** store the width of every road; smoke computes it from OSM + formula and writes `roads_beamng.json`. Fernpass Mega then follows GIP OBJECTID polylines for the axis (width still from that JSON / defaults).
+GIP widths are **not** stored per site. Fernpass 4096 and 8192 share the same OBJECTIDs.
+
+### Where is what?
+
+1. Site YAML `beamng.roads.width_by_objectid`
+2. Catalog `width_by_objectid`
+3. Landnutzung mean (`applied: true` in `gip_widths.json`)
+4. Site YAML `width_by_str_code` / catalog `width_by_str_code` (`L*`)
+5. Class defaults in the table above
+
+```powershell
+cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/fernpass_mega.yaml"; python tools\measure_gip_widths.py --all-known
+```
 
 ### Lookup order (`tools/road_width.py` → `build_smoke`)
 

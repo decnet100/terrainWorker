@@ -1,0 +1,7 @@
+{
+  "jb_clear":     { "CloudLayer": { "coverage": 0.10, "cirrusCoverage": 0.20 }, "LevelInfo": { "fogDensity": 0.0008, "fogColor": [0.74, 0.82, 0.93, 1] } },
+  "jb_overcast":  { "CloudLayer": { "coverage": 1.70, "cirrusCoverage": 1.00 }, "LevelInfo": { "fogDensity": 0.0020, "fogColor": [0.55, 0.57, 0.62, 1] } },
+  "jb_fog":       { "CloudLayer": { "coverage": 0.90, "cirrusCoverage": 0.60 }, "LevelInfo": { "fogDensity": 0.0140, "fogColor": [0.60, 0.62, 0.66, 1] } },
+  "jb_rain":      { "CloudLayer": { "coverage": 2.60, "cirrusCoverage": 1.20 }, "LevelInfo": { "fogDensity": 0.0040, "fogColor": [0.45, 0.47, 0.52, 1] } },
+  "jb_storm":     { "CloudLayer": { "coverage": 3.60, "cirrusCoverage": 1.50 }, "LevelInfo": { "fogDensity": 0.0070, "fogColor": [0.34, 0.36, 0.42, 1] } }
+}

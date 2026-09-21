@@ -1,0 +1,11 @@
+{
+  "name": "Dynamic Weather",
+  "author": "JayBeam",
+  "description": "Live weather control. Pick a preset or run a random rolling forecast on a tick. Sky, fog, grip and rain transition in smoothly, roads turn wet, and a long storm slowly eats your grip until it dries out.",
+  "directive": "jbweather",
+  "domElement": "<jbweather></jbweather>",
+  "category": "Gameplay",
+  "css": { "width": "320px", "height": "452px", "top": "60px", "left": "60px" },
+  "interactive": "yes",
+  "version": "1.0"
+}

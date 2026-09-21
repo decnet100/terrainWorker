@@ -1,0 +1,29 @@
+# Central GIP flags (geographic). Site YAML may add a few more; it does not
+# replace this file. Widths of individual OBJECTIDs live in gip_widths.json
+# (measured). This file is the handful of human decisions.
+
+# Surface pieces whose name or OBJEKT looks like a tunnel.
+not_tunnel_objectids:
+  # Fernpass: short S-BT in front of the Lermoos portal (towards bridge 3844).
+  - 3690
+  - 3691
+  - 3843
+  # Reschen: A12 titled “Landecker Tunnel” but lying in the open.
+  - 227552
+  - 227576
+  - 229085
+  - 234513
+  - 235597
+
+# Extra OBJECTIDs that must not receive MeshRoad side-cut (types S-AR/AP/BR/BP
+# are already the code default).
+side_cut_preserve_objectids:
+  - 230743  # Reschen S-AR on the Landecker approach
+
+# Rare hard width (metres, before width_scale). Wins over the measurement.
+width_by_objectid: {}
+
+# Fallback when a piece has no usable Landnutzung sample.
+# Reschen: Landesstraßen ~7 m (was site YAML L*: 7.0).
+width_by_str_code:
+  L*: 7.0

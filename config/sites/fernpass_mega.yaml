@@ -120,8 +120,8 @@ beamng:
   roads:
     spine_start_oid: null          # optional, sonst längstes Trunk-Stück
     spine_next: []                 # - {from_oid, to_oid, note} an Gabelungen
-    # Kurze S-BT vor der Lermooser-Tür (zur Brücke 3844) — Oberfläche, kein Bohrloch.
-    not_tunnel_objectids: [3690, 3691, 3843]
+    # Surface vs tunnel, extra side-cut OIDs, L* fallback:
+    # data/roads/gip_overrides.yaml  (not_tunnel 3690/3691/3843).
 
   # BEV × nDSM × TWI × snow_proxy → biomes + soft terrain (compose_biomes.py)
   compose:

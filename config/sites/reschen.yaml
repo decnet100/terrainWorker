@@ -88,11 +88,8 @@ beamng:
   roads:
     spine_start_oid: null
     spine_next: []
-    # Node width (m) before width_scale 0.9 → L* Decal/Terrain 6.3 m (B180 stays 6.75).
-    width_by_str_code:
-      L*: 7.0
-    # A12 pieces titled “Landecker Tunnel” that are surface (no Kunstbauten).
-    not_tunnel_objectids: [227552, 227576, 229085, 234513, 235597]
+    # Width samples + L* 7 m fallback + Landecker not_tunnel / side-cut 230743:
+    # data/roads/gip_overrides.yaml and data/roads/gip_widths.json
     # Two GIP S-AT halves → one named axis (match: { unify: landecker }).
     unify:
       - id: landecker
@@ -116,12 +113,8 @@ beamng:
         max_raise_m: 8
         max_cut_m: 8
         sink_m: 0.02
-    # Seitenschnitt der MeshRoad-Platte nicht durch diese Fahrbahnen.
-    # objekt = Typ (S-FRW/Radweg nicht dabei), objectid = einzelne Stücke.
-    side_cut_preserve:
-      objekt: [S-AR, S-AP, S-BR, S-BP]
-      objectid: [230743]
-
+    # S-AR/AP/BR/BP skip MeshRoad side-cut by default; OID 230743 is in
+    # data/roads/gip_overrides.yaml.
 
   compose:
     ndsm_canopy_m: 5.0
@@ -223,7 +216,7 @@ beamng:
         detail_scale: 4.0
     items:
       # Shared bore from GIP 227551+235599. Surface A12 oids stay out
-      # (beamng.roads.not_tunnel_objectids). One daylight portal on the map.
+      # (data/roads/gip_overrides.yaml not_tunnel_objectids). One daylight portal.
       - match: { unify: landecker }
         one_ended: true
         fake_end_drop_m: 10

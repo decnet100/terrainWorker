@@ -1,0 +1,188 @@
+{
+  "pac_rock_large_1": {
+    "name": "pac_rock_large_1",
+    "internalName": "pac_rock_large_1",
+    "class": "ForestItemData",
+    "persistentId": "46eb3073-d4a8-4795-9d3d-940ab2e0235e",
+    "annotation": "ROCK",
+    "order_simset": "0",
+    "radius": 0.5,
+    "shapeFile": "/levels/jungle_rock_island/art/shapes/rocks/pac_rock_large_1.dae"
+  },
+  "pac_rock_large_2": {
+    "name": "pac_rock_large_2",
+    "internalName": "pac_rock_large_2",
+    "class": "ForestItemData",
+    "persistentId": "9209c955-4224-4f72-9c31-8f7a3f37ff98",
+    "annotation": "ROCK",
+    "order_simset": "3276865",
+    "radius": 0.5,
+    "shapeFile": "/levels/jungle_rock_island/art/shapes/rocks/pac_rock_large_2.dae"
+  },
+  "pac_rock_large_3": {
+    "name": "pac_rock_large_3",
+    "internalName": "pac_rock_large_3",
+    "class": "ForestItemData",
+    "persistentId": "a6f6b600-5a2d-465c-8deb-d8c0628baee3",
+    "annotation": "ROCK",
+    "order_simset": "3539001",
+    "radius": 0.5,
+    "shapeFile": "/levels/jungle_rock_island/art/shapes/rocks/pac_rock_large_3.dae"
+  },
+  "pac_rock_large_4": {
+    "name": "pac_rock_large_4",
+    "internalName": "pac_rock_large_4",
+    "class": "ForestItemData",
+    "persistentId": "190cedef-0bba-4621-b1f2-1a8ac3db3d31",
+    "order_simset": "4587572",
+    "radius": 0.5,
+    "shapeFile": "levels/jungle_rock_island/art/shapes/rocks/pac_rock_large_4.dae"
+  },
+  "pac_rock_medium_1": {
+    "name": "pac_rock_medium_1",
+    "internalName": "pac_rock_medium_1",
+    "class": "TSForestItemData",
+    "persistentId": "0d15f734-968c-48cd-8b15-026395a9a123",
+    "annotation": "ROCK",
+    "order_simset": "66569",
+    "radius": 0.5,
+    "shapeFile": "/levels/jungle_rock_island/art/shapes/rocks/pac_rock_medium_1.dae"
+  },
+  "pac_rock_medium_2": {
+    "name": "pac_rock_medium_2",
+    "internalName": "pac_rock_medium_2",
+    "class": "TSForestItemData",
+    "persistentId": "68505ce0-99a3-41cf-9ef4-6eaad026178a",
+    "annotation": "ROCK",
+    "order_simset": "3539001",
+    "radius": 0.5,
+    "shapeFile": "/levels/jungle_rock_island/art/shapes/rocks/pac_rock_medium_2.dae"
+  },
+  "pac_rock_medium_3": {
+    "name": "pac_rock_medium_3",
+    "internalName": "pac_rock_medium_3",
+    "class": "TSForestItemData",
+    "persistentId": "0b09a325-5ae7-4809-85d4-b37ef4f4ffe3",
+    "annotation": "ROCK",
+    "order_simset": "4390967",
+    "radius": 0.5,
+    "shapeFile": "/levels/jungle_rock_island/art/shapes/rocks/pac_rock_medium_3.dae"
+  },
+  "pac_rock_medium_flat": {
+    "name": "pac_rock_medium_flat",
+    "internalName": "pac_rock_medium_flat",
+    "class": "TSForestItemData",
+    "persistentId": "0dbb7ff4-7088-4bb7-8147-749f39476f6a",
+    "annotation": "ROCK",
+    "order_simset": "3473459",
+    "radius": 0.5,
+    "shapeFile": "/levels/jungle_rock_island/art/shapes/rocks/pac_rock_medium_flat.dae"
+  },
+  "pac_rock_small_1": {
+    "name": "pac_rock_small_1",
+    "internalName": "pac_rock_small_1",
+    "class": "TSForestItemData",
+    "persistentId": "a5543790-da36-4264-9c29-c43bcd46ff3e",
+    "annotation": "ROCK",
+    "order_simset": "3276856",
+    "radius": 0.200000003,
+    "shapeFile": "/levels/jungle_rock_island/art/shapes/rocks/pac_rock_small_1.dae"
+  },
+  "pac_rock_small_2": {
+    "name": "pac_rock_small_2",
+    "internalName": "pac_rock_small_2",
+    "class": "TSForestItemData",
+    "persistentId": "5354b664-a07c-4a3c-9cfc-664a121f44a8",
+    "annotation": "ROCK",
+    "order_simset": "3538996",
+    "radius": 0.200000003,
+    "shapeFile": "/levels/jungle_rock_island/art/shapes/rocks/pac_rock_small_2.dae"
+  },
+  "pac_rock_small_3": {
+    "name": "pac_rock_small_3",
+    "internalName": "pac_rock_small_3",
+    "class": "TSForestItemData",
+    "persistentId": "8f31ce29-c687-434f-b106-b8299836f004",
+    "annotation": "ROCK",
+    "order_simset": "4456503",
+    "radius": 0.100000001,
+    "shapeFile": "/levels/jungle_rock_island/art/shapes/rocks/pac_rock_small_3.dae"
+  },
+  "pac_rock_small_4": {
+    "name": "pac_rock_small_4",
+    "internalName": "pac_rock_small_4",
+    "class": "TSForestItemData",
+    "persistentId": "b289e0ca-df1a-4252-a3c6-9ab21bc3cd43",
+    "annotation": "ROCK",
+    "order_simset": "4325446",
+    "radius": 0.100000001,
+    "shapeFile": "/levels/jungle_rock_island/art/shapes/rocks/pac_rock_small_4.dae"
+  },
+  "pac_rock_small_5": {
+    "name": "pac_rock_small_5",
+    "internalName": "pac_rock_small_5",
+    "class": "TSForestItemData",
+    "persistentId": "63dacb41-4b5d-43c2-9a23-1773ae22e93e",
+    "annotation": "ROCK",
+    "order_simset": "473",
+    "radius": 0.100000001,
+    "shapeFile": "/levels/jungle_rock_island/art/shapes/rocks/pac_rock_small_5.dae"
+  },
+  "pac_rock_tiny_1": {
+    "name": "pac_rock_tiny_1",
+    "internalName": "pac_rock_tiny_1",
+    "class": "TSForestItemData",
+    "persistentId": "83752fda-1ed6-4f48-8624-7f1914a12223",
+    "annotation": "ROCK",
+    "order_simset": "3342406",
+    "radius": 0.200000003,
+    "shapeFile": "/levels/jungle_rock_island/art/shapes/rocks/pac_rock_tiny_1.dae"
+  },
+  "pac_rock_tiny_2": {
+    "name": "pac_rock_tiny_2",
+    "internalName": "pac_rock_tiny_2",
+    "class": "TSForestItemData",
+    "persistentId": "e77b5331-a2ee-4da5-a0eb-ae3b8fa6a605",
+    "annotation": "ROCK",
+    "order_simset": "3473463",
+    "radius": 0.100000001,
+    "shapeFile": "/levels/jungle_rock_island/art/shapes/rocks/pac_rock_tiny_2.dae"
+  },
+  "pac_rock_tiny_3": {
+    "name": "pac_rock_tiny_3",
+    "internalName": "pac_rock_tiny_3",
+    "class": "TSForestItemData",
+    "persistentId": "dbb8b425-2a08-40cf-8d1c-ff9c18517eb8",
+    "order_simset": "3211320",
+    "radius": 0.100000001,
+    "shapeFile": "levels/jungle_rock_island/art/shapes/rocks/pac_rock_tiny_3.dae"
+  },
+  "tro_bush_small": {
+    "name": "tro_bush_small",
+    "internalName": "tro_bush_small",
+    "class": "ForestItemData",
+    "persistentId": "6edd1310-d876-4691-ad3b-7139e22a9b59",
+    "branchAmp": 0.200000003,
+    "dampingCoefficient": 4,
+    "detailAmp": 0.200000003,
+    "detailFreq": 0.5,
+    "radius": 0.5,
+    "shapeFile": "levels/template/art/shapes/trees/bush_tropical_1/tro_bush_small.dae",
+    "trunkBendScale": 0.0500000007,
+    "windScale": 0.400000006
+  },
+  "tro_tree_1_bush_large": {
+    "name": "tro_tree_1_bush_large",
+    "internalName": "tro_tree_1_bush_large",
+    "class": "TSForestItemData",
+    "persistentId": "c59ff512-baad-42bb-8fa7-b8d62792afba",
+    "branchAmp": 0.200000003,
+    "dampingCoefficient": 4,
+    "detailAmp": 0.200000003,
+    "detailFreq": 0.5,
+    "radius": 0.5,
+    "shapeFile": "levels/template/art/shapes/trees/bush_tropical_1/tro_tree_1_bush_large.dae",
+    "trunkBendScale": 0.0500000007,
+    "windScale": 0.400000006
+  }
+}
