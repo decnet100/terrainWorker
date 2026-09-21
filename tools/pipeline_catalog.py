@@ -246,6 +246,15 @@ STEPS: tuple[Step, ...] = (
         core=True,
     ),
     Step(
+        id="cluster_rock_colors",
+        title="Cluster rock colors",
+        summary="Orthophoto rock pixels → representative RGB palette + class masks.",
+        script="tools/cluster_rock_colors.py",
+        group="2  Terrain and axis",
+        docs="docs/ROCK_COLOR_CLUSTERS.md",
+        outputs=("data/processed/{slug}/rock_color_clusters/rock_colors_k3.json",),
+    ),
+    Step(
         id="setup_beamng_level",
         title="Create level",
         summary="Unpack the template, rewrite paths, fill import/. Replace an existing level only with --force.",
