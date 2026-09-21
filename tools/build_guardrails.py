@@ -34,7 +34,17 @@ from guardrail_rules import (  # noqa: E402
     resolve_rail_cfg,
     side_signs as rule_side_signs,
 )
-from gip_road_segments import is_gip_tunnel_segment, load_gip_road_segments  # noqa: E402
+from gip_road_segments import (  # noqa: E402
+    gip_is_subordinate_lane,
+    gip_skip_guardrails,
+    is_gip_tunnel_segment,
+    load_gip_road_segments,
+)
+from guardrail_junctions import (  # noqa: E402
+    build_junction_axes,
+    filter_joints_open_junctions,
+    find_junctions,
+)
 from strassennetz_roads import (  # noqa: E402
     load_strassennetz_roads_dict,
     load_strassennetz_sliced_by_gip,
@@ -127,6 +137,22 @@ CURVATURE_WINDOW_M = float(GR.get("curvature_window_m", 8.0))
 CLIP_GALLERIES = bool(GR.get("clip_galleries", True))
 STOP_BEFORE_GALLERY_M = float(GR.get("stop_before_gallery_m", 3.0))
 GALLERY_CLIP_PAD_M = float(GR.get("gallery_clip_pad_m", 2.0))
+# Drop joints that sit inside another carriageway (legacy online clip).
+# Prefer open_junctions post-pass (side toward foreign only).
+CLIP_CENTERLINES = bool(GR.get("clip_centerlines", False))
+CENTERLINE_CLIP_PAD_M = float(GR.get("centerline_clip_pad_m", 0.75))
+# Post-pass: open mouths where compatible GIP roads meet.
+OPEN_JUNCTIONS = bool(GR.get("open_junctions", True))
+JUNCTION_JOIN_M = float(GR.get("junction_join_m", 4.0))
+JUNCTION_MOUTH_M = float(GR.get("junction_mouth_m", 12.0))
+JUNCTION_Z_SEP_M = float(GR.get("junction_z_sep_m", 3.0))
+# Drop joints whose XY lies over a buried tunnel (rails on the mountain).
+CLIP_TUNNELS = bool(GR.get("clip_tunnels", True))
+TUNNEL_CLIP_PAD_M = float(
+    GR.get("tunnel_clip_pad_m")
+    if GR.get("tunnel_clip_pad_m") is not None
+    else GALLERY_CLIP_PAD_M
+)
 # auto | gpkg | heuristic
 SOURCE_MODE = str(ANN.get("guardrail_source", GR.get("source", "auto"))).lower()
 # Prefer guardrails.* overrides, else same defaults as decal_roads.
@@ -814,7 +840,16 @@ def build_entries_from_gpkg(gdf: gpd.GeoDataFrame) -> list[dict]:
             runs = _split_joints_outside_galleries(joints, corridors, min_run=min_run)
             for run in runs:
                 rail = [[x, y, z] for x, y, z in run]
-                part = _entries_along_rail(rail, side, section_len, curve_stats)
+                # Honour site YAML style (sections / posts / both). The helper
+                # defaults to posts, which used to emit bare "reflector"
+                # shapeNames and show as "no mesh" in the World Editor.
+                part = _entries_along_rail(
+                    rail,
+                    side,
+                    section_len,
+                    curve_stats,
+                    style=STYLE_DEFAULTS,
+                )
                 if part:
                     used += 1
                     entries.extend(part)
@@ -822,7 +857,7 @@ def build_entries_from_gpkg(gdf: gpd.GeoDataFrame) -> list[dict]:
     kind = "posts" if STYLE == "posts" else "segments"
     print(
         f"GPKG guardrail: features_used~{used} skipped_present=false={skipped} "
-        f"{kind}={len(entries)} style={STYLE}"
+        f"{kind}={len(entries)} style={STYLE_DEFAULTS}"
     )
     if STYLE == "sections":
         print(
@@ -1078,12 +1113,54 @@ def _split_joints_outside_galleries(
     min_run: int = 2,
 ) -> list[list[tuple[float, float, float]]]:
     """Split a rail into contiguous runs that stay outside gallery corridors."""
+    return _split_joints_outside_corridors(joints, corridors, min_run=min_run)
+
+
+def _contiguous_rich_runs(
+    original: list[tuple],
+    kept: list[tuple],
+    *,
+    min_run: int = 2,
+) -> list[list[tuple]]:
+    """Re-split ``original`` into contiguous runs whose joints remain in ``kept``.
+
+    ``filter_joints_open_junctions`` drops mouth joints but returns a flat list;
+    mid-run gaps must become separate rail pieces.
+    """
+    if not original or not kept:
+        return []
+    kept_keys = {(round(float(j[0]), 3), round(float(j[1]), 3)) for j in kept}
+    chunks: list[list[tuple]] = []
+    cur: list[tuple] = []
+    for j in original:
+        key = (round(float(j[0]), 3), round(float(j[1]), 3))
+        if key in kept_keys:
+            cur.append(j)
+        else:
+            if len(cur) >= min_run:
+                chunks.append(cur)
+            cur = []
+    if len(cur) >= min_run:
+        chunks.append(cur)
+    return chunks
+
+
+def _split_joints_outside_corridors(
+    joints: list,
+    corridors: list[tuple[list[tuple[float, float]], float]],
+    *,
+    min_run: int = 2,
+) -> list[list]:
+    """Split a rail into contiguous runs outside exclusion corridors.
+
+    Joints may be ``(x,y,z)`` or longer ``(x,y,z,tx,ty,…)``; extras are kept.
+    """
     if not joints:
         return []
     if not corridors:
         return [joints] if len(joints) >= min_run else []
-    runs: list[list[tuple[float, float, float]]] = []
-    cur: list[tuple[float, float, float]] = []
+    runs: list[list] = []
+    cur: list = []
     for j in joints:
         if _point_in_gallery_exclusion(j[0], j[1], corridors):
             if len(cur) >= min_run:
@@ -1091,6 +1168,213 @@ def _split_joints_outside_galleries(
             cur = []
             continue
         cur.append(j)
+    if len(cur) >= min_run:
+        runs.append(cur)
+    return runs
+
+
+def _axis_from_road_nodes(
+    nodes: list[list[float]],
+) -> tuple[list[tuple[float, float]], float] | None:
+    """Centerline XY + half-width from road nodes ``[x,y,z,width]``."""
+    if len(nodes) < 2:
+        return None
+    xy: list[tuple[float, float]] = []
+    widths: list[float] = []
+    for n in nodes:
+        if len(n) < 2:
+            continue
+        xy.append((float(n[0]), float(n[1])))
+        if len(n) >= 4:
+            widths.append(float(n[3]))
+    if len(xy) < 2:
+        return None
+    half = 0.5 * (max(widths) if widths else 7.5)
+    return xy, half
+
+
+def _build_centerline_clip_axes(
+    roads: list[dict],
+) -> list[dict]:
+    """Foreign carriageway axes for junction mouth clipping.
+
+    Only roads that themselves can carry rails (named STR_CODE, not minor,
+    not tunnel). That keeps Reschen fast (~100 axes instead of ~1900).
+    """
+    if not CLIP_CENTERLINES:
+        return []
+    axes: list[dict] = []
+    for road in roads:
+        # Prefer rail-eligible pieces; OSM fallback has no GIP flags → keep all.
+        src = str(road.get("source") or "").lower()
+        if src == "gip" or road.get("objekt") is not None or road.get("str_code") is not None:
+            if is_gip_tunnel_segment(road):
+                continue
+            # Ramps skip their own rails but stay in the clip set so the
+            # trunk opens at the merge (Einfahrt).
+            if gip_skip_guardrails(road) and not gip_is_subordinate_lane(road):
+                continue
+        nodes = road.get("nodes") or []
+        axis = _axis_from_road_nodes(nodes)
+        if axis is None:
+            continue
+        xy, half = axis
+        # Precompute segment tangents for collinear (same-corridor) skip.
+        tans: list[tuple[float, float]] = []
+        for i in range(len(xy) - 1):
+            dx = xy[i + 1][0] - xy[i][0]
+            dy = xy[i + 1][1] - xy[i][1]
+            L = math.hypot(dx, dy) or 1.0
+            tans.append((dx / L, dy / L))
+        if not tans:
+            continue
+        oid = road.get("objectid")
+        if oid is None:
+            oid = road.get("osm_id")
+        axes.append(
+            {
+                "id": oid,
+                "id_s": str(oid) if oid is not None else None,
+                "xy": xy,
+                "half_w": half,
+                "tans": tans,
+                "str_code": str(road.get("str_code") or ""),
+            }
+        )
+    return axes
+
+
+def _build_tunnel_mountain_corridors(
+    roads: list[dict],
+) -> list[tuple[list[tuple[float, float]], float]]:
+    """XY bands over buried tunnels — no rails on the mountain above.
+
+    Open galleries stay on ``galleries_centerlines`` portal clip; here only
+    true tunnels / Unterflur (S-BT, S-AT, name/kunstbauten), so surface
+    joints above the bore die.
+    """
+    if not CLIP_TUNNELS:
+        return []
+    pad = max(0.0, TUNNEL_CLIP_PAD_M)
+    out: list[tuple[list[tuple[float, float]], float]] = []
+    for road in roads:
+        kunst = str(road.get("kunstbauten") or "").lower()
+        objekt = str(road.get("objekt") or "").upper()
+        if objekt == "S-BG" or "galerie" in kunst:
+            continue
+        if not is_gip_tunnel_segment(road):
+            continue
+        axis = _axis_from_road_nodes(road.get("nodes") or [])
+        if axis is None:
+            continue
+        xy, half = axis
+        out.append((xy, half + pad))
+    return out
+
+
+def _project_xy_to_axis(
+    bx: float,
+    by: float,
+    xy: list[tuple[float, float]],
+    tans: list[tuple[float, float]],
+) -> tuple[float, float, float] | None:
+    """Nearest point on axis → (dist_m, tx, ty) with segment tangent."""
+    if len(xy) < 2 or len(tans) < 1:
+        return None
+    best: tuple[float, float, float] | None = None
+    for i in range(len(xy) - 1):
+        x0, y0 = xy[i]
+        x1, y1 = xy[i + 1]
+        dx, dy = x1 - x0, y1 - y0
+        seg2 = dx * dx + dy * dy
+        if seg2 < 1e-12:
+            d = math.hypot(bx - x0, by - y0)
+            tx, ty = tans[min(i, len(tans) - 1)]
+        else:
+            t = max(0.0, min(1.0, ((bx - x0) * dx + (by - y0) * dy) / seg2))
+            px = x0 + t * dx
+            py = y0 + t * dy
+            d = math.hypot(bx - px, by - py)
+            tx, ty = tans[i]
+        if best is None or d < best[0]:
+            best = (d, tx, ty)
+    return best
+
+
+def _joint_blocks_foreign_centerline(
+    px: float,
+    py: float,
+    axes: list[dict],
+    *,
+    self_id,
+    self_tx: float = 0.0,
+    self_ty: float = 0.0,
+) -> bool:
+    """True if joint sits inside another road's carriageway at a crossing.
+
+    Near-collinear foreign axes (same corridor / abutting pieces) are ignored.
+    Mouth opening (side toward foreign) is handled by ``open_junctions`` post-pass.
+    """
+    if not axes:
+        return False
+    pad = max(0.0, CENTERLINE_CLIP_PAD_M)
+    self_s = str(self_id) if self_id is not None else None
+    st = math.hypot(self_tx, self_ty)
+    if st > 1e-9:
+        self_tx, self_ty = self_tx / st, self_ty / st
+    else:
+        self_tx = self_ty = 0.0
+    colin = 0.90
+    for ax in axes:
+        if self_s is not None and ax.get("id_s") == self_s:
+            continue
+        if self_id is not None and ax.get("id") == self_id:
+            continue
+        half = float(ax.get("half_w") or 3.75) + pad
+        proj = _project_xy_to_axis(px, py, ax["xy"], ax.get("tans") or [])
+        if proj is None:
+            continue
+        d, ftx, fty = proj
+        if d > half:
+            continue
+        if self_tx or self_ty:
+            align = abs(self_tx * ftx + self_ty * fty)
+            if align >= colin:
+                continue
+        return True
+    return False
+
+
+def _split_joints_clear_of_centerlines(
+    joints: list[tuple[float, float, float, float, float]],
+    axes: list[dict],
+    *,
+    self_id,
+    min_run: int = 2,
+) -> list[list[tuple[float, float, float]]]:
+    """Drop joints that lie on a foreign carriageway (junction openings).
+
+    Joints are ``(x, y, z, tx, ty)`` with centerline tangent for collinear skip.
+    """
+    if not joints:
+        return []
+    if not axes or not CLIP_CENTERLINES:
+        out = [(j[0], j[1], j[2]) for j in joints]
+        return [out] if len(out) >= min_run else []
+    runs: list[list[tuple[float, float, float]]] = []
+    cur: list[tuple[float, float, float]] = []
+    for j in joints:
+        px, py, pz = j[0], j[1], j[2]
+        tx = j[3] if len(j) > 3 else 0.0
+        ty = j[4] if len(j) > 4 else 0.0
+        if _joint_blocks_foreign_centerline(
+            px, py, axes, self_id=self_id, self_tx=tx, self_ty=ty
+        ):
+            if len(cur) >= min_run:
+                runs.append(cur)
+            cur = []
+            continue
+        cur.append((px, py, pz))
     if len(cur) >= min_run:
         runs.append(cur)
     return runs
@@ -1162,6 +1446,7 @@ def build_entries_heuristic(roads: dict) -> list[dict]:
     rule_hits = 0
     skipped_rules = 0
     skipped_tunnel = 0
+    skipped_minor = 0
     steep_counts = {"left": 0, "right": 0, "both": 0, "none": 0, "fallback": 0}
     oid_decisions: list[str] = []
 
@@ -1226,6 +1511,31 @@ def build_entries_heuristic(roads: dict) -> list[dict]:
             f"rules={len(RAIL_RULES)}"
         )
 
+    cl_axes = _build_centerline_clip_axes(prepared)
+    tunnel_corridors = _build_tunnel_mountain_corridors(prepared)
+    # Gallery portal bands + tunnel mountain bands share one exclusion pass.
+    struct_corridors = list(corridors) + list(tunnel_corridors)
+    cl_clipped_runs = 0
+    tunnel_clipped_runs = 0
+    junc_opened = 0
+    junctions: list[dict] = []
+    if OPEN_JUNCTIONS:
+        j_axes = build_junction_axes(
+            prepared,
+            skip_tunnel=is_gip_tunnel_segment,
+            skip_minor=gip_skip_guardrails,
+        )
+        junctions = find_junctions(
+            j_axes,
+            join_m=JUNCTION_JOIN_M,
+            z_sep_m=JUNCTION_Z_SEP_M,
+        )
+        print(
+            f"Junction open: partners={len(j_axes)} meetings={len(junctions)} "
+            f"join_m={JUNCTION_JOIN_M} mouth_m={JUNCTION_MOUTH_M} "
+            f"z_sep_m={JUNCTION_Z_SEP_M}"
+        )
+
     def _z_at(bx: float, by: float) -> float:
         assert hm_pack is not None
         hm, max_h = hm_pack
@@ -1239,6 +1549,10 @@ def build_entries_heuristic(roads: dict) -> list[dict]:
         if (use_gip or use_sn) and is_gip_tunnel_segment(road):
             skipped_tunnel += 1
             oid_decisions.append(f"{oid}:skip_tunnel")
+            continue
+        if (use_gip or use_sn) and gip_skip_guardrails(road):
+            skipped_minor += 1
+            oid_decisions.append(f"{oid}:skip_minor")
             continue
 
         cfg = resolve_rail_cfg(
@@ -1311,7 +1625,7 @@ def build_entries_heuristic(roads: dict) -> list[dict]:
                 )
                 if len(dists) < (1 if is_posts else 2):
                     continue
-                joints: list[tuple[float, float, float]] = []
+                joints: list[tuple[float, float, float, float, float]] = []
                 for d in dists:
                     j = _offset_joint(
                         nodes,
@@ -1321,19 +1635,53 @@ def build_entries_heuristic(roads: dict) -> list[dict]:
                         lateral_extra_m=lat,
                         bridge_decks=bridge_decks,
                     )
-                    if j:
-                        if bridge_decks and _bridge_deck_at(j[0], j[1], bridge_decks):
-                            bridge_hits += 1
-                        joints.append(j)
+                    if not j:
+                        continue
+                    sample = sample_center_at_s(nodes, d)
+                    tx = ty = 0.0
+                    if sample is not None:
+                        tx, ty = float(sample[3]), float(sample[4])
+                    if bridge_decks and _bridge_deck_at(j[0], j[1], bridge_decks):
+                        bridge_hits += 1
+                    joints.append((j[0], j[1], j[2], tx, ty))
                 min_run = 1 if is_posts else 2
                 if len(joints) < min_run:
                     continue
-                runs = _split_joints_outside_galleries(
-                    joints, corridors, min_run=min_run
+                runs = _split_joints_outside_corridors(
+                    joints, struct_corridors, min_run=min_run
                 )
+                if tunnel_corridors and len(runs) != 1:
+                    tunnel_clipped_runs += max(0, len(runs))
                 if corridors and len(runs) != 1:
                     clipped_runs += max(0, len(runs))
+                cleared: list[list[tuple[float, float, float]]] = []
+                self_xy = [(float(n[0]), float(n[1])) for n in nodes]
                 for run in runs:
+                    rich_parts: list[list[tuple]] = [run]
+                    if junctions and OPEN_JUNCTIONS:
+                        before_n = len(run)
+                        kept = filter_joints_open_junctions(
+                            run,
+                            side_name=side_name,
+                            self_id=oid,
+                            self_xy=self_xy,
+                            junctions=junctions,
+                            mouth_m=JUNCTION_MOUTH_M,
+                        )
+                        dropped = before_n - len(kept)
+                        if dropped > 0:
+                            junc_opened += dropped
+                            rich_parts = _contiguous_rich_runs(run, kept, min_run=min_run)
+                        else:
+                            rich_parts = [run] if len(kept) >= min_run else []
+                    for rich in rich_parts:
+                        parts = _split_joints_clear_of_centerlines(
+                            rich, cl_axes, self_id=oid, min_run=min_run
+                        )
+                        if cl_axes and CLIP_CENTERLINES and len(parts) != 1:
+                            cl_clipped_runs += max(0, len(parts))
+                        cleared.extend(parts)
+                for run in cleared:
                     rail_nodes = [[x, y, z] for x, y, z in run]
                     entries.extend(
                         _entries_along_rail(
@@ -1367,6 +1715,10 @@ def build_entries_heuristic(roads: dict) -> list[dict]:
             print("  " + ", ".join(line))
         if skipped_tunnel:
             print(f"Skipped GIP tunnels/galleries: {skipped_tunnel}")
+        if skipped_minor:
+            print(
+                f"Skipped GIP minor/parking/ramp rails: {skipped_minor}"
+            )
     if RAIL_RULES:
         print(
             f"Rail rules: applied_overrides~{rule_hits} "
@@ -1377,6 +1729,22 @@ def build_entries_heuristic(roads: dict) -> list[dict]:
             f"Bridge decks: spans={len(bridge_decks)} "
             f"joints_on_deck~{bridge_hits} "
             f"lateral_extra_m={BRIDGE_LATERAL_EXTRA} deck_z={BRIDGE_DECK_Z}"
+        )
+    if tunnel_corridors:
+        print(
+            f"Tunnel mountain clip: bands={len(tunnel_corridors)} "
+            f"pad_m={TUNNEL_CLIP_PAD_M} split_runs~{tunnel_clipped_runs}"
+        )
+    if junctions and OPEN_JUNCTIONS:
+        print(
+            f"Junction mouth open: meetings={len(junctions)} "
+            f"joints_dropped~{junc_opened} mouth_m={JUNCTION_MOUTH_M} "
+            f"(side toward foreign only; z_sep_m={JUNCTION_Z_SEP_M})"
+        )
+    if cl_axes and CLIP_CENTERLINES:
+        print(
+            f"Centerline junction clip: axes={len(cl_axes)} "
+            f"pad_m={CENTERLINE_CLIP_PAD_M} split_runs~{cl_clipped_runs}"
         )
 
     if STYLE == "sections" or "sections" in STYLE_DEFAULTS:
@@ -1478,6 +1846,25 @@ def write_level_items(entries: list[dict]) -> Path | None:
 def resolve_entries(roads: dict) -> tuple[list[dict], str]:
     gpkg = annotations_gpkg(SITE)
     mode = SOURCE_MODE
+    # GIP / Straßennetz axes: GPKG rails are OSM leftovers — force heuristic
+    # unless the user explicitly set guardrail_source: gpkg.
+    gip_axes = CENTERLINE_MODE in (
+        "gip",
+        "verkehrswege",
+        "objectid",
+        "oid",
+        "strassennetz",
+        "sn",
+        "tiris",
+        "gip_sliced",
+        "strassennetz_gip",
+    )
+    if gip_axes and mode == "auto":
+        print(
+            f"centerline={CENTERLINE_MODE}: forcing heuristic "
+            f"(ignore GPKG auto at {gpkg.name})"
+        )
+        mode = "heuristic"
 
     if mode == "heuristic":
         return build_entries_heuristic(roads), "heuristic"
@@ -1493,7 +1880,7 @@ def resolve_entries(roads: dict) -> tuple[list[dict], str]:
             )
         return build_entries_from_gpkg(gdf), "gpkg"
 
-    # auto
+    # auto (OSM centerline only)
     if has_features:
         print(f"Using annotations GPKG: {gpkg} ({len(gdf)} guardrail features)")
         return build_entries_from_gpkg(gdf), "gpkg"
@@ -1601,7 +1988,13 @@ def main() -> None:
         "z_sample_inward_m": Z_SAMPLE_INWARD,
         "face_y_outward": FACE_Y_OUTWARD,
         "yaw_flip_right": YAW_FLIP_RIGHT,
-        "note": "GPKG preferred when guardrail layer non-empty; build never writes GPKG",
+        "open_junctions": OPEN_JUNCTIONS,
+        "junction_mouth_m": JUNCTION_MOUTH_M,
+        "junction_z_sep_m": JUNCTION_Z_SEP_M,
+        "clip_centerlines": CLIP_CENTERLINES,
+        "clip_tunnels": CLIP_TUNNELS,
+        "centerline": CENTERLINE_MODE,
+        "note": "GIP centerline → heuristic; open_junctions opens mouths side-toward-foreign only",
         "sample_scale": entries[0]["scale"] if entries else None,
         "sample_rot_Z": entries[0]["rotationMatrix"][6:9] if entries else None,
     }
@@ -1618,8 +2011,8 @@ def main() -> None:
     if level_path:
         print(f"Injected: {level_path}")
         print(
-            "Reload the level in BeamNG (File→Load Level). "
-            "If duplicates remain, do NOT Save first — clear with "
+            "Reload the level in BeamNG (File -> Load Level). "
+            "If duplicates remain, do NOT Save first - clear with "
             "`python tools/build_guardrails.py --clear`, reload, then rebuild."
         )
 
