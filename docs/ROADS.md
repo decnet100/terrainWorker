@@ -4,7 +4,7 @@ State after Fernpass Mega polish (lanes→width, decal transitions, delineators)
 
 Related: [BEAMNG_IMPORT.md](BEAMNG_IMPORT.md), [GIP.md](GIP.md) (**centerline sources**), `tools/road_width.py`.
 
-**Axis (Fernpass Mega):** decals / guardrails / bridges / galleries → **GIP**, not OSM. Summary and spine vs stitch: [GIP.md § Centerline sources](GIP.md#centerline-sources-fernpass-mega).
+**Axis (Fernpass Mega):** decals / guardrails / bridges / galleries → **GIP**, not OSM. Unnamed GIP (Gassen) get terrain asphalt + road-bed only — [GIP.md](GIP.md).
 
 ---
 
@@ -12,6 +12,21 @@ Related: [BEAMNG_IMPORT.md](BEAMNG_IMPORT.md), [GIP.md](GIP.md) (**centerline so
 
 **Default:** `default_lanes × lane_width_m` = **2 × 3.75 m = 7.5 m**  
 (`beamng.lane_width_m` / `beamng.default_lanes` in the site YAML).
+
+**GIP defaults (all sites, node metres before `width_scale`):**
+
+| Piece | Width | Surface |
+|-------|-------|---------|
+| `S-F` Forstweg | 4.0 m | terrain gravel (`dirt_material`), no road-bed |
+| `S-GW` Wirtschaftsweg | 4.0 m | terrain gravel, no road-bed |
+| `S-FRW` / `S-STRAIL` Fuß- und Radweg | 2.5 m | terrain gravel, no road-bed |
+| `S-G` örtliches Netz | 5.0 m | terrain asphalt (no Decal if `gip_decals: named`) |
+| `S-AR` / `S-AP` / `S-BR` / `S-BP` | 1 × `lane_width_m` | subordinate lane; no own rails; solid edge lines, no dashed center |
+| `B*` Bundesstraße, 2 Fahrbahnen | 8.0 m | full kit |
+| `B*` with `lanes_by_str_code` ≥ 3 | `lanes × lane_width_m` | full kit |
+| `L*` | site default or `width_by_str_code` | full kit |
+
+YAML `beamng.roads.width_by_str_code` / `lanes_by_str_code` override named roads (exact or `L*`). Example: Reschen `L*: 7.0` → Decal/terrain `6.3` at `width_scale: 0.9`.
 
 ### Where is what?
 
@@ -56,7 +71,7 @@ OSM splits the B179 into many short ways. Without merge you get gaps; with merge
 1. **`stitch_abutting`** — merge degree-2 end-to-end (`stitch_tol_m`)
 2. **`width_fill_dip_m`** (default 40) — morphologically close short narrow dips
 3. **`width_blend_m`** (default 25) — remaining lane jumps ease out
-4. optional gallery clip; `terrain_roof: keep_asphalt` is **not** cut away (e.g. tunnel 8082)
+4. gallery/tunnel/bridge clip always; `terrain_roof: keep_asphalt` is **not** cut away (e.g. tunnel 8082)
 
 ```powershell
 cd C:\temp\beamng_autoroad; python tools\build_decal_roads.py --skip-road-bed
@@ -84,6 +99,9 @@ cd C:\temp\beamng_autoroad; python tools\build_decal_roads.py
 | `road_bed_pad_m` / `falloff_m` | width of the stamped band |
 | `road_bed_sink_m` | bed a little under decal Z |
 | `road_bed_max_raise_m` / `max_cut_m` | clamp against DGM |
+| `road_bed_items` | per-road override; `match.str_code` (`L17` or `L*`) or `match.objectid` / `road_id` |
+| `beamng.roads.follow_parent` | child Z tracks a parent axis for `hold_m` from the join, then `blend_m` back to DGM ([GIP.md](GIP.md), recipe [STRUCTURES.md](STRUCTURES.md)) |
+| `beamng.roads.side_cut_preserve` | GIP types/OBJECTIDs that block MeshRoad side-cut beside a deck ([STRUCTURES.md](STRUCTURES.md)) |
 
 Decals: `snap_to_heightmap: true` → node Z from the road-bed (if present).
 

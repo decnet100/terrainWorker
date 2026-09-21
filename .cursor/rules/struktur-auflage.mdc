@@ -1,0 +1,27 @@
+---
+description: Kunstbauten sitzen immer auf Auflage / Widerlager
+alwaysApply: true
+---
+
+# Auflage = Default
+
+Brücke, Tunnel und Galerie nutzen **immer** das Widerlager-System. Das ist kein Landecker-Sonderfall.
+
+An den Auflagen bzw. am Tageslichtportal:
+
+- Heightmap auf die Fahrbahn-Oberkante (`approach_conform`, `force_deck_z`)
+- 1–2 cm unter der Node gegen Z-Fight (`force_deck_z_sink_m` / `approach_conform_sink_m`)
+- letzte Meter der Zufahrt = Pad auf Zielhöhe (`abut_run_m`, `abut_snap_z`)
+- Portalschürze nach außen (`portal_seat`)
+
+Zwischen den Auflagen: Schlucht oder Berg **nicht** auffüllen. Das Bohrloch wird nicht ans Gelände gezogen. Siehe `struktur-spanne-gelaende`.
+
+Code-Defaults sind an. Nicht pro Site `approach_conform: false` setzen, nur um „marry“ zu schonen. Abschalten nur am **einzelnen Item**, wenn die Fläche wirklich ohne Auflage bleiben soll:
+
+```yaml
+- match: { objectid: … }
+  approach_conform: false
+  force_deck_z: false
+```
+
+`append_unify` bleibt extra: nur wenn vor der Tür eine eigene Zufahrtsplatte liegt (zweites Unify, `kind: road`).

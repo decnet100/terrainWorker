@@ -1,0 +1,15 @@
+---
+description: Fahrbahn-Centerline liegt auf der Oberkante, nicht in der Plattenmitte
+alwaysApply: true
+---
+
+# Fahrbahn = Oberkante
+
+Die definierende Fläche einer Fahrbahn (MeshRoad, Decal, Gallery-Deck, Brücke, Debug-Achse) ist die **Oberkante**. `z_road` / Centerline-Z ist diese Fläche.
+
+MeshRoad-Node-Z = Oberkante (`node_z_is_top`). Nicht Plattenmitte (`z − depth/2`), nicht Unterkante.
+
+Terrain-Anpassung, Profile, Portale, Bankette und Debug-Streifen beziehen sich auf dieselbe Oberkante. Ein kleines Absenken des Geländes (1–2 cm) gegen Z-Fight bleibt erlaubt — die Node selbst nicht.
+
+Falsch: Gallery-MeshRoad bei 0,5 m Dicke auf `z_road − 0,25 m` schreiben, Heightmap und Magenta aber auf `z_road` legen.
+Richtig: Node, Centerline und Profil auf `z_road`; die Platte hängt nach unten.

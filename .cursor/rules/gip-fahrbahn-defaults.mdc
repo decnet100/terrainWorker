@@ -1,0 +1,22 @@
+---
+description: GIP-Fahrbahnbreiten und Forstweg-Kies (alle Karten)
+alwaysApply: true
+---
+
+# GIP-Fahrbahn (Standing Orders)
+
+Defaults in `tools/gip_road_segments.py` / Terrain-Masken — nicht pro Site neu erfinden.
+
+| `OBJEKT` / `STR_CODE` | Node-Breite | Oberfläche |
+|-----------------------|-------------|------------|
+| `S-F` Forstweg | 4 m | Terrain-gravel (`dirt_material`), kein Road-Bed |
+| `S-GW` Wirtschaftsweg | 4 m | Terrain-gravel, kein Road-Bed (weicht höherwertigen Straßen) |
+| `S-FRW` / `S-STRAIL` Fuß- und Radweg | 2.5 m | Terrain-gravel, kein Road-Bed (hebt keine Einmündung) |
+| `S-G` örtliches Netz | 5 m | Terrain-Asphalt (kein Decal bei `gip_decals: named`) |
+| `S-AR` / `S-AP` / `S-BR` / `S-BP` | 1 × `lane_width_m` (3.75 m) | untergeordnete Spur; keine eigenen Guardrails; Stammstrecke öffnet die Einfahrt; MeshRoad-Seitenschnitt geht nicht durch (`side_cut_preserve`); Decal: Randlinien, keine gestrichelte Mitte |
+| `B*` 2 Fahrbahnen | 8 m | volles Kit |
+| `B*` mit ≥3 lanes | `lanes × lane_width_m` | volles Kit (`lanes_by_str_code` oder GIP-Feld) |
+| `L*` | Site-Default oder `width_by_str_code` | volles Kit |
+
+YAML-Overrides: `beamng.roads.width_by_str_code` / `lanes_by_str_code` (exakt oder `L*`).
+A12 und andere Nicht-B bleiben auf dem Site-Default.

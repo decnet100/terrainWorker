@@ -1,0 +1,24 @@
+---
+description: Kunstbauten zwischen Auflagen malen kein Geländematerial
+alwaysApply: true
+---
+
+# Spanne = Gelände unangetastet
+
+Zwischen den Auflagen bzw. Portalen (Brücke, Tunnel, Galerie) gilt **immer**:
+
+- kein Terrain-Asphalt, Bankett oder Schotter auf der Heightmap
+- kein erzwungener Felsstreifen
+- kein Road-Bed und kein DecalRoad im Bohrloch bzw. unter dem Deck
+
+Die Landbedeckung bleibt, als läge die Straße nicht dort. Das steht im Code (`terrain_roof` Default `none`, Span-Omit, Decal-Clip). Nicht pro Site neu erfinden, nicht über `clip_galleries: false` oder `road_bed_skip_bridge_unders: false` abschalten.
+
+Auflagen, Portalschürze und `keep_asphalt` (Straße **über** einer Unterführung) bleiben.
+
+Dach oder Straße oben nur mit **explizitem** YAML am Item:
+
+| YAML | Wirkung |
+|------|---------|
+| weglassen / `none` | Default — Gelände unangetastet |
+| `terrain_roof: rock` | Fels über der Spanne |
+| `terrain_roof: keep_asphalt` | Straße oben bleibt (Unterführung) |

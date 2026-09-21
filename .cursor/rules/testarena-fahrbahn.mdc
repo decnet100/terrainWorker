@@ -1,0 +1,12 @@
+---
+description: Testarena prüft die Straßenoberfläche, nicht das Gelände unter der Platte
+alwaysApply: true
+---
+
+# Testarena = Fahrbahn
+
+`autoroad_testarena` dient vor allem der **Straßenoberfläche**: MeshRoad-Deck, Decals (Approach + `overObjects` auf der Platte), Übergänge Widerlager.
+
+Heightmap unter der Platte, Span-Fill der Kerbe, Guardrail-Z ohne Fahrbahnbezug sind Nebenpfade — nicht die primäre Metrik und nicht das, was „drüberfahren“ prüft.
+
+Zahlen und Layer-A/B müssen dieselbe Fläche treffen, auf der gefahren oder hingesehen wird. Eine Omit-Variante, die der User im Spiel sehen soll, muss ins Level-`import/` und als Terrain importiert werden — nicht nur als Sidecar-PNG.

@@ -1,0 +1,19 @@
+---
+description: Benutzer-Befehle immer als eine copy-paste-fähige PowerShell-Zeile ausgeben
+alwaysApply: true
+---
+
+# PowerShell-Befehle zum Kopieren
+
+Der User arbeitet mit **Windows PowerShell 5.1** (kein Bash, kein `&&`).
+
+Jede Anweisung, die er selbst ausführen soll, steht in einem `powershell`-Fence und besteht aus **genau einer Zeile**. Die Zeile muss ohne Nacharbeit in die Konsole passen.
+
+- Repo zuerst ansteuern, dann Env und Befehl mit `;` ketten.
+- `$env:NAME = "..."` in derselben Zeile wie `python`, nie davor in einer zweiten Zeile.
+- Backslash-Pfade (`tools\foo.py`), doppelte Anführungszeichen für Strings.
+- Kein `&&`, kein Heredoc, kein `export`, keine Kommentarzeilen im Fence.
+
+```powershell
+cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/testarena.yaml"; python tools\build_testarena.py --oid 2304
+```

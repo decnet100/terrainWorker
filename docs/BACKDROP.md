@@ -19,14 +19,16 @@ Distances below are measured **outward from the playable bbox**, not from the ma
 | Ring | Geometry | DEM | Texture | Mesh step (Fernpass Mega) |
 |------|----------|-----|---------|---------------------------|
 | **Near** | bbox → `near_m` (default 2 km; **Reschen 5 km**). Hole = the playable bbox. | Tirol WCS DGM (`near_dgm_res_m`, default 2 m). Cells outside Tyrol stay empty — **no Copernicus fill**. Mesh Z is **cubic-spline** sampled from that DGM (not a stride of raster cells). | SWISSIMAGE crop of the near extent | `near_step_m` 15 m |
-| **Mid** | `near_m` → `mid_m` (~10 km), with `near_overlap_m` / `mid_overlap_m` so rings overlap. **Always kept** (no viewshed). | Copernicus GLO-30 | SWISSIMAGE crop of the mid extent | `mid_step_m` 50 m |
+| **Mid** | `near_m` → `mid_m` (~10 km), with `near_overlap_m` / `mid_overlap_m` so rings overlap. **Always kept** (no viewshed). | Copernicus GLO-30 **+ filtered Tirol nDSM** (`mid_canopy`, `mid_dgm_res_m` default 8 m). Outside AT coverage the bump is 0. | SWISSIMAGE crop of the mid extent | `mid_step_m` 50 m |
 | **Far** | out to `radius_m` (~40 km from site centre), minus a hole through mid. **Viewshed-culled**. | Copernicus GLO-30 @ `viewshed_step_m` (50 m) | SWISSIMAGE of the full padded square | `mesh_step_m` 120 m |
 
 Near inner edge: vertices on the playable bbox are snapped to the bbox, Z clamped to the composed heightmap, then dropped by `near_lip_drop_m` (default 1 m). That is a **cliff under the lip**, not a tuck under the driveable surface (tucking z-fights / pokes through).
 
-Mesh Z used to take every *k*-th DGM cell (`elev[::stride]`). That is nearest-neighbour downsample and shows as terraces. Near now samples the 2 m DGM with a **cubic spline** at each 15 m vertex. Mid/far stay bilinear on the 50 m Copernicus grid.
+Mesh Z used to take every *k*-th DGM cell (`elev[::stride]`). That is nearest-neighbour downsample and shows as terraces. Near now samples the 2 m DGM with a **cubic spline** at each 15 m vertex. Mid/far stay bilinear on the 50 m Copernicus grid (the GLO-30→site-CRS warp itself is cubic).
 
-Near canopy (first look): Tirol **DOM − DGM** on the same 2 m ring. Heights **< 1 m** are ignored. Isolated spikes (masts) go away via a local-median outlier clip plus connected-component area (`near_canopy_min_area_m2`). Remaining nDSM is **added to DTM Z** on the same near mesh — no extra object, just a jagged ridgeline. Mid/far have no Tirol DOM. Preview: `preview_backdrop_near_canopy.png`.
+Near canopy: Tirol **DOM − DGM** on the same 2 m ring. Heights **< 1 m** are ignored. Isolated spikes (masts) go away via a local-median outlier clip plus connected-component area (`near_canopy_min_area_m2`). Remaining nDSM is **added to DTM Z** on the same near mesh — no extra object, just a jagged ridgeline. Preview: `preview_backdrop_near_canopy.png`.
+
+Mid canopy: the same filter, from a coarser Tirol WCS (`mid_dgm_res_m`, default 8 m) over `mid_extent`. nDSM is cubic-spline aligned onto the Copernicus 50 m grid and **added** (DTM stays GLO-30). CH/IT/DE cells stay flat. Far has no nDSM. Preview: `preview_backdrop_mid_canopy.png`.
 
 SWISSIMAGE is a Swiss product. Around Fernpass it covers the west well; Austrian / German ground in the crop may be empty or coarse. The mesh still exists from the DEM.
 
@@ -46,9 +48,9 @@ SWISSIMAGE is a Swiss product. Around Fernpass it covers the west well; Austrian
 
 ### Fetch sources
 
-- **DEM (far/mid):** Copernicus GLO-30 public COGs on AWS (`data/raw/copernicus_glo30/`). Warped to the site CRS. EEA-10 is a later swap, not wired.
+- **DEM (far/mid):** Copernicus GLO-30 public COGs on AWS (`data/raw/copernicus_glo30/`). Warped to the site CRS with a **cubic spline**; 1–2 px gaps at 1° tile edges are filled from the nearest finite neighbour. EEA-10 is a later swap, not wired.
 - **DEM (near):** same Tirol DGM WCS as `fetch_dgm.py`, larger bbox (`near_m` + 200 m). Invalid / nodata (including ~0 m outside AT) → empty cells.
-- **Ortho:** SWISSIMAGE Hintergrund via `wms.geo.admin.ch` (`ch.swisstopo.swissimage`). Three GetMap requests (far / near / mid extents), then resampled onto the site-CRS texture grid. Attribution is written to `*.meta.json`.
+- **Ortho:** SWISSIMAGE Hintergrund via `wms.geo.admin.ch` (`ch.swisstopo.swissimage`). Three GetMap requests (far / near / mid extents), then cubic-spline resampled onto the site-CRS texture grid. Attribution is written to `*.meta.json`.
 - **Fallback tint:** ESA WorldCover 2021 (Planetary Computer / S3). If ortho or WorldCover fail, bake uses elevation + slope (green valley → rock → snow).
 
 YAML for the WMS (Fernpass Mega):
@@ -67,7 +69,7 @@ If `sources.backdrop_ortho` is missing, fetch still uses those defaults.
 ### Build steps
 
 1. Load the warped DEM. Observers = `observer_grid` × `observer_grid` on the playable bbox (default 5×5) plus `extra_peaks` local maxima (default 4).
-2. Ray viewshed per observer (`n_rays`, earth curvature `curvature_cc` × \(d^2 / 2R\)). Keep far cells with `count >= min_views`, dilate, clip to `radius_m`, punch the mid hole.
+2. Ray viewshed per observer (`n_rays`, earth curvature `curvature_cc` × \(d^2 / 2R\)). Keep far cells with `count >= min_views`, **close** internal holes (`viewshed_close_m`), small outer pad (`viewshed_pad_m`), clip to `radius_m`, punch the mid hole, then stitch N/S and E/W channels (`viewshed_stitch_m`) where keep exists on both sides.
 3. Bake RGB: ortho × weak hillshade (`ortho_hillshade`) × `albedo_gain`, else WorldCover LUT / hypsometric. DEM slope becomes a tangent-space `normalMap` so TimeOfDay lights the ring. Then, if `sources.snow` is set, the same DGM snow proxy as the playable map tints peaks toward `snow_light` / `snow_heavy`.
 4. Mesh quads where the keep-mask is solid. Face winding is **+Z / sky** (right-hand). No collision, no extra reverse winding.
 5. Split meshes so each DAE stays under BeamNG’s **16-bit** vertex index limit (65 535): far/near = four quadrants `nw|ne|sw|se`; mid = `mid_tiles`² (default 3×3) with **letter** names (`nw`, `n`, `ne`, …).
@@ -125,6 +127,9 @@ Defaults live in `fetch_backdrop.backdrop_cfg`. Fernpass Mega overrides many of 
 | `min_views` | 1 | Far cell must be seen this many times |
 | `n_rays` | 2048 | Rays per observer |
 | `curvature_cc` | 0.85714 | Refraction-ish multiplier on earth drop |
+| `viewshed_close_m` | 600 | Fill **enclosed** keep holes up to this width. Does not fill bays that open into the mid hole. |
+| `viewshed_pad_m` | 100 | Outer pad after closing (was 4×50 m dilation, no close). |
+| `viewshed_stitch_m` | 2500 | Fill N/S and E/W channels outside the hole where keep exists on both sides. The east-arm break is ~2 km at the hole wall; 6 km+ valleys stay open. |
 | `mesh_step_m` | 120 | Far triangle spacing |
 | `hole_pad_m` | 30 | Minimum far hole around the playable bbox (also at least mid−overlap) |
 | `near_m` | 2000 | Near ring outer distance from bbox (Reschen: 5000) |
@@ -145,6 +150,8 @@ Defaults live in `fetch_backdrop.backdrop_cfg`. Fernpass Mega overrides many of 
 | `mid_overlap_m` | 150 | Far hole starts this far inside `mid_m` |
 | `mid_texture_size` | 2048 | Mid PNG |
 | `mid_tiles` | 3 | Mid Collada grid (letter names, not digits) |
+| `mid_canopy` | = `near_canopy` | Add the same filtered nDSM onto Copernicus mid Z. Needs `sources.dom`. |
+| `mid_dgm_res_m` | 8 | Tirol WCS cell size for mid nDSM only (mesh stays `mid_step_m`). |
 | `texture_size` | 2048 | Far PNG |
 | `albedo_gain` | 0.58 | Multiply on ortho bake. Aerial photos are already sunlit; BeamNG lights them again. Lower = darker. Fernpass Mega uses 0.58. |
 | `base_color` | 1,1,1 | Baked onto a soft **green-share** mask (`G/(R+G+B)` above gray), times `(1 − snow_proxy)`. Rock/snow stay. Engine factor is 1,1,1. |
@@ -223,7 +230,7 @@ That is a **recolour**, not a second snow mesh. Steep rock already gets less cov
 | `backdrop_ortho.png` / `_near_` / `_mid_` + `.meta.json` | SWISSIMAGE grids |
 | `backdrop_worldcover.tif` | Optional class raster on the DEM grid |
 | `preview_backdrop_viewshed.png` | Hillshade + keep colours + bbox + observers |
-| `preview_backdrop_{diffuse,near,mid,count,snow,near_canopy}.png` | Baked textures / viewshed count / snow proxy / near nDSM |
+| `preview_backdrop_{diffuse,near,mid,count,snow,near_canopy,mid_canopy}.png` | Baked textures / viewshed count / snow proxy / nDSM |
 | `preview_forest_*.png` / `preview_grade_near.png` | PNG-only forest-class and olive/snow grade (no remesh) |
 | `backdrop_meshes/*.dae` + `backdrop_{diffuse,near,mid}.png` + `main.materials.json` | Game assets |
 | `backdrop_meta.json` | Vert/tri counts, observer count, cfg dump |

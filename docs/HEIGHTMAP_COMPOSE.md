@@ -37,6 +37,8 @@ Mixer, pixel by pixel. **Opacity** (0..1) is the mix — soft edges belong here,
 
 Span parts are merged **before** replace (`max(opacity)`; on a tie `gallery` wins over `bridge`). A gallery rebuild must not delete the bridge part.
 
+Because **span is later than road-bed**, a gallery side-cut overwrites a ramp’s road-bed at the plate edge. `beamng.roads.side_cut_preserve` skips those pixels (see [STRUCTURES.md](STRUCTURES.md)). Under the slab, `force_deck_z` still owns the mix.
+
 ### Step dump
 
 ```powershell

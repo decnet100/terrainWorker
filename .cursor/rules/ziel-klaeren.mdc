@@ -1,0 +1,18 @@
+---
+description: Ziel klären bevor eine Lösung gebaut wird
+alwaysApply: true
+---
+
+# Erst das Ziel, dann die Lösung
+
+Wenn unklar ist, **was der User mit einem Befund tun will**, nachfragen — nicht sofort bauen, messen oder „fixen“.
+
+Ein identifiziertes Problem (falsche Layer, Beule, Import) ist noch kein Auftrag. Erst klären: anschauen, isolieren, ändern, nur dokumentieren?
+
+Nachfragen insbesondere bei:
+
+- welcher Fläche (MeshRoad / Decal / Heightmap / Import vs. PNG)
+- ob es ums **Sehen**, **Fühlen** oder um eine **Zahl** geht
+- ob etwas ins Spiel soll (Import/Sync) oder nur in processed-Dateien
+
+Nicht raten, was „schlecht“ visuell meint, wenn der User das nicht beschrieben hat.

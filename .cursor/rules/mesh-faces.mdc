@@ -1,0 +1,13 @@
+---
+description: Generierte Mesh-Faces — Wicklung prüfen, Normalen nach außen, keine Doppel-Winding-Opacity
+alwaysApply: true
+---
+
+# Face-Orientierung bei generiertem Mesh
+
+Jedes neue oder geänderte Mesh (DAE, OBJ, Cube, Bogen, Gallery, Decal-Strip, prozedurale Tris):
+
+1. Rechte-Hand: `(b−a)×(c−a)` muss **nach außen** bzw. zur sichtbaren Seite zeigen. Im Generator prüfen (Dot mit Face-Centroid bzw. +Z) und bei Bedarf die Wicklung tauschen — nicht raten.
+2. Harte Kanten: **keine geteilten Vertices** ohne eigene Normalen. Sonst eine helle und eine dunkle Dreiecks-Hälfte (sichtbare Diagonale).
+3. Opacity nicht mit Doppel-Winding „retten“. Das stapelt Alpha und macht Flächen undurchsichtig. Eine Wicklung, `doubleSided` am Material.
+4. Kurz im Spiel: Vorder- und Rückseite sichtbar, kein Missing-Face, keine Knick-Diagonale.
