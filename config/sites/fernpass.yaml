@@ -108,7 +108,6 @@ beamng:
       deck_extend_m: 12.0
       approach_mode: marry
       approach_lift_m: 0.015
-      approach_conform: false
       portal_ease_m: 4.0
       portal_frame: block
       portal_block_m: 0.7

@@ -63,6 +63,9 @@ sources:
       waldflaeche:
         url: "https://services3.arcgis.com/hG7UfxX49PQ8XkXh/arcgis/rest/services/Waldflaeche/FeatureServer/0"
         label: Waldfläche
+  tiris_buildings:
+    type: featureserver
+    url: "https://services3.arcgis.com/hG7UfxX49PQ8XkXh/arcgis/rest/services/Gebaeude/FeatureServer/0"
 
 beamng:
   meters_per_pixel: 1.0
@@ -85,6 +88,40 @@ beamng:
   roads:
     spine_start_oid: null
     spine_next: []
+    # Node width (m) before width_scale 0.9 → L* Decal/Terrain 6.3 m (B180 stays 6.75).
+    width_by_str_code:
+      L*: 7.0
+    # A12 pieces titled “Landecker Tunnel” that are surface (no Kunstbauten).
+    not_tunnel_objectids: [227552, 227576, 229085, 234513, 235597]
+    # Two GIP S-AT halves → one named axis (match: { unify: landecker }).
+    unify:
+      - id: landecker
+        objectids: [227551, 235599]
+        mode: mean_axis
+        width_m: 7.5
+        replaces: [galleries, decals, guardrails, road_bed]
+      # Two surface A12 carriageways at the portal → same mean as the bore.
+      - id: landecker_approach
+        objectids: [227576, 229085, 227552]
+        mode: mean_axis
+        width_m: 7.5
+        kind: road
+        replaces: [decals, road_bed]
+    # S-AR 230743: 100 m auf Approach-Höhe, dann Blend zurück aufs DGM.
+    follow_parent:
+      - match: { objectid: 230743 }
+        parent: landecker_approach
+        hold_m: 100
+        blend_m: 30
+        max_raise_m: 8
+        max_cut_m: 8
+        sink_m: 0.02
+    # Seitenschnitt der MeshRoad-Platte nicht durch diese Fahrbahnen.
+    # objekt = Typ (S-FRW/Radweg nicht dabei), objectid = einzelne Stücke.
+    side_cut_preserve:
+      objekt: [S-AR, S-AP, S-BR, S-BP]
+      objectid: [230743]
+
 
   compose:
     ndsm_canopy_m: 5.0
@@ -136,7 +173,10 @@ beamng:
         texture_length: 6.0
         detail_scale: 4.0
     gip_extra: []
-    items: []
+    items:
+      - match: { objectid: 10154 }
+        force_deck_z: true
+        force_deck_z_sink_m: 0.2
 
   galleries:
     merge_abutting: true
@@ -159,7 +199,6 @@ beamng:
       deck_extend_m: 12.0
       approach_mode: marry
       approach_lift_m: 0.015
-      approach_conform: false
       portal_ease_m: 4.0
       portal_frame: block
       portal_block_m: 0.7
@@ -169,6 +208,7 @@ beamng:
       portal_collar: false
       hole_mode: none
       blend_open_dgm: true
+      fan_rpm: 60
       style:
         shell: gallery
         columns: rect
@@ -181,7 +221,47 @@ beamng:
         collar: GalleryRock
         texture_length: 6.0
         detail_scale: 4.0
-    items: []
+    items:
+      # Shared bore from GIP 227551+235599. Surface A12 oids stay out
+      # (beamng.roads.not_tunnel_objectids). One daylight portal on the map.
+      - match: { unify: landecker }
+        one_ended: true
+        fake_end_drop_m: 10
+        # A12-Achse vor der Tür; Z linear Portal → Auflage, letzte 5 m = Pad.
+        append_unify: landecker_approach
+        append_m: 40
+        abut_run_m: 5.0
+        hole_mode: portals
+        deck_extend_m: 0
+        portal_apron_m: 0
+        portal_apron_pad_m: 1.5
+        portal_roof_force_m: 0
+        portal_hole: false
+        approach_conform: true
+        force_deck_z: true
+        force_deck_z_sink_m: 0.02
+        force_deck_z_fill: true
+        approach_conform_max_cut_m: 12.0
+        approach_conform_max_raise_m: 1.0
+        approach_conform_range_m: 2.0
+        approach_conform_pull_m: 8.0
+        approach_conform_side_cut: true
+        approach_conform_max_delta_m: 1.0
+        # Fahrbahn 7.5 m; lichte Breite 9.5 m (1 m Bankett je Seite).
+        # Lichte Höhe 4.0 m, Dach 0.5 m → 4.5 m gesamt. Wände 0.4 m außen.
+        width_m: 7.5
+        width_from_road: false
+        clear_width_m: 9.5
+        clear_height_m: 4.0
+        roof_thickness_m: 0.5
+        wall_thickness_m: 0.4
+        wall_radius_m: 4.5   # ~lichte Höhe; 4–5 m bei dieser Röhre, größer = flacher
+        overhang_m: 0.4
+        deck_width_extra_m: 0.0
+        deck_open_extra_m: 0.0
+        style:
+          shell: tunnel
+          columns: none
 
   guardrails:
     enabled: true
@@ -222,8 +302,12 @@ beamng:
     clip_galleries: true
     stop_before_gallery_m: 3.0
     gallery_clip_pad_m: 2.0
+    # Mündungen: nur Seite zur fremden Achse; Tunnel/Brücken-Δz nicht öffnen
     clip_centerlines: false
-    centerline_clip_pad_m: 0.75
+    open_junctions: true
+    junction_join_m: 4.0
+    junction_mouth_m: 12.0
+    junction_z_sep_m: 3.0
     clip_tunnels: true
     tunnel_clip_pad_m: 25.0
     rules:
@@ -232,11 +316,9 @@ beamng:
       # Tunnel zuletzt (überschreibt lanes>2) — keine Rails auf Röhre/Berg
       - match: { objekt: [S-BT, S-AT] }
         sides: none
-      - match: { name: Tunnel }
+      - match: { kunstbauten: [Tunnel, Unterflur, Landeck] }
         sides: none
-      - match: { kunstbauten: [Tunnel, Unterflur] }
-        sides: none
-      - match: { ids: [227551, 235599] }   # A12 Landecker Tunnel (S-AT)
+      - match: { ids: [227551, 235599] }   # Landecker bore halves (S-AT)
         sides: none
 
   water:
@@ -299,6 +381,8 @@ beamng:
     mid_overlap_m: 150
     mid_texture_size: 2048
     mid_tiles: 3
+    mid_canopy: true            # Tirol DOM−DGM nDSM on Copernicus mid mesh
+    mid_dgm_res_m: 8            # WCS for nDSM only (mesh stays 50 m)
     n_rays: 2048
     curvature_cc: 0.85714
     texture_size: 2048
@@ -328,6 +412,8 @@ beamng:
 
   buildings:
     enabled: true
+    source: tiris
+    eave_inset_m: 0.9
     default_height_m: 8.0
     level_height_m: 3.0
     min_area_m2: 25.0
@@ -342,7 +428,7 @@ beamng:
   decal_roads:
     enabled: true
     centerline_source: gip
-    # named = DecalRoads only on STR_CODE (B180/L…); Gassen get terrain asphalt + road-bed.
+    # named = DecalRoads on STR_CODE (A12/B180/L…) and S-A/S-AR. S-AT bores stay off.
     gip_decals: named
     width_scale: 0.9
     material: Road_Asphalt
@@ -365,6 +451,20 @@ beamng:
     road_bed_max_raise_m: 2.0
     road_bed_max_cut_m: 2.0
     road_bed_smooth_m: 12.0
+    road_bed_items:
+      - match: { objectid: 9025 }
+        pad_m: 2.5
+        falloff_m: 2.5
+        max_cut_m: 20.0
+        max_raise_m: 10.0
+        smooth_m: 20.0
+      - match: { str_code: L* }
+        pad_m: 3.0
+        falloff_m: 2.5
+        sink_m: 0.08
+        max_raise_m: 10.0
+        max_cut_m: 10.0
+        smooth_m: 20.0
     over_objects: false
     start_end_fade: [0.0, 0.0]
     stitch_abutting: true
@@ -395,11 +495,12 @@ beamng:
 
 annotations:
   gpkg: data/annotations/tirol-reschen-8192.gpkg
-  guardrail_source: auto
+  guardrail_source: heuristic
 
 notes: |
-  First-look auto build from bbox only (no OID / gallery / road-bed overrides).
   8000×8000 m CRS crop on 8192² heightmap @ 1 m/px (BeamNG power-of-two).
+  L*: 7.0 m + through road-bed (pad 3 / falloff 6). B* two-lane 8.0 m. S-G 5.0 m.
+  S-AR / S-AP / S-BR / S-BP: 1 lane, no own rails. S-F / S-GW / S-FRW / S-STRAIL: gravel, no road-bed.
   python tools/build_level.py --site config/sites/reschen.yaml
   Then extras: fetch_gip, bridges/galleries, decals, guardrails, water, buildings,
   fetch_backdrop / build_backdrop.

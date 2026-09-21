@@ -87,8 +87,7 @@ beamng:
       extend_after_m: 5.0
       
   galleries:
-    defaults:
-      approach_conform: false
+    defaults: {}
     items: []
   guardrails:
     enabled: true

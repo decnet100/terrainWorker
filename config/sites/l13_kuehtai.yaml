@@ -147,7 +147,6 @@ beamng:
       portal_ease_m: 4.0          # kurzer C1-Übergang knapp innerhalb der Portale
       approach_lift_m: 0.015      # MeshRoad knapp über Terrain (kein Z-Fight)
       approach_blend_m: 12.0      # nur für approach_mode: hermite_blend
-      approach_conform: false     # marry braucht kein Heightmap-Bake
       portal_frame: block
       portal_block_m: 0.7
       portal_depth_m: 1.0
@@ -187,7 +186,6 @@ beamng:
         overhang_m: 1.0
         parapet_height_m: 1.0
         approach_mode: marry
-        approach_conform: false
         style:
           columns: rect
       - match: { objectid: 8276, name: Rauheneck }
@@ -205,7 +203,6 @@ beamng:
         column_spacing_m: 4.0
         deck_extend_m: 12.0
         approach_mode: marry
-        approach_conform: false
         portal_ease_m: 4.0
         approach_lift_m: 0.015
         portal_frame: block

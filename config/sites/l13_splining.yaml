@@ -82,7 +82,6 @@ beamng:
       corner_down_m: 0.06
       corner_band: 0.2              # frac of half-width near each edge
       step_m: 1.0
-      approach_conform: false
       style:
         understructure: none
         edge: none
@@ -141,7 +140,6 @@ beamng:
       column_along_m: 0.4
       column_lat_m: 0.35
       column_out_m: 0.0
-      approach_conform: false
       # Lip bake: lower = valleyward only; upper = hangward only (open flank)
       terrain_embed: true
       terrain_embed_upper: true          # probe hangward upper
