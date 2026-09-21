@@ -23,6 +23,7 @@ Schreibt nach `data/processed/<site>/rock_color_clusters/` (oder `--out`):
   - `rock_stats.normal_color.trimmed_mean_rgb`: Mittelwert nur im mittleren Helligkeitsbereich (L-P20…L-P80)
   - `rock_stats.normal_color.rep_cluster_rgb`: repräsentativer Cluster (Center-L nahe L-Median)
 - `rock_palette_kK.png`: Palette (Swatches)
+- `rock_palette_kK_labeled.png`: Palette mit Häufigkeiten (`id`, `%`, `n_full`)
 - `rock_quantized_kK.png`: Quantisierte Vorschau (nur Fels-Pixel ersetzt)
 - `rock_class_XX_kK.png`: Klassenmasken (weiß = Pixel dieser Klasse)
 
