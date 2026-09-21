@@ -50,15 +50,60 @@ FS_QUERY = str(
     )
 )
 
-def _cache_key() -> str:
+
+def _gip_cfg(site: dict | None = None) -> dict:
+    return ((site or SITE).get("sources") or {}).get("gip") or {}
+
+
+def gip_include_mode(site: dict | None = None) -> str:
+    """``bbox`` = all Landesstraßen intersecting site.bbox; else trunk STR_CODE only."""
+    inc = str(_gip_cfg(site).get("include") or "").strip().lower()
+    if inc in ("bbox", "all", "all_in_bbox"):
+        return "bbox"
+    return "str_code"
+
+
+def gip_str_codes(site: dict | None = None) -> list[str]:
+    """Optional explicit STR_CODE list (fallback / extra WFS fetches)."""
+    raw = _gip_cfg(site).get("str_codes")
+    if raw is None:
+        return []
+    if isinstance(raw, (str, int, float)):
+        s = str(raw).strip()
+        return [s] if s else []
+    out: list[str] = []
+    for x in raw:
+        s = str(x).strip()
+        if s:
+            out.append(s)
+    return out
+
+
+def gip_cache_key(site: dict | None = None) -> str:
+    site = site or SITE
+    gip = _gip_cfg(site)
     payload = {
-        "url": WFS_URL,
-        "type": TYPE_NAME,
-        "crs": CRS,
-        "bbox": BBOX,
-        "str_code": STR_CODE,
+        "url": str(gip.get("url") or WFS_URL),
+        "type": str(gip.get("type_name") or TYPE_NAME),
+        "crs": str(site.get("crs") or CRS),
+        "bbox": list(map(float, site["bbox"])),
+        "str_code": gip.get("str_code"),
+        "include": gip_include_mode(site),
+        "str_codes": gip_str_codes(site),
+        # include:bbox downloads the full layer (local/forest/path), not STR_CODE-only.
+        "netz": "all" if gip_include_mode(site) == "bbox" else "str_code",
     }
     return hashlib.sha1(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()[:12]
+
+
+def gip_cache_geojson_path(site: dict | None = None) -> Path:
+    site = site or SITE
+    slug = site_slug(site)
+    return ROOT / "data" / "raw" / f"gip_{slug}_{gip_cache_key(site)}.geojson"
+
+
+def _cache_key() -> str:
+    return gip_cache_key(SITE)
 
 
 def _paths() -> tuple[Path, Path, Path]:
@@ -134,6 +179,93 @@ def _fetch_by_str_code(code: str) -> list[dict]:
             break
         start += PAGE
     return all_feats
+
+
+def _dedupe_by_objectid(features: list[dict]) -> list[dict]:
+    by_oid: dict[int, dict] = {}
+    no_oid: list[dict] = []
+    for f in features:
+        oid = (f.get("properties") or {}).get("OBJECTID")
+        if oid is None:
+            no_oid.append(f)
+            continue
+        by_oid[int(oid)] = f
+    return list(by_oid.values()) + no_oid
+
+
+def _fetch_by_str_codes(codes: list[str]) -> list[dict]:
+    all_feats: list[dict] = []
+    seen: set[str] = set()
+    for code in codes:
+        if not code or code in seen:
+            continue
+        seen.add(code)
+        print(f"Downloading GIP/WFS STR_CODE={code} from {WFS_URL}")
+        all_feats.extend(_fetch_by_str_code(code))
+    return _dedupe_by_objectid(all_feats)
+
+
+def _fs_headers() -> dict:
+    return {"User-Agent": "beamng_autoroad/0.1", "Accept": "application/json"}
+
+
+def _fetch_by_bbox() -> list[dict]:
+    """All Verkehrswege intersecting site.bbox via FeatureServer (WFS bbox is empty)."""
+    wkid = CRS.upper().replace("EPSG:", "").strip()
+    try:
+        wkid_i = int(wkid)
+    except ValueError:
+        wkid_i = wkid
+    page = max(1, min(int(PAGE) if PAGE else 500, 2000))
+    all_feats: list[dict] = []
+    offset = 0
+    print(f"Downloading GIP FeatureServer BBOX intersect {BBOX} inSR={wkid_i}")
+    while True:
+        params = {
+            "where": "1=1",
+            "geometry": json.dumps(
+                {
+                    "xmin": XMIN,
+                    "ymin": YMIN,
+                    "xmax": XMAX,
+                    "ymax": YMAX,
+                    "spatialReference": {"wkid": wkid_i},
+                }
+            ),
+            "geometryType": "esriGeometryEnvelope",
+            "inSR": wkid_i,
+            "spatialRel": "esriSpatialRelIntersects",
+            "outFields": "*",
+            "returnGeometry": "true",
+            "outSR": 4326,
+            "f": "geojson",
+            "resultOffset": offset,
+            "resultRecordCount": page,
+        }
+        r = requests.get(FS_QUERY, params=params, headers=_fs_headers(), timeout=TIMEOUT)
+        r.raise_for_status()
+        data = _fix_mojibake(r.json())
+        if data.get("error"):
+            raise RuntimeError(f"FeatureServer bbox error: {data.get('error')}")
+        feats = data.get("features") or []
+        print(f"  FeatureServer offset={offset} -> {len(feats)}")
+        all_feats.extend(feats)
+        exceeded = bool(
+            data.get("exceededTransferLimit")
+            or (data.get("properties") or {}).get("exceededTransferLimit")
+        )
+        if not feats or (len(feats) < page and not exceeded):
+            break
+        offset += len(feats)
+        if offset > 200_000:
+            print("WARNING: FeatureServer bbox paging stopped at 200000 features")
+            break
+    print(f"  FeatureServer bbox total: {len(all_feats)}")
+    return all_feats
+
+
+def _has_str_code(feat: dict) -> bool:
+    return bool(str((feat.get("properties") or {}).get("STR_CODE") or "").strip())
 
 
 def _coords_walk(obj, out: list) -> None:
@@ -219,7 +351,6 @@ def _fetch_features_by_objectids(oids: list[int]) -> list[dict]:
     """Pull individual Verkehrswege features via FeatureServer (any STR_CODE)."""
     if not oids:
         return []
-    headers = {"User-Agent": "beamng_autoroad/0.1", "Accept": "application/json"}
     # Batch OR query
     where = " OR ".join(f"OBJECTID={int(o)}" for o in oids)
     params = {
@@ -229,7 +360,7 @@ def _fetch_features_by_objectids(oids: list[int]) -> list[dict]:
         "outSR": "4326",
         "f": "geojson",
     }
-    r = requests.get(FS_QUERY, params=params, headers=headers, timeout=TIMEOUT)
+    r = requests.get(FS_QUERY, params=params, headers=_fs_headers(), timeout=TIMEOUT)
     r.raise_for_status()
     data = _fix_mojibake(r.json())
     feats = data.get("features") or []
@@ -296,7 +427,7 @@ def _apply_gip_extra(features: list[dict], site: dict | None = None) -> list[dic
         else:
             merged.append(f)
             present.add(oid)
-        print(f"  gip_extra: OBJECTID={oid} → {label} ({kind})")
+        print(f"  gip_extra: OBJECTID={oid} -> {label} ({kind})")
 
     return merged
 
@@ -322,12 +453,72 @@ def _summarize(features: list[dict]) -> dict:
                 "objectid": p.get("OBJECTID"),
                 "gml_id": p.get("GmlID"),
             })
+    str_codes = Counter(
+        str((f.get("properties") or {}).get("STR_CODE") or "") for f in features
+    )
     return {
         "feature_count": len(features),
+        "trunk_str_code": STR_CODE,
+        "include": gip_include_mode(),
+        "str_code_counts": dict(str_codes.most_common()),
         "kunstbauten_counts": dict(kb.most_common()),
         "kind_counts": dict(kinds),
         "structures": structures,
+        "side_structure_count": sum(
+            1
+            for s in structures
+            if str(s.get("str_code") or "").strip() != str(STR_CODE or "").strip()
+        ),
     }
+
+
+def _print_inventory(summary: dict) -> None:
+    counts = summary.get("str_code_counts") or {}
+    if counts:
+        bits = [f"{k or '(none)'}={v}" for k, v in counts.items()]
+        print(f"STR_CODE counts: {' '.join(bits)}")
+    trunk = str(summary.get("trunk_str_code") or "").strip()
+    n_side = int(summary.get("side_structure_count") or 0)
+    print(f"Structures in BBOX (trunk={trunk or '?'} side_kunstbauten={n_side}):")
+    for s in summary.get("structures") or []:
+        code = s.get("str_code") or ""
+        mark = "" if str(code).strip() == trunk else " [side]"
+        print(f"  {s['kind']:8s} {s['name']} ({s.get('length_m')} m) {code}{mark}")
+
+
+def _download_features() -> tuple[list[dict], int]:
+    """Return (clipped features before gip_extra, unclipped count)."""
+    include = gip_include_mode()
+    extra_codes = gip_str_codes()
+    all_feats: list[dict] = []
+
+    if include == "bbox":
+        try:
+            all_feats = _fetch_by_bbox()
+        except Exception as ex:
+            print(f"WARNING: FeatureServer bbox failed ({ex})")
+            all_feats = []
+        if not all_feats:
+            fallback = list(dict.fromkeys(extra_codes + ([str(STR_CODE)] if STR_CODE else [])))
+            if not fallback:
+                raise SystemExit(
+                    "include: bbox returned 0 features and no str_code/str_codes fallback"
+                )
+            print(f"Falling back to WFS STR_CODE(s): {fallback}")
+            all_feats = _fetch_by_str_codes(fallback)
+    elif extra_codes:
+        codes = list(dict.fromkeys(([str(STR_CODE)] if STR_CODE else []) + extra_codes))
+        print("(Spatial BBOX on this ArcGIS WFS returns empty — filter by road, then clip.)")
+        all_feats = _fetch_by_str_codes(codes)
+    else:
+        print(f"Downloading GIP/WFS STR_CODE={STR_CODE} from {WFS_URL}")
+        print("(Spatial BBOX on this ArcGIS WFS returns empty — filter by road, then clip.)")
+        all_feats = _fetch_by_str_code(str(STR_CODE))
+
+    print(f"Road features total: {len(all_feats)}")
+    clipped = _clip_to_bbox(all_feats)
+    print(f"After site BBOX clip: {len(clipped)}")
+    return clipped, len(all_feats)
 
 
 def main() -> None:
@@ -355,22 +546,16 @@ def main() -> None:
         summary = _summarize(feats)
         summary_path.write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
         print(f"Wrote {summary_path}")
-        for s in summary["structures"]:
-            print(f"  {s['kind']:8s} {s['name']} ({s.get('length_m')} m)")
+        _print_inventory(summary)
         return
 
     if not STR_CODE:
         raise SystemExit(
-            "sources.gip.str_code is required for efficient download "
-            "(full Tirol WFS is huge). Example: str_code: L13"
+            "sources.gip.str_code is required as the through-route (trunk). "
+            "Example: str_code: L13  — with include: bbox for all roads in site.bbox"
         )
 
-    print(f"Downloading GIP/WFS STR_CODE={STR_CODE} from {WFS_URL}")
-    print("(Spatial BBOX on this ArcGIS WFS returns empty — filter by road, then clip.)")
-    all_feats = _fetch_by_str_code(str(STR_CODE))
-    print(f"Road features total: {len(all_feats)}")
-    clipped = _clip_to_bbox(all_feats)
-    print(f"After site BBOX clip: {len(clipped)}")
+    clipped, n_raw = _download_features()
     clipped = _apply_gip_extra(clipped)
 
     fc = {
@@ -385,10 +570,12 @@ def main() -> None:
         "url": WFS_URL,
         "type_name": TYPE_NAME,
         "str_code": STR_CODE,
+        "include": gip_include_mode(),
+        "str_codes": gip_str_codes(),
         "crs_site": CRS,
         "bbox": BBOX,
         "feature_count": len(clipped),
-        "road_feature_count": len(all_feats),
+        "road_feature_count": n_raw,
         "gip_extra": _gip_extra_entries(),
         "note": "Cached clip; re-run with --force to refresh road extract; gip_extra merged each run",
     }
@@ -397,9 +584,7 @@ def main() -> None:
     print(f"Wrote {cache_path}")
     print(f"Wrote {meta_path}")
     print(f"Wrote {summary_path}")
-    print("Structures in BBOX:")
-    for s in summary["structures"]:
-        print(f"  {s['kind']:8s} {s['name']} ({s.get('length_m')} m)")
+    _print_inventory(summary)
 
 
 if __name__ == "__main__":

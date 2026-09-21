@@ -1,9 +1,9 @@
 """Build GIP bridges as BeamNG MeshRoad decks.
 
-Geometry rules (KONZEPT):
+Geometry rules (docs/CONCEPT.md):
   - XY follows the OSM/road centerline (straight road), not raw GIP tangents
   - Z = cubic Hermite along arc length from abutment Z + approach dz/ds
-  - MeshRoad node Z = surface_z - depth/2 (slab center)
+  - MeshRoad node Z = driving surface (Oberkante / node_z_is_top)
 
 Per-bridge config in site YAML under beamng.bridges.items[]
 (defaults + style placeholders for understructure / edge later).
@@ -58,7 +58,9 @@ BRIDGE_SCALAR_KEYS = (
     "abut_snap_z",  # portal Z = max(roadZ, terrainZ) so cut abutments meet Decal
     "portal_z_offset_m",  # [dz_s0, dz_s1] add to portal Z; grade adapts between
     "portal_dz_ds",  # optional [m0, m1] Hermite end slopes; [0,0]=straight grade
-    "approach_conform",  # bake heightmap to MeshRoad Z under deck (flush lips)
+    "approach_conform",  # Default on: heightmap to MeshRoad Z at abutments
+    "force_deck_z",  # Default on: under slab to deck − sink; gorge stays
+    "force_deck_z_sink_m",  # under-slab drop; default = slab depth when force_deck_z
     "approach_conform_pad_m",
     "approach_conform_falloff_m",
     "approach_conform_sink_m",
@@ -130,6 +132,14 @@ def _slug(s: str) -> str:
 def find_gip_geojson(site: dict) -> Path:
     raw = ROOT / "data" / "raw"
     slug = site_slug(site)
+    try:
+        from fetch_gip import gip_cache_geojson_path
+
+        keyed = gip_cache_geojson_path(site)
+        if keyed.is_file():
+            return keyed
+    except Exception:
+        pass
     matches = sorted(raw.glob(f"gip_{slug}*.geojson"))
     if not matches:
         raise SystemExit(f"No GIP cache for {slug} - run: python tools\\fetch_gip.py")
@@ -624,7 +634,7 @@ def build_span_on_road(
     width_from_road = bool(cfg.get("width_from_road", True))
     depth = float(cfg["depth_m"])
     lift = float(cfg["deck_lift_m"])
-    node_z_is_top = bool(cfg.get("node_z_is_top", False))
+    node_z_is_top = bool(cfg.get("node_z_is_top", True))
     ext_b = float(cfg["extend_before_m"])
     ext_a = float(cfg["extend_after_m"])
     gip_pad = max(0.0, float(cfg.get("gip_pad_m") or 0.0))
@@ -781,7 +791,7 @@ def build_span_on_road(
             w = w0 + t * (w1 - w0)
 
         nrm = normal_from_pitch_crossfall(tx, ty, dz, cf)
-        # node_z_is_top: Z is driving surface; else MeshRoad node = slab center
+        # Node Z = Oberkante. depth only grows the slab downward.
         z_node = z_surf if node_z_is_top else (z_surf - 0.5 * depth)
         xy.append((x, y))
         centers.append(z_node)
@@ -886,6 +896,7 @@ def bridge_features(site: dict, sc: SiteCoords) -> list[dict]:
             {
                 "name": str(props.get("KUNSTBAUTEN") or "bridge"),
                 "objectid": props.get("OBJECTID"),
+                "str_code": props.get("STR_CODE"),
                 "length_m": props.get("Shape__Length"),
                 "xy": xy,
             }
@@ -1001,6 +1012,9 @@ def build_bridge_entries_road_spline(
     info["objectid"] = feat.get("objectid")
     info["match"] = cfg.get("match_id")
     info["road_name"] = road.get("name")
+    info["corridor_id"] = road.get("id")
+    info["corridor_kind"] = road.get("corridor_kind")
+    info["str_code"] = road.get("str_code")
     info["road_len_m"] = round(float(road["length"]), 1)
     info["road_stitched"] = False
     info["centerline"] = str(road.get("source") or "strassennetz")
@@ -1062,6 +1076,62 @@ def _from_px_beamng(px: float, py: float, size: int, extent: float) -> tuple[flo
     bx = px / max(size - 1, 1) * extent
     by = (1.0 - py / max(size - 1, 1)) * extent
     return bx, by
+
+
+def _dist_to_poly_xy(px: float, py: float, poly: list[tuple[float, float]]) -> float:
+    best = float("inf")
+    for a, b in zip(poly, poly[1:]):
+        dx, dy = b[0] - a[0], b[1] - a[1]
+        seg2 = dx * dx + dy * dy
+        if seg2 < 1e-12:
+            d = math.hypot(px - a[0], py - a[1])
+        else:
+            t = max(0.0, min(1.0, ((px - a[0]) * dx + (py - a[1]) * dy) / seg2))
+            d = math.hypot(px - (a[0] + t * dx), py - (a[1] + t * dy))
+        if d < best:
+            best = d
+    return best
+
+
+def _point_on_preserve_axes(
+    bx: float,
+    by: float,
+    axes: list[tuple[list[tuple[float, float]], float]],
+) -> bool:
+    for xy, half in axes:
+        if _dist_to_poly_xy(bx, by, xy) <= half:
+            return True
+    return False
+
+
+def _load_side_cut_preserve_axes(
+    cfgs: list[dict],
+) -> tuple[list[tuple[list[tuple[float, float]], float]], dict]:
+    """Site ``beamng.roads.side_cut_preserve`` union item overrides."""
+    from gip_road_segments import parse_side_cut_preserve, side_cut_preserve_axes
+
+    site = load_site()
+    roads_cfg = (site.get("beamng") or {}).get("roads") or {}
+    parts = [roads_cfg.get("side_cut_preserve")]
+    for cfg in cfgs:
+        parts.append(cfg.get("side_cut_preserve"))
+        parts.append(cfg.get("approach_conform_side_cut_preserve"))
+    spec = parse_side_cut_preserve(*parts)
+    if not spec["objekt"] and not spec["objectid"]:
+        return [], spec
+    proc = processed_dir(site)
+    path = proc / "gip_roads_beamng.json"
+    roads = {}
+    if path.is_file():
+        try:
+            roads = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            roads = {}
+    if not roads:
+        from gip_road_segments import load_gip_road_segments
+
+        roads = load_gip_road_segments(site)
+    return side_cut_preserve_axes(roads, spec), spec
 
 
 def _project_xy_to_nodes(
@@ -1139,7 +1209,7 @@ def _project_xy_to_nodes_s(
 def meshroad_surface_nodes(entry: dict, info: dict) -> list[dict]:
     """MeshRoad nodes as {x,y,z,width} with Z = driving surface."""
     depth = float(info.get("depth_m") or (entry.get("nodes") or [[0, 0, 0, 0, 0.4]])[0][4] or 0.4)
-    top = bool(info.get("node_z_is_top", False))
+    top = bool(info.get("node_z_is_top", True))
     out = []
     for n in entry.get("nodes") or []:
         if len(n) < 4:
@@ -1162,6 +1232,8 @@ def conform_bridge_heightmap(
 
     Under the slab: *cut only* where DGM is above mesh Z minus sink
     (kills poke-through / z-fight). Low gorge pixels stay.
+    ``force_deck_z`` is the same clamp (hard, weight 1) and does not
+    change approach targets — sink stays under the deck only.
 
     Beside the deck, ``approach_conform_side_cut`` (default on) lowers
     high DGM the same distance past the edge as ``approach_conform_range_m``
@@ -1171,7 +1243,8 @@ def conform_bridge_heightmap(
     The extra drop fades to 0 at the abutments (extend + threshold
     range) so the Schwelle owns the corners.
 
-    Outside the portals, pull DGM toward portal Z minus sink:
+    Outside the portals, pull DGM toward portal Z (minus sink only when
+    ``force_deck_z`` is off):
 
     - ``approach_conform_range_m`` (default 2 m): linear lip, weight 1 at
       the threshold and 0 at that range.
@@ -1197,11 +1270,17 @@ def conform_bridge_heightmap(
     side_wacc = np.zeros_like(out)
     side_drop_used = 0.0
     sink = 0.02
+    force_used = False
+    preserve_axes, preserve_spec = _load_side_cut_preserve_axes(cfgs)
+    preserve_skip = 0
 
     for entry, info, cfg in zip(entries, span_infos, cfgs):
-        if not bool(cfg.get("approach_conform", False)):
+        do_approach = bool(cfg.get("approach_conform", True))
+        do_force = bool(cfg.get("force_deck_z", True))
+        if not do_approach and not do_force:
             continue
         any_on = True
+        force_used = force_used or do_force
         nodes = meshroad_surface_nodes(entry, info)
         if len(nodes) < 2:
             continue
@@ -1254,8 +1333,13 @@ def conform_bridge_heightmap(
         along_limit = max(range_m, pull_m)
         side_used = max(side_used, side_range_m) if side_cut else side_used
         side_drop_used = max(side_drop_used, side_drop_m) if side_cut else side_drop_used
-        z_start = float(nodes[0]["z"]) - sink
-        z_end = float(nodes[-1]["z"]) - sink
+        # force_deck_z: sink only under the slab, not on the driveway.
+        if do_force:
+            z_start = float(nodes[0]["z"])
+            z_end = float(nodes[-1]["z"])
+        else:
+            z_start = float(nodes[0]["z"]) - sink
+            z_end = float(nodes[-1]["z"]) - sink
         half_ref = 0.5 * max(float(n["width"]) for n in nodes)
         xs = [float(n["x"]) for n in nodes]
         ys = [float(n["y"]) for n in nodes]
@@ -1282,24 +1366,57 @@ def conform_bridge_heightmap(
                 if inside:
                     if dist <= hw:
                         under[py, px] = True
-                        target = float(z_on) - sink
-                        if z0 <= target + 1e-4:
-                            continue
-                        cut_tested += 1
-                        w = 1.0
-                        prev_w = float(w_acc[py, px])
-                        if prev_w > 1e-6:
-                            target = min(float(z_tgt[py, px]), target)
-                            w = max(prev_w, w)
-                        z_tgt[py, px] = target
-                        w_acc[py, px] = w
-                        z_new = (1.0 - w) * z0 + w * target
-                        if abs(z_new - z0) < 1e-4:
-                            continue
-                        cut_changed += 1
-                        cut_max = max(cut_max, abs(z_new - z0))
+                        if do_force or do_approach:
+                            if do_force:
+                                force_sink = cfg.get("force_deck_z_sink_m")
+                                if force_sink is None:
+                                    force_sink = depth_m
+                                force_sink = float(force_sink)
+                                # Schwelle keeps approach sink; extra metre
+                                # toward mid-span so 0.4 m drop is not a hill.
+                                fade_m = max(corner_m, 0.0) + 1.0
+                                past = min(s - ext_b, (total - s) - ext_a)
+                                if past <= 0.0 or fade_m <= 1e-9:
+                                    fade = 0.0
+                                elif past >= fade_m:
+                                    fade = 1.0
+                                else:
+                                    t = past / fade_m
+                                    fade = t * t * (3.0 - 2.0 * t)
+                                deck_sink = sink + (force_sink - sink) * fade
+                            else:
+                                deck_sink = sink
+                            target = float(z_on) - deck_sink
+                            fill = bool(cfg.get("force_deck_z_fill", False))
+                            delta = target - z0
+                            if delta > 1e-4:
+                                if not fill or delta > max_raise + 1e-9:
+                                    continue
+                            elif delta < -1e-4:
+                                pass
+                            else:
+                                continue
+                            cut_tested += 1
+                            w = 1.0
+                            prev_w = float(w_acc[py, px])
+                            if prev_w > 1e-6:
+                                if delta > 0:
+                                    target = max(float(z_tgt[py, px]), target)
+                                else:
+                                    target = min(float(z_tgt[py, px]), target)
+                                w = max(prev_w, w)
+                            z_tgt[py, px] = target
+                            w_acc[py, px] = w
+                            z_new = (1.0 - w) * z0 + w * target
+                            if abs(z_new - z0) < 1e-4:
+                                continue
+                            cut_changed += 1
+                            cut_max = max(cut_max, abs(z_new - z0))
                         continue
-                    if side_cut and dist <= hw + side_range_m:
+                    if do_approach and side_cut and dist <= hw + side_range_m:
+                        if preserve_axes and _point_on_preserve_axes(bx, by, preserve_axes):
+                            preserve_skip += 1
+                            continue
                         u = (dist - hw) / max(side_range_m, 1e-6)
                         w_lip = 1.0 - u
                         w_soft = 1.0 - (u * u * (3.0 - 2.0 * u))
@@ -1329,9 +1446,15 @@ def conform_bridge_heightmap(
                         side_wacc[py, px] = w
                     continue
 
+                if not do_approach:
+                    continue
+
                 half = hw + pad
                 outer = half + max(falloff, 1e-6)
                 if dist > outer:
+                    continue
+                if preserve_axes and _point_on_preserve_axes(bx, by, preserve_axes):
+                    preserve_skip += 1
                     continue
                 if s < 0.0:
                     along = -s
@@ -1401,6 +1524,9 @@ def conform_bridge_heightmap(
         "side_cut": bool(side_used > 1e-9),
         "side_range_m": round(side_used, 2),
         "side_drop_m": round(side_drop_used, 3),
+        "force_deck_z": force_used,
+        "side_cut_preserve_roads": len(preserve_axes),
+        "side_cut_preserve_skip": preserve_skip,
         "method": "abutment_outside_raise_pull_deck_cut",
     }
     if any_on:
@@ -1412,8 +1538,16 @@ def conform_bridge_heightmap(
         print(
             f"Bridge deck cut (high DGM only): tested={cut_tested} "
             f"changed={cut_changed} max_delta={cut_max:.3f}m sink={sink:.3f}m "
+            f"force_deck_z={force_used} "
             f"side_range={side_used:.1f}m side_drop={side_drop_used:.2f}m"
         )
+        if preserve_axes:
+            obj = ",".join(sorted(preserve_spec.get("objekt") or [])) or "-"
+            oids = ",".join(str(x) for x in sorted(preserve_spec.get("objectid") or [])) or "-"
+            print(
+                f"  side_cut_preserve roads={len(preserve_axes)} "
+                f"objekt={obj} objectid={oids} skip_px={preserve_skip}"
+            )
     return z_tgt, w_acc, stats
 
 
@@ -1606,7 +1740,7 @@ def default_bridge_cfg(bng: dict) -> tuple[dict, list]:
         "width_from_road": bool(raw.get("width_from_road", True)),
         "depth_m": float(raw.get("depth_m") or 0.4),
         "deck_lift_m": float(raw.get("deck_lift_m") or 0.0),
-        "node_z_is_top": bool(raw.get("node_z_is_top", False)),
+        "node_z_is_top": bool(raw.get("node_z_is_top", True)),
         "extend_before_m": float(raw.get("extend_before_m") or raw.get("approach_overlap_m") or 0.5),
         "extend_after_m": float(raw.get("extend_after_m") or raw.get("approach_overlap_m") or 0.5),
         "under_inset_m": float(raw.get("under_inset_m") or 0.0),
@@ -1630,7 +1764,13 @@ def default_bridge_cfg(bng: dict) -> tuple[dict, list]:
                 else [0.0, 0.0]
             )
         ),
-        "approach_conform": bool(raw.get("approach_conform", False)),
+        "approach_conform": bool(raw.get("approach_conform", True)),
+        "force_deck_z": bool(raw.get("force_deck_z", True)),
+        "force_deck_z_sink_m": (
+            float(raw["force_deck_z_sink_m"])
+            if raw.get("force_deck_z_sink_m") is not None
+            else None
+        ),
         "approach_conform_pad_m": float(
             raw.get("approach_conform_pad_m")
             if raw.get("approach_conform_pad_m") is not None
@@ -1690,6 +1830,16 @@ def default_bridge_cfg(bng: dict) -> tuple[dict, list]:
         "approach_conform_side_corner_m": (
             float(raw["approach_conform_side_corner_m"])
             if raw.get("approach_conform_side_corner_m") is not None
+            else None
+        ),
+        "side_cut_preserve": (
+            dict(raw["side_cut_preserve"])
+            if isinstance(raw.get("side_cut_preserve"), dict)
+            else None
+        ),
+        "approach_conform_side_cut_preserve": (
+            dict(raw["approach_conform_side_cut_preserve"])
+            if isinstance(raw.get("approach_conform_side_cut_preserve"), dict)
             else None
         ),
         "terrain_embed": bool(raw.get("terrain_embed", False)),
@@ -1780,11 +1930,12 @@ def main() -> None:
     use_sn_cl = cl in ("strassennetz", "sn", "net", "strasse", "straßennetz")
 
     roads = load_road_polylines(proc)
+    corridors = None
     net_road = None
     if use_gip_cl:
-        from gip_road_segments import load_gip_stitched_span_road
+        from gip_road_segments import load_gip_corridors, load_gip_corridor_for_feature
 
-        net_road = load_gip_stitched_span_road(site)
+        corridors = load_gip_corridors(site)
     elif use_sn_cl or use_spline:
         net_road = load_strassennetz_road(proc)
         print(
@@ -1809,12 +1960,16 @@ def main() -> None:
             continue
         bridge_cfgs.append(cfg)
         if str(cfg.get("profile") or "hermite") == "road_spline":
-            if net_road is None:
+            if use_gip_cl:
+                from gip_road_segments import load_gip_corridor_for_feature
+
+                road = load_gip_corridor_for_feature(feat, site, corridors=corridors)
+            elif net_road is None:
                 cl_f = str(cfg.get("centerline") or defaults.get("centerline") or "osm").lower()
                 if cl_f in ("gip", "verkehrswege", "objectid", "oid"):
-                    from gip_road_segments import load_gip_stitched_span_road
+                    from gip_road_segments import load_gip_corridor_for_feature
 
-                    road = load_gip_stitched_span_road(site)
+                    road = load_gip_corridor_for_feature(feat, site, corridors=corridors)
                 else:
                     road = load_strassennetz_road(proc)
             else:
@@ -1833,6 +1988,7 @@ def main() -> None:
                 f"abut={info.get('abut_s0')}/{info.get('abut_s1')} "
                 f"method={zc.get('method')} "
                 f"on {info.get('road_name')!r} "
+                f"corridor={info.get('corridor_id')} "
                 f"ext=({cfg['extend_before_m']}/{cfg['extend_after_m']})"
             )
             continue
@@ -1923,7 +2079,9 @@ def main() -> None:
 
     size = int(bng.get("mask_size") or 512)
     extent = float(bng.get("meters_per_pixel") or 1.0) * float(size)
-    any_conform = any(bool(c.get("approach_conform")) for c in bridge_cfgs)
+    any_conform = any(
+        bool(c.get("approach_conform")) or bool(c.get("force_deck_z")) for c in bridge_cfgs
+    )
     if any_conform:
         from PIL import Image
 
