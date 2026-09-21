@@ -96,6 +96,10 @@ beamng:
   #   spine_next:
   #     - from_oid: 3852
   #       to_oid: 3901
+  #   width_by_str_code:
+  #     L*: 7.0               # all Landesstraßen; Decal/terrain *= width_scale
+  #   lanes_by_str_code:
+  #     B179: 3               # 3+ lanes → not the 8 m two-lane B* default
   # Optional: BEV×nDSM×TWI×snow → exclusive biomes + soft terrain (compose_biomes.py)
   # compose:
   #   ndsm_canopy_m: 5.0
@@ -154,9 +158,15 @@ beamng:
   #   radius_m: 40000
   #   viewshed_step_m: 50
   #   mesh_step_m: 120
-  #   near_m: 1000
+  #   near_m: 2000
   #   mid_m: 10000
+  #   near_canopy: true          # DOM−DGM on near mesh Z
   #   albedo_gain: 0.58          # <1: ortho is already sunlit
+  #   ortho_hillshade: 0.10      # baked shade; keep low so ToD matches noon
+  #   # ortho_grade: playable_olive  # Swissimage green → dry_meadow olive
+  #   # olive_mix: 0.68
+  #   # lip_fade_m: 800           # seam grade playable → near
+  #   # near_normal_size: 4096    # finer near normalMap; albedo stays 2048
   #   # snow: sources.snow + compose.snow_light/snow_heavy (no extra key)
 
 # Hand-edited edges / guardrails (see docs/ANNOTATIONS.md).

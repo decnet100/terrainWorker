@@ -226,14 +226,41 @@ def match_rule(match: dict | None, road: dict, *, lane_width_m: float = 3.75) ->
 
     if "name" in match:
         name = str(road.get("name") or "")
+        kunst = str(road.get("kunstbauten") or "")
+        blob = f"{name} {kunst}".strip()
         raw = match["name"]
         if isinstance(raw, (list, tuple, set)):
-            if name not in {str(x) for x in raw}:
+            allowed = {str(x) for x in raw}
+            if name not in allowed and kunst not in allowed and blob not in allowed:
                 return False
-        elif str(raw) not in name and name != str(raw):
-            # substring OR exact
-            if name != str(raw) and str(raw).lower() not in name.lower():
+        else:
+            s = str(raw)
+            if (
+                name != s
+                and kunst != s
+                and s.lower() not in name.lower()
+                and s.lower() not in kunst.lower()
+            ):
                 return False
+
+    if "objekt" in match:
+        obj = str(road.get("objekt") or "").upper().strip()
+        raw = match["objekt"]
+        if isinstance(raw, (list, tuple, set)):
+            allowed = {str(x).upper().strip() for x in raw}
+        else:
+            allowed = {str(raw).upper().strip()}
+        if obj not in allowed:
+            return False
+
+    if "kunstbauten" in match:
+        kunst = str(road.get("kunstbauten") or "")
+        raw = match["kunstbauten"]
+        if isinstance(raw, (list, tuple, set)):
+            if not any(str(x).lower() in kunst.lower() for x in raw):
+                return False
+        elif str(raw).lower() not in kunst.lower():
+            return False
 
     lanes = _road_lanes(road, lane_width_m=lane_width_m)
 
@@ -271,7 +298,8 @@ def resolve_rail_cfg(
             # Allow flat shorthand: { ids: [...], sides: left }
             m = {k: rule[k] for k in ("ids", "id", "osm_id", "objectid", "lanes",
                                         "lanes_gt", "lanes_gte", "lanes_lt",
-                                        "lanes_lte", "lanes_eq", "highway", "name")
+                                        "lanes_lte", "lanes_eq", "highway", "name",
+                                        "objekt", "kunstbauten")
                  if k in rule}
         if not match_rule(m if isinstance(m, dict) else {}, road, lane_width_m=lane_width_m):
             continue

@@ -685,44 +685,125 @@ def slope_degrees(elev_grid: np.ndarray) -> np.ndarray:
     return np.degrees(np.arctan(np.hypot(d_col, d_row)))
 
 
-def road_masks(size: int) -> tuple[np.ndarray, np.ndarray]:
-    """Return (asphalt_mask, shoulder_mask) along OSM roads (BeamNG meters).
-
-    Asphalt uses full OSM width * road_width_scale.
-    Shoulder is asphalt width + 2 * shoulder_m (dirt bankett).
-    """
-    path = PROC / "roads_beamng.json"
-    asphalt_img = Image.new("L", (size, size), 0)
-    shoulder_img = Image.new("L", (size, size), 0)
-    if not path.exists():
-        z = np.zeros((size, size), dtype=bool)
-        return z, z
-
+def _stroke_road_nodes(
+    roads: dict,
+    size: int,
+    draw_a,
+    draw_s,
+    *,
+    skip_objekt: frozenset[str] | None = None,
+    skip_pred=None,
+    only_objekt: frozenset[str] | None = None,
+    width_scale: float | None = None,
+    paint_shoulder: bool = True,
+    min_width_m: float = 2.0,
+) -> int:
+    """Paint asphalt + shoulder strokes from a roads_beamng-style dict. Returns count."""
     m_per_px = TERRAIN_EXTENT / max(size - 1, 1)
-    draw_a = ImageDraw.Draw(asphalt_img)
-    draw_s = ImageDraw.Draw(shoulder_img)
-    roads = json.loads(path.read_text(encoding="utf-8"))
+    scale = ROAD_WIDTH_SCALE if width_scale is None else float(width_scale)
+    skip = {str(x).upper().strip() for x in (skip_objekt or ())}
+    only = {str(x).upper().strip() for x in (only_objekt or ())}
+    n = 0
     for road in roads.values():
+        objekt = str(road.get("objekt") or road.get("OBJEKT") or "").upper().strip()
+        if skip and objekt in skip:
+            continue
+        if skip_pred is not None and skip_pred(road):
+            continue
+        if only and objekt not in only:
+            continue
         nodes = road.get("nodes") or []
         if len(nodes) < 2:
             continue
         width = float(nodes[0][3]) if len(nodes[0]) > 3 else 6.0
-        asphalt_m = max(2.0, width * ROAD_WIDTH_SCALE)
+        asphalt_m = max(min_width_m, width * scale)
         shoulder_m = asphalt_m + 2.0 * SHOULDER_M
         stroke_a = max(2, int(round(asphalt_m / m_per_px)))
         stroke_s = max(stroke_a + 1, int(round(shoulder_m / m_per_px)))
         pts = [_to_px_beamng(n[0], n[1], size) for n in nodes]
-        draw_s.line(pts, fill=255, width=stroke_s, joint="curve")
+        if paint_shoulder:
+            draw_s.line(pts, fill=255, width=stroke_s, joint="curve")
         draw_a.line(pts, fill=255, width=stroke_a, joint="curve")
+        n += 1
+    return n
+
+
+def road_masks(size: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return (asphalt, shoulder, forest_gravel) along roads (BeamNG metres).
+
+    OSM ``roads_beamng.json`` plus, when Decals use GIP, all GIP segments
+    (named + minor). ``S-F`` / ``S-GW`` / ``S-FRW`` / ``S-STRAIL`` paint gravel
+    at node width, not asphalt.
+    """
+    from gip_road_segments import _GRAVEL_NO_BED_OBJEKT, gip_skip_surface_paint
+
+    gravel_obj = frozenset(_GRAVEL_NO_BED_OBJEKT)
+    asphalt_img = Image.new("L", (size, size), 0)
+    shoulder_img = Image.new("L", (size, size), 0)
+    gravel_img = Image.new("L", (size, size), 0)
+    draw_a = ImageDraw.Draw(asphalt_img)
+    draw_s = ImageDraw.Draw(shoulder_img)
+    draw_g = ImageDraw.Draw(gravel_img)
+    n_osm = n_gip = n_path = 0
+
+    path = PROC / "roads_beamng.json"
+    if path.exists():
+        n_osm = _stroke_road_nodes(
+            json.loads(path.read_text(encoding="utf-8")), size, draw_a, draw_s
+        )
+
+    decal_src = str(
+        ((SITE.get("beamng") or {}).get("decal_roads") or {}).get("centerline_source")
+        or ""
+    ).lower()
+    gip_path = PROC / "gip_roads_beamng.json"
+    if decal_src in ("gip", "verkehrswege", "objectid", "oid") and gip_path.is_file():
+        gip_roads = json.loads(gip_path.read_text(encoding="utf-8"))
+        n_gip = _stroke_road_nodes(
+            gip_roads,
+            size,
+            draw_a,
+            draw_s,
+            skip_objekt=gravel_obj,
+            skip_pred=gip_skip_surface_paint,
+        )
+        n_path = _stroke_road_nodes(
+            gip_roads,
+            size,
+            draw_g,
+            draw_g,
+            only_objekt=gravel_obj,
+            width_scale=1.0,
+            paint_shoulder=False,
+            min_width_m=1.0,
+        )
+        print(
+            f"Road masks: OSM segments={n_osm} GIP asphalt={n_gip} "
+            f"GIP gravel paths (S-F/S-GW/S-FRW/S-STRAIL)={n_path}"
+        )
+
+    gravel = np.array(gravel_img, dtype=np.uint8) > 0
     asphalt = np.array(asphalt_img, dtype=np.uint8) > 0
     shoulder = np.array(shoulder_img, dtype=np.uint8) > 0
-    return asphalt, shoulder
+    if gravel.any():
+        # Eat leftover OSM asphalt rims around the 4 m forest track.
+        m_per_px = TERRAIN_EXTENT / max(size - 1, 1)
+        pad_px = max(1, int(round(2.0 / m_per_px)))
+        g_img = Image.fromarray(gravel.astype(np.uint8) * 255, mode="L")
+        for _ in range(pad_px):
+            g_img = g_img.filter(ImageFilter.MaxFilter(3))
+        erase = np.array(g_img, dtype=np.uint8) > 0
+        asphalt = asphalt & ~erase
+        shoulder = (shoulder | (erase & ~gravel)) & ~gravel
+    return asphalt, shoulder, gravel
 
 
 def bridge_under_mask(size: int, margin_m: float = 0.5) -> np.ndarray:
     """Gap footprint under bridges → rock (extends stay asphalt).
 
     Prefers under_nodes_xyw from bridges_decks.json (gap − under_inset_m).
+    Falls back to nodes_xyw only when the inset ate the whole gap — never
+    a reason to paint rock; this mask only punches the road stroke.
     """
     path = PROC / "bridges_decks.json"
     img = Image.new("L", (size, size), 0)
@@ -734,7 +815,10 @@ def bridge_under_mask(size: int, margin_m: float = 0.5) -> np.ndarray:
     data = json.loads(path.read_text(encoding="utf-8"))
     n_decks = 0
     for deck in data.get("decks") or []:
-        nodes = deck.get("under_nodes_xyw") or deck.get("nodes_xyw") or []
+        nodes = deck.get("under_nodes_xyw") or []
+        if len(nodes) < 2:
+            # Short span: inset left no under-polyline; still omit the gap.
+            nodes = deck.get("nodes_xyw") or []
         if len(nodes) < 2:
             continue
         widths = [float(n[2]) for n in nodes if len(n) >= 3]
@@ -757,11 +841,10 @@ def bridge_under_mask(size: int, margin_m: float = 0.5) -> np.ndarray:
 def gallery_roof_mask(size: int, margin_m: float = 1.5) -> tuple[np.ndarray, np.ndarray]:
     """Gallery roof footprints for terrain paint.
 
-    Returns ``(rock_force, rock_under_asphalt)``:
-    - ``rock_force``: classic — rock wins over road asphalt (mountain tunnel).
-    - ``rock_under_asphalt``: rock only where no road asphalt (underpass with
-      surface road above; ``terrain_roof: keep_asphalt``).
-    Galleries with ``terrain_roof: none`` are skipped.
+    Returns ``(rock_force, rock_under_asphalt)`` only if YAML set a roof:
+    - ``rock``: rock wins over road asphalt.
+    - ``keep_asphalt``: rock only where no road asphalt (surface road above).
+    Default ``none`` is skipped (span omit only, landcover stays).
     """
     path = PROC / "galleries_centerlines.json"
     empty = np.zeros((size, size), dtype=bool)
@@ -778,7 +861,7 @@ def gallery_roof_mask(size: int, margin_m: float = 1.5) -> tuple[np.ndarray, np.
     n_keep = 0
     n_skip = 0
     for gal in data.get("galleries") or []:
-        mode = str(gal.get("terrain_roof") or "rock").lower().strip()
+        mode = str(gal.get("terrain_roof") or "none").lower().strip()
         if mode in ("none", "off", "false", "0"):
             n_skip += 1
             continue
@@ -817,6 +900,78 @@ def gallery_roof_mask(size: int, margin_m: float = 1.5) -> tuple[np.ndarray, np.
     return force, keep_m
 
 
+def _gallery_bore_nodes(gal: dict, *, inset_m: float = 1.0) -> list[dict] | None:
+    """Centerline between portals. Auflage / append pad stays outside.
+
+    Closed tubes inset a little at daylight so the door lip keeps asphalt.
+    ``keep_asphalt`` is not a bore omit (surface road above an underpass).
+    """
+    mode = str(gal.get("terrain_roof") or "none").lower().strip()
+    if mode in ("keep_asphalt", "under_asphalt", "surface_first", "asphalt"):
+        return None
+    nodes = gal.get("nodes") or []
+    if len(nodes) < 2:
+        return None
+    portal = gal.get("portal_s")
+    if portal is None or len(portal) < 2:
+        return list(nodes)
+    s0, s1 = float(portal[0]), float(portal[1])
+    if s1 < s0:
+        s0, s1 = s1, s0
+    kind = str(gal.get("kind") or "").lower()
+    open_side = str(gal.get("open_side") or "").lower()
+    closed = kind == "tunnel" or open_side in ("none", "off", "false", "0")
+    inset = max(0.0, float(inset_m)) if closed else 0.0
+    if inset:
+        fake = gal.get("fake_end")
+        one = bool(gal.get("one_ended"))
+        if one and fake == "s0":
+            s1 -= inset
+        elif one and fake == "s1":
+            s0 += inset
+        else:
+            s0 += inset
+            s1 -= inset
+    span = [n for n in nodes if s0 - 1e-6 <= float(n.get("s") or 0.0) <= s1 + 1e-6]
+    return span if len(span) >= 2 else None
+
+
+def gallery_span_omit_mask(size: int, margin_m: float = 1.5) -> np.ndarray:
+    """No terrain road stroke between gallery/tunnel portals.
+
+    Default for every gallery/tunnel. Skips ``keep_asphalt`` (surface road
+    above an underpass). Does not paint rock — landcover stays.
+    """
+    path = PROC / "galleries_centerlines.json"
+    empty = np.zeros((size, size), dtype=bool)
+    if not path.exists():
+        return empty
+    m_per_px = TERRAIN_EXTENT / max(size - 1, 1)
+    img = Image.new("L", (size, size), 0)
+    draw = ImageDraw.Draw(img)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    n_span = 0
+    for gal in data.get("galleries") or []:
+        nodes = _gallery_bore_nodes(gal)
+        if not nodes:
+            continue
+        widths = [float(n.get("width") or 7.0) for n in nodes]
+        width_m = max(widths) if widths else 7.0
+        stroke = max(2, int(round((width_m + 2.0 * margin_m) / m_per_px)))
+        pts = [_to_px_beamng(float(n["x"]), float(n["y"]), size) for n in nodes]
+        draw.line(pts, fill=255, width=stroke, joint="curve")
+        r = max(1, stroke // 2)
+        for px, py in (pts[0], pts[-1]):
+            draw.ellipse((px - r, py - r, px + r, py + r), fill=255)
+        n_span += 1
+    mask = np.array(img, dtype=np.uint8) > 0
+    print(
+        f"Gallery/tunnel span-omit: n={n_span} "
+        f"coverage={(mask.mean() * 100):.3f}% (margin={margin_m}m)"
+    )
+    return mask
+
+
 def slope_rock_mask(slope: np.ndarray, threshold_deg: float, open_px: int) -> np.ndarray:
     """Steep cells, then binary opening to drop thin contour stripes.
 
@@ -844,13 +999,17 @@ def classify(
     bridge_under: np.ndarray | None = None,
     gallery_roof: np.ndarray | None = None,
     gallery_roof_keep_asphalt: np.ndarray | None = None,
+    gravel: np.ndarray | None = None,
 ) -> np.ndarray:
     """Exclusive material class per pixel.
 
     Priority: road bed > Concrete > Water > Rock > Forest > Grass > Dirt.
     road_terrain=asphalt → carriageway CLASS_ASPHALT; gravel → CLASS_DIRT
-    (DecalRoad supplies the asphalt look). Bridge unders / forced gallery roofs
-    stay rock; ``gallery_roof_keep_asphalt`` is rock only where no road asphalt
+    (DecalRoad supplies the asphalt look). GIP ``S-F`` forest tracks stay
+    CLASS_DIRT (site ``dirt_material``, usually gravel) even when roads are
+    asphalt. Forced gallery roofs stay rock. Bridge spans do not:
+    they only omit the road stroke (caller passes no bridge_under here).
+    ``gallery_roof_keep_asphalt`` is rock only where no road asphalt
     (surface road above an underpass wins).
     """
     out = np.full(landuse.shape, CLASS_DIRT, dtype=np.uint8)
@@ -867,13 +1026,16 @@ def classify(
         out[asphalt] = CLASS_DIRT
     else:
         out[asphalt] = CLASS_ASPHALT
-    if bridge_under is not None and bridge_under.any():
-        out[bridge_under] = CLASS_ROCK
+    if gravel is not None and gravel.any():
+        out[gravel] = CLASS_DIRT
     if gallery_roof is not None and gallery_roof.any():
         out[gallery_roof] = CLASS_ROCK
     # Underpass roof: rock beside/under surface road, but asphalt (Fernpass) stays.
     if gallery_roof_keep_asphalt is not None and gallery_roof_keep_asphalt.any():
-        out[gallery_roof_keep_asphalt & ~asphalt] = CLASS_ROCK
+        keep_clear = asphalt
+        if gravel is not None:
+            keep_clear = keep_clear | gravel
+        out[gallery_roof_keep_asphalt & ~keep_clear] = CLASS_ROCK
     return out
 
 
@@ -951,28 +1113,35 @@ def main() -> None:
             landuse = np.full((OUT_SIZE, OUT_SIZE), -1, dtype=np.int8)
             source_note = "slope_only"
 
-    asphalt, shoulder = road_masks(OUT_SIZE)
+    asphalt, shoulder, gravel = road_masks(OUT_SIZE)
     bridge_under = bridge_under_mask(OUT_SIZE)
     gallery_roof, gallery_roof_keep = gallery_roof_mask(OUT_SIZE)
-    # Only forced roof rock carves asphalt away; keep_asphalt leaves surface roads.
-    structure_rock = bridge_under | gallery_roof
-    asphalt_vis = asphalt & ~structure_rock
-    shoulder_vis = shoulder & ~structure_rock
+    gallery_span = gallery_span_omit_mask(OUT_SIZE)
+    # Between abutments the road never stays on the stroke: bridge gap,
+    # gallery/tunnel bore (incl. terrain_roof none). keep_asphalt is omitted
+    # from gallery_span so a surface road above an underpass stays.
+    # Bridge/tunnel spans do not overwrite landcover (no forced rock).
+    structure_omit = bridge_under | gallery_span
+    asphalt_vis = asphalt & ~structure_omit
+    shoulder_vis = shoulder & ~structure_omit
+    gravel_vis = gravel & ~structure_omit
     print(
         f"Road masks: asphalt={(asphalt_vis.mean()*100):.2f}% "
         f"shoulder={(shoulder_vis.mean()*100):.2f}% "
+        f"forest_gravel={(gravel_vis.mean()*100):.2f}% "
         f"(width_scale={ROAD_WIDTH_SCALE}, shoulder_m={SHOULDER_M}, "
         f"road_terrain={ROAD_TERRAIN}, dirt={DIRT_MATERIAL}; "
-        f"bridge/gallery roof carved to rock)"
+        f"span omit; gallery roof rock; no bridge rock)"
     )
     classes = classify(
         landuse,
         slope,
         asphalt_vis,
         shoulder_vis,
-        bridge_under,
+        None,
         gallery_roof,
         gallery_roof_keep,
+        gravel_vis,
     )
 
     mask_dir = PROC / "terrain_masks"
@@ -1005,10 +1174,16 @@ def main() -> None:
     Image.fromarray(rock, mode="L").save(PROC / "mask_rock.png")
     Image.fromarray(asphalt_vis.astype(np.uint8) * 255, mode="L").save(PROC / "mask_asphalt.png")
     Image.fromarray(shoulder_vis.astype(np.uint8) * 255, mode="L").save(PROC / "mask_shoulder.png")
+    Image.fromarray(gravel_vis.astype(np.uint8) * 255, mode="L").save(
+        PROC / "mask_forest_gravel.png"
+    )
     Image.fromarray(bridge_under.astype(np.uint8) * 255, mode="L").save(PROC / "mask_bridge_under.png")
     Image.fromarray(gallery_roof.astype(np.uint8) * 255, mode="L").save(PROC / "mask_gallery_roof.png")
     Image.fromarray(gallery_roof_keep.astype(np.uint8) * 255, mode="L").save(
         PROC / "mask_gallery_roof_keep_asphalt.png"
+    )
+    Image.fromarray(gallery_span.astype(np.uint8) * 255, mode="L").save(
+        PROC / "mask_gallery_span_omit.png"
     )
     Image.fromarray((classes == CLASS_CONCRETE).astype(np.uint8) * 255, mode="L").save(
         PROC / "mask_settlement.png"
@@ -1074,6 +1249,7 @@ def main() -> None:
             "biome_building_pct": round(float(building.mean() * 100), 2),
             "gallery_roof_pct": round(float(gallery_roof.mean() * 100), 2),
             "gallery_roof_keep_asphalt_pct": round(float(gallery_roof_keep.mean() * 100), 2),
+            "gallery_span_omit_pct": round(float(gallery_span.mean() * 100), 2),
         },
         "sources": [
             source_note,
@@ -1107,8 +1283,8 @@ def main() -> None:
                 if ROAD_TERRAIN in ("gravel", "dirt", "none", "decal")
                 else "Asphalt = OSM width; dirt/gravel = shoulder bankett"
             ),
-            "Under bridge decks: rock (MeshRoad carries the asphalt)",
-            "Gallery roofs: rock (OSM asphalt carved; MeshRoad is the carriageway)",
+            "Under bridge decks: no road stroke, then rock (MeshRoad carries the asphalt)",
+            "Gallery/tunnel bore (portal to portal): no road stroke; open gallery roof still rock",
             "Keep Flip Y Axis consistent with heightmap import",
         ],
     }
