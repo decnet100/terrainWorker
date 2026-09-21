@@ -1,4 +1,4 @@
-"""Fetch BEV INSPIRE Land Cover raster via WMS GetMap (GeoTIFF).
+"""Fetch BEV INSPIRE Land Cover raster via tiled WMS GetMap (GeoTIFF).
 
 Source: https://data.bev.gv.at/geoserver/INSdataLC/wms
 Layer: LC.LandCoverRaster — AT Gesamtmosaik LC 2021–2023, 6 Klassen
@@ -12,8 +12,19 @@ Layer: LC.LandCoverRaster — AT Gesamtmosaik LC 2021–2023, 6 Klassen
 WCS is disabled on this GeoServer; WMS ``image/geotiff`` returns classified
 uint8. EPSG:31254 WMS 1.3.0 BBOX axis order: miny,minx,maxy,maxx.
 
+Downloads in tiles (see ``tools/raster_tile_fetch.py``). Incomplete tiles
+(class 6 nodata) are re-requested; holes are never invented.
+
+Site YAML (``sources.bev_landcover``):
+  tile_px: 1024
+  tile_retries: 4
+  tile_retry_sleep_s: 3
+  max_nodata_frac: 0.02
+  max_tile_nodata_frac: 0.05
+
 Writes:
   data/raw/bev_landcover_<site>.tif (+ .meta.json)
+  data/raw/bev_landcover_<site>_tiles/   (per-tile cache)
   data/processed/<site>/landcover_bev.tif
   data/processed/<site>/preview_landcover_bev.png
   data/processed/<site>/landcover_bev.meta.json
@@ -29,18 +40,29 @@ import sys
 from pathlib import Path
 
 import numpy as np
-import requests
 import tifffile as tiff
 from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
+from raster_tile_fetch import (  # noqa: E402
+    classified_nodata_mask,
+    fetch_tiled_mosaic,
+    http_get_geotiff,
+    make_frac_incomplete,
+    read_tiff_bytes,
+)
 from site_coords import load_site, processed_dir, site_slug  # noqa: E402
 
 DEFAULT_WMS = "https://data.bev.gv.at/geoserver/INSdataLC/ows"
 DEFAULT_LAYER = "LC.LandCoverRaster"
+NODATA_CODE = 6
+DEFAULT_MAX_NODATA_FRAC = 0.02
+DEFAULT_MAX_TILE_NODATA_FRAC = 0.05
+DEFAULT_TILE_PX = 1024
+DEFAULT_TILE_RETRIES = 4
+DEFAULT_TILE_RETRY_SLEEP_S = 3.0
 
-# Official legend order (top→bottom) → class code in returned GeoTIFF
 CLASS_NAMES = {
     0: "vegetation_hoch",
     1: "vegetation_mittel",
@@ -48,10 +70,9 @@ CLASS_NAMES = {
     3: "bodenflaechen",
     4: "gebaeude",
     5: "gewaesser",
-    6: "nodata",  # GeoServer GDAL_NODATA
+    6: "nodata",
 }
 
-# Palette for preview (approx. BEV legend colours)
 CLASS_RGB = {
     0: (34, 100, 34),
     1: (80, 170, 60),
@@ -73,14 +94,100 @@ def _cfg(site: dict) -> dict:
         "url": str(src.get("url") or DEFAULT_WMS),
         "layer": str(src.get("layer") or DEFAULT_LAYER),
         "size": size,
-        "timeout_s": int(src.get("timeout_s") or 600),
+        "timeout_s": int(src.get("timeout_s") or 120),
+        "max_nodata_frac": float(src.get("max_nodata_frac", DEFAULT_MAX_NODATA_FRAC)),
+        "max_tile_nodata_frac": float(
+            src.get("max_tile_nodata_frac", DEFAULT_MAX_TILE_NODATA_FRAC)
+        ),
+        "tile_px": int(src.get("tile_px", DEFAULT_TILE_PX)),
+        "tile_retries": int(
+            src.get("tile_retries", src.get("retries", DEFAULT_TILE_RETRIES))
+        ),
+        "tile_retry_sleep_s": float(
+            src.get("tile_retry_sleep_s", src.get("retry_sleep_s", DEFAULT_TILE_RETRY_SLEEP_S))
+        ),
     }
+
+
+def nodata_fraction(codes: np.ndarray) -> float:
+    return float(classified_nodata_mask(codes, NODATA_CODE).mean())
+
+
+def report_incomplete_landcover(
+    codes: np.ndarray,
+    *,
+    where: str,
+    max_nodata_frac: float,
+    allow_incomplete: bool = False,
+) -> float:
+    frac = nodata_fraction(codes)
+    pct = 100.0 * frac
+    limit_pct = 100.0 * max_nodata_frac
+    if frac <= max_nodata_frac:
+        if frac > 0:
+            print(
+                f"BEV landcover nodata={pct:.2f}% (limit {limit_pct:.2f}%) - OK ({where})"
+            )
+        return frac
+    msg = (
+        f"WARNING: BEV landcover incomplete - nodata={pct:.2f}% "
+        f"(limit {limit_pct:.2f}%) at {where}.\n"
+        "  Rectangular holes usually mean WMS tiles still failed after retries.\n"
+        "  Re-run: python tools\\fetch_bev_landcover.py --force\n"
+        "  Do not invent fill for those pixels."
+    )
+    print(msg, file=sys.stderr)
+    if not allow_incomplete:
+        raise SystemExit(
+            f"BEV landcover nodata {pct:.2f}% exceeds max_nodata_frac "
+            f"{limit_pct:.2f}%. Pass --allow-incomplete to continue anyway."
+        )
+    print(
+        "  Continuing because --allow-incomplete / allow_incomplete was set.",
+        file=sys.stderr,
+    )
+    return frac
 
 
 def _raw_paths(site: dict) -> tuple[Path, Path]:
     slug = site_slug(site)
     raw = ROOT / "data" / "raw"
     return raw / f"bev_landcover_{slug}.tif", raw / f"bev_landcover_{slug}.meta.json"
+
+
+def _pixel_size(
+    bbox_xy: tuple[float, float, float, float], size: int
+) -> tuple[int, int]:
+    xmin, ymin, xmax, ymax = (float(v) for v in bbox_xy)
+    width_m = max(xmax - xmin, 1.0)
+    height_m = max(ymax - ymin, 1.0)
+    if width_m >= height_m:
+        w = int(size)
+        h = max(1, int(round(size * height_m / width_m)))
+    else:
+        h = int(size)
+        w = max(1, int(round(size * width_m / height_m)))
+    return w, h
+
+
+def _download_bev_tile(site: dict, cfg: dict, spec) -> np.ndarray:
+    # WMS 1.3.0 + EPSG:31254 -> axis order northing,easting
+    bbox = f"{spec.ymin},{spec.xmin},{spec.ymax},{spec.xmax}"
+    params = {
+        "SERVICE": "WMS",
+        "VERSION": "1.3.0",
+        "REQUEST": "GetMap",
+        "LAYERS": cfg["layer"],
+        "STYLES": "",
+        "CRS": str(site.get("crs", "EPSG:31254")),
+        "BBOX": bbox,
+        "WIDTH": str(spec.width_px),
+        "HEIGHT": str(spec.height_px),
+        "FORMAT": "image/geotiff",
+        "TRANSPARENT": "FALSE",
+    }
+    data = http_get_geotiff(cfg["url"], params, timeout_s=cfg["timeout_s"])
+    return read_tiff_bytes(data)
 
 
 def fetch_bev_landcover_bbox(
@@ -90,75 +197,85 @@ def fetch_bev_landcover_bbox(
     *,
     size: int,
     force: bool = False,
+    allow_incomplete: bool = False,
+    accept_all_nodata: bool = False,
 ) -> Path:
-    """WMS GetMap for an arbitrary EPSG:31254 envelope (playable or near)."""
+    """Tiled WMS GetMap for an arbitrary EPSG:31254 envelope."""
     cfg = _cfg(site)
+    cfg["size"] = int(size)
     dest.parent.mkdir(parents=True, exist_ok=True)
     meta_path = dest.with_suffix(".meta.json")
     xmin, ymin, xmax, ymax = (float(v) for v in bbox_xy)
-    width_m = max(xmax - xmin, 1.0)
-    height_m = max(ymax - ymin, 1.0)
-    # Keep square pixels; WMS WIDTH/HEIGHT follow the envelope aspect.
-    if width_m >= height_m:
-        w = int(size)
-        h = max(1, int(round(size * height_m / width_m)))
-    else:
-        h = int(size)
-        w = max(1, int(round(size * width_m / height_m)))
+    w, h = _pixel_size(bbox_xy, int(size))
 
     if dest.is_file() and dest.stat().st_size > 1000 and meta_path.is_file() and not force:
-        print(f"Using cached BEV landcover: {dest} ({dest.stat().st_size} bytes)")
-        return dest
-
-    # WMS 1.3.0 + EPSG:31254 → axis order northing,easting
-    bbox = f"{ymin},{xmin},{ymax},{xmax}"
-    params = {
-        "SERVICE": "WMS",
-        "VERSION": "1.3.0",
-        "REQUEST": "GetMap",
-        "LAYERS": cfg["layer"],
-        "STYLES": "",
-        "CRS": str(site.get("crs", "EPSG:31254")),
-        "BBOX": bbox,
-        "WIDTH": str(w),
-        "HEIGHT": str(h),
-        "FORMAT": "image/geotiff",
-        "TRANSPARENT": "FALSE",
-    }
-    print(
-        f"BEV Land Cover WMS GetMap {cfg['layer']} "
-        f"{w}x{h} CRS={params['CRS']} BBOX={bbox} …"
-    )
-    r = requests.get(cfg["url"], params=params, timeout=cfg["timeout_s"])
-    r.raise_for_status()
-    ctype = (r.headers.get("content-type") or "").lower()
-    if "tiff" not in ctype and not r.content.startswith((b"II", b"MM")):
-        raise SystemExit(
-            f"WMS did not return GeoTIFF (content-type={ctype}): {r.content[:300]!r}"
+        codes = _load_classified(dest)
+        if nodata_fraction(codes) <= cfg["max_nodata_frac"]:
+            print(f"Using cached BEV landcover: {dest} ({dest.stat().st_size} bytes)")
+            return dest
+        print(
+            f"Cached BEV landcover incomplete "
+            f"(nodata={100*nodata_fraction(codes):.2f}%) - refetching tiles"
         )
-    dest.write_bytes(r.content)
+
+    tile_dir = dest.with_name(dest.stem + "_tiles")
+    mosaic, tile_stats = fetch_tiled_mosaic(
+        bbox=(xmin, ymin, xmax, ymax),
+        width_px=w,
+        height_px=h,
+        tile_px=cfg["tile_px"],
+        download_tile=lambda spec: _download_bev_tile(site, cfg, spec),
+        is_incomplete=make_frac_incomplete(
+            lambda a: classified_nodata_mask(a, NODATA_CODE),
+            cfg["max_tile_nodata_frac"],
+            accept_all_nodata=accept_all_nodata,
+        ),
+        fill_value=NODATA_CODE,
+        dtype=np.uint8,
+        retries=cfg["tile_retries"],
+        retry_sleep_s=cfg["tile_retry_sleep_s"],
+        tile_cache_dir=tile_dir,
+        force=force,
+        label="BEV landcover",
+    )
+    tiff.imwrite(dest, mosaic, compression="deflate")
+    frac = nodata_fraction(mosaic)
     meta = {
         "url": cfg["url"],
         "layer": cfg["layer"],
         "crs": site.get("crs"),
         "bbox": [xmin, ymin, xmax, ymax],
-        "bbox_wms13": bbox,
         "size": [w, h],
         "format": "image/geotiff",
-        "bytes": len(r.content),
+        "bytes": dest.stat().st_size,
         "classes": CLASS_NAMES,
         "mosaic": "AT_Gesamtmosaik_LC_2021-2023",
+        "tiled": True,
+        "tile_stats": tile_stats,
+        "nodata_frac": frac,
+        "nodata_pct": round(100.0 * frac, 3),
         "path": str(dest.relative_to(ROOT)).replace("\\", "/"),
     }
     meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
-    print(f"Wrote {dest} ({len(r.content)} bytes)")
+    print(f"Wrote {dest} ({dest.stat().st_size} bytes)")
     print(f"Wrote {meta_path}")
+    report_incomplete_landcover(
+        mosaic,
+        where=str(dest),
+        max_nodata_frac=cfg["max_nodata_frac"],
+        allow_incomplete=allow_incomplete,
+    )
     return dest
 
 
-def fetch_bev_landcover(site: dict, *, force: bool = False) -> Path:
+def fetch_bev_landcover(
+    site: dict,
+    *,
+    force: bool = False,
+    allow_incomplete: bool = False,
+) -> Path:
     cfg = _cfg(site)
-    out, _meta_path = _raw_paths(site)
+    out, _meta = _raw_paths(site)
     xmin, ymin, xmax, ymax = map(float, site["bbox"])
     return fetch_bev_landcover_bbox(
         site,
@@ -166,6 +283,7 @@ def fetch_bev_landcover(site: dict, *, force: bool = False) -> Path:
         out,
         size=cfg["size"],
         force=force,
+        allow_incomplete=allow_incomplete,
     )
 
 
@@ -176,7 +294,16 @@ def fetch_bev_near(site: dict, *, force: bool = False, size: int | None = None) 
     slug = site_slug(site)
     dest = ROOT / "data" / "raw" / f"bev_landcover_near_{slug}.tif"
     nsize = int(size or backdrop_cfg(site).get("near_texture_size") or 2048)
-    return fetch_bev_landcover_bbox(site, near_extent(site), dest, size=nsize, force=force)
+    # Near ring crosses borders — allow nodata outside AT.
+    return fetch_bev_landcover_bbox(
+        site,
+        near_extent(site),
+        dest,
+        size=nsize,
+        force=force,
+        allow_incomplete=True,
+        accept_all_nodata=True,
+    )
 
 
 def fetch_bev_extent(
@@ -189,10 +316,21 @@ def fetch_bev_extent(
 ) -> Path:
     slug = site_slug(site)
     dest = ROOT / "data" / "raw" / f"bev_landcover_{tag}_{slug}.tif"
-    return fetch_bev_landcover_bbox(site, extent, dest, size=size, force=force)
+    allow = tag in ("near", "mid", "far", "custom")
+    return fetch_bev_landcover_bbox(
+        site,
+        extent,
+        dest,
+        size=size,
+        force=force,
+        allow_incomplete=allow,
+        accept_all_nodata=allow,
+    )
 
 
-def _extent_close(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> bool:
+def _extent_close(
+    a: tuple[float, float, float, float], b: tuple[float, float, float, float]
+) -> bool:
     return all(abs(float(x) - float(y)) < 1.5 for x, y in zip(a, b))
 
 
@@ -210,13 +348,29 @@ def load_bev_forest_mask(
     cfg = backdrop_cfg(site)
     ext = tuple(float(v) for v in extent)
     if _extent_close(ext, near_extent(site)):
-        path = fetch_bev_near(site, force=force, size=int(cfg.get("near_texture_size") or dest_shape[0]))
+        path = fetch_bev_near(
+            site, force=force, size=int(cfg.get("near_texture_size") or dest_shape[0])
+        )
     elif _extent_close(ext, mid_extent(site)):
-        path = fetch_bev_extent(site, ext, "mid", size=int(cfg.get("mid_texture_size") or dest_shape[0]), force=force)
+        path = fetch_bev_extent(
+            site,
+            ext,
+            "mid",
+            size=int(cfg.get("mid_texture_size") or dest_shape[0]),
+            force=force,
+        )
     elif _extent_close(ext, padded_extent(site)):
-        path = fetch_bev_extent(site, ext, "far", size=int(cfg.get("texture_size") or dest_shape[0]), force=force)
+        path = fetch_bev_extent(
+            site,
+            ext,
+            "far",
+            size=int(cfg.get("texture_size") or dest_shape[0]),
+            force=force,
+        )
     else:
-        path = fetch_bev_extent(site, ext, "custom", size=int(dest_shape[0]), force=force)
+        path = fetch_bev_extent(
+            site, ext, "custom", size=int(dest_shape[0]), force=force
+        )
 
     meta_path = path.with_suffix(".meta.json")
     codes = _load_classified(path)
@@ -251,7 +405,6 @@ def load_bev_forest_mask(
 def _load_classified(path: Path) -> np.ndarray:
     arr = np.asarray(tiff.imread(path))
     if arr.ndim == 3:
-        # unexpected RGB render — leave as-is fails; take first band if grayscale-ish
         raise SystemExit(
             f"Expected classified single-band GeoTIFF, got shape={arr.shape}. "
             "Check WMS BBOX axis order / FORMAT."
@@ -263,9 +416,7 @@ def _preview_rgb(codes: np.ndarray, path: Path) -> None:
     h, w = codes.shape
     rgb = np.zeros((h, w, 3), dtype=np.uint8)
     for code, col in CLASS_RGB.items():
-        m = codes == code
-        rgb[m] = col
-    # unknown / nodata
+        rgb[codes == code] = col
     known = np.zeros(codes.shape, dtype=bool)
     for c in CLASS_RGB:
         known |= codes == c
@@ -274,7 +425,12 @@ def _preview_rgb(codes: np.ndarray, path: Path) -> None:
     print(f"Wrote {path}")
 
 
-def _export_processed(site: dict, raw_path: Path) -> None:
+def _export_processed(
+    site: dict,
+    raw_path: Path,
+    *,
+    allow_incomplete: bool = False,
+) -> None:
     proc = processed_dir(site)
     codes = _load_classified(raw_path)
     size = int((site.get("beamng") or {}).get("mask_size") or codes.shape[0])
@@ -282,20 +438,38 @@ def _export_processed(site: dict, raw_path: Path) -> None:
         img = Image.fromarray(codes, mode="L")
         img = img.resize((size, size), resample=Image.Resampling.NEAREST)
         codes = np.asarray(img, dtype=np.uint8)
-        print(f"Resampled landcover → {size}x{size}")
+        print(f"Resampled landcover -> {size}x{size}")
+
+    cfg = _cfg(site)
+    nodata_frac = report_incomplete_landcover(
+        codes,
+        where=str(raw_path),
+        max_nodata_frac=cfg["max_nodata_frac"],
+        allow_incomplete=allow_incomplete,
+    )
 
     tiff.imwrite(proc / "landcover_bev.tif", codes, compression="deflate")
     _preview_rgb(codes, proc / "preview_landcover_bev.png")
-    hist = {CLASS_NAMES.get(int(v), str(int(v))): float((codes == v).mean()) for v in np.unique(codes)}
+    hist = {
+        CLASS_NAMES.get(int(v), str(int(v))): float((codes == v).mean())
+        for v in np.unique(codes)
+    }
     meta = {
         "site": site_slug(site),
         "source": "bev_inspire_wms",
         "raw": str(raw_path.relative_to(ROOT)),
         "classes": CLASS_NAMES,
         "histogram": hist,
+        "nodata_frac": nodata_frac,
+        "nodata_pct": round(100.0 * nodata_frac, 3),
+        "max_nodata_frac": cfg["max_nodata_frac"],
+        "incomplete": nodata_frac > cfg["max_nodata_frac"],
+        "tiled": True,
         "files": ["landcover_bev.tif", "preview_landcover_bev.png"],
     }
-    (proc / "landcover_bev.meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    (proc / "landcover_bev.meta.json").write_text(
+        json.dumps(meta, indent=2), encoding="utf-8"
+    )
     print(f"Wrote {proc / 'landcover_bev.tif'}")
     print(f"Wrote {proc / 'landcover_bev.meta.json'}")
     for k, v in sorted(hist.items(), key=lambda kv: -kv[1]):
@@ -305,11 +479,18 @@ def _export_processed(site: dict, raw_path: Path) -> None:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--force", action="store_true", help="Re-download even if cache exists")
+    ap.add_argument(
+        "--allow-incomplete",
+        action="store_true",
+        help="Continue even if nodata share exceeds max_nodata_frac (still warns)",
+    )
     args = ap.parse_args()
     site = load_site()
     print(f"Site: {site_slug(site)}")
-    raw = fetch_bev_landcover(site, force=args.force)
-    _export_processed(site, raw)
+    raw = fetch_bev_landcover(
+        site, force=args.force, allow_incomplete=args.allow_incomplete
+    )
+    _export_processed(site, raw, allow_incomplete=args.allow_incomplete)
 
 
 if __name__ == "__main__":
