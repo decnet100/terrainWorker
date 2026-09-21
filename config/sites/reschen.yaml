@@ -405,8 +405,6 @@ beamng:
 
   buildings:
     enabled: true
-    source: tiris
-    eave_inset_m: 0.9
     default_height_m: 8.0
     level_height_m: 3.0
     min_area_m2: 25.0

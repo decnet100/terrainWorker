@@ -1,7 +1,8 @@
 """Extrude building roofprints → silhouette Collada + TSStatic.
 
-Source is OSM ways or tiris Dachflächen (roofprints). Walls can be
-inset from the roof so eaves do not sit on the carriageway.
+Default source is tiris Dachflächen (roofprints), walls inset 0.9 m from
+the roof so eaves do not sit on the carriageway. OSM ways are opt-in
+(``beamng.buildings.source: osm``).
 
 Per-building style (seeded by id):
   - wall / roof colors (tinted facade albedo)
@@ -140,8 +141,10 @@ def _cfg(site: dict) -> dict:
         "gable_chance": float(raw.get("gable_chance", 0.72)),
         "gable_fill_min": float(raw.get("gable_fill_min", 0.88)),
         "style_seed": int(raw.get("style_seed", 17)),
-        "source": str(raw.get("source") or "osm").lower(),
-        "eave_inset_m": float(raw.get("eave_inset_m", 0.0)),
+        "source": str(raw.get("source") or "tiris").lower(),
+        "eave_inset_m": float(
+            raw["eave_inset_m"] if raw.get("eave_inset_m") is not None else 0.9
+        ),
         "facade_tile_w_m": float(raw.get("facade_tile_w_m", facades.TILE_W_M)),
         "facade_tile_h_m": float(raw.get("facade_tile_h_m", raw.get("level_height_m", facades.TILE_H_M))),
         "skip_osm_ids": _int_id_set(raw.get("skip_osm_ids")),

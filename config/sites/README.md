@@ -9,6 +9,7 @@
 | [`fernpass_mega.yaml`](fernpass_mega.yaml) | B179 Fernpass (flagship) | `autoroad_fernpass_8192` | 8192² |
 | [`testarena.yaml`](testarena.yaml) | Specimen arena (crop, GIP 2304 first) | `autoroad_testarena` | 512² |
 | [`reschen.yaml`](reschen.yaml) | B180 Reschenstraße (Prutz / Kaunertal) | `autoroad_reschen_8192` | 8000×8000 → 8192² |
+| [`imst.yaml`](imst.yaml) | B189 Imst / Tarrenz (defaults check) | `autoroad_imst_8192` | 8000×8000 → 8192² |
 | [`oetz.yaml`](oetz.yaml) | Draft copy of the site template | `autoroad_test` | — |
 
 ## Choose the active site
@@ -47,6 +48,10 @@ $env:AUTOROAD_SITE = "config/sites/testarena.yaml"
 
 ```powershell
 $env:AUTOROAD_SITE = "config/sites/reschen.yaml"
+```
+
+```powershell
+$env:AUTOROAD_SITE = "config/sites/imst.yaml"
 ```
 
 Same Core steps without the window:

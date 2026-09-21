@@ -57,6 +57,7 @@ KNOWN_SITES = (
     "config/sites/fernpass.yaml",
     "config/sites/fernpass_mega.yaml",
     "config/sites/reschen.yaml",
+    "config/sites/imst.yaml",
 )
 
 # Prefer the Landnutzung class that matches the GIP piece.

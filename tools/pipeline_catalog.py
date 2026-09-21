@@ -27,6 +27,7 @@ SITE_LABELS: dict[str, str] = {
     "fernpass_mega.yaml": "Fernpass Mega",
     "testarena.yaml": "Testarena",
     "reschen.yaml": "Reschen",
+    "imst.yaml": "Imst / Tarrenz",
     "oetz.yaml": "Ötztal (draft)",
 }
 
@@ -481,7 +482,11 @@ STEPS: tuple[Step, ...] = (
         script="tools/build_buildings.py",
         group="6  Horizon and settlement",
         docs="docs/CONCEPT.md",
-        yaml_keys=("beamng.buildings.enabled", "beamng.buildings.max_distance_m"),
+        yaml_keys=(
+            "beamng.buildings.enabled",
+            "beamng.buildings.source",
+            "beamng.buildings.eave_inset_m",
+        ),
         needs="beamng.buildings",
     ),
     Step(

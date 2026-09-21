@@ -96,6 +96,9 @@ sources:
       waldflaeche:
         url: "https://services3.arcgis.com/hG7UfxX49PQ8XkXh/arcgis/rest/services/Waldflaeche/FeatureServer/0"
         label: Waldfläche
+  tiris_buildings:
+    type: featureserver
+    url: "https://services3.arcgis.com/hG7UfxX49PQ8XkXh/arcgis/rest/services/Gebaeude/FeatureServer/0"
 
 beamng:
   meters_per_pixel: 1.0
@@ -452,7 +455,7 @@ beamng:
 
   buildings:
     enabled: true
-    # OSM-Portalbau am Lermooser Südende (sonst doppelter Mund vor der Schale).
+    # TIRIS + 0.9 m Traufe is the code default. OSM skip only if source: osm.
     skip_osm_ids: [123491016]
     default_height_m: 8.0
     level_height_m: 3.0
