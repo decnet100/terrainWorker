@@ -17,6 +17,10 @@ Diese Diagnose sucht solche offenkundigen Hindernisse **vor** der eigentlichen S
 - schreibt:
   - `data/processed/<site>/diag_missing_bridges.json` (voller Report)
   - `data/processed/<site>/diag_missing_bridges_suggestions.yaml` (copy/paste‑Snippet für Site‑YAML)
+  - `data/processed/<site>/diag_missing_bridges_filtered.json` (herausgefilterte Kandidaten mit Grund)
+  - `data/processed/<site>/diag_missing_bridges_filtered_suggestions.yaml` (kommentierte Übernahme-Blöcke)
+
+**Wichtig:** Das Tool schreibt **nichts** in den zentralen GIP‑Speicher (`data/roads/*`). Es erzeugt nur Diagnosedateien im `processed/`‑Ordner.
 
 ## Voraussetzungen (warum es nicht „frisch geklont“ läuft)
 
@@ -62,5 +66,6 @@ Das Tool erzeugt ein YAML‑Snippet, das du in die Site‑YAML kopieren kannst:
 
 - Die `OBJECTID`-Zuordnung ist eine räumliche Heuristik („nächste Linie“). Wenn im Report `oid_candidates` merkwürdig aussehen, nimm die passendere OID manuell.
 - Das Tool prüft nur `STR_CODE`-Korridore (benannte Straßen). Unbenannte Wege sind absichtlich ausgenommen.
+- Konservativ: Kandidaten, die bereits als **Tunnel/Galerie/sonstiger Kunstbau** erkannt werden, landen standardmäßig in den „filtered“-Dateien und werden nicht automatisch als Brücke vorgeschlagen.
 - Für exakte Fahrbarkeit ist weiterhin entscheidend, dass Brücken/Galerien das **Widerlager-System** nutzen (Auflagen/Pad/`approach_conform`/`force_deck_z`). Die Diagnose ist nur der „Finder“.
 

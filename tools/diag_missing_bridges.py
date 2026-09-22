@@ -14,6 +14,9 @@ deep dips that look like a bridge span. For each candidate it:
   - writes a JSON report + YAML snippets:
       * beamng.bridges.gip_extra (to label the OBJECTID as a bridge)
       * optional beamng.bridges.items[].abutment_s (to pin the abutments)
+  - is conservative: candidates that map onto tunnel/gallery/other structures
+    are not suggested as bridges, but are still written out with a reason so
+    they can be adopted intentionally.
 
 Run (PowerShell, single line):
   cd C:\\temp\\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/<site>.yaml"; python tools\\diag_missing_bridges.py
@@ -238,6 +241,32 @@ def _already_bridge(oid: int, feature_props_by_oid: dict) -> bool:
     bez = str(props.get("OBJEKTBEZEICHNUNG") or "").lower()
     return ("brücke" in name or "bruecke" in name or "brücke" in bez or "bruecke" in bez)
 
+def _structure_kind(oid: int, feature_props_by_oid: dict) -> str | None:
+    """Best-effort structure kind for this OBJECTID (bridge/tunnel/gallery/…)."""
+    try:
+        import build_bridges as bb  # noqa: WPS433
+    except Exception:
+        bb = None  # type: ignore
+    props = feature_props_by_oid.get(int(oid)) or {}
+    if not isinstance(props, dict):
+        return None
+    if bb is not None:
+        try:
+            return bb._structure_kind(props)  # noqa: SLF001
+        except Exception:
+            pass
+    name = str(props.get("KUNSTBAUTEN") or "").lower()
+    bez = str(props.get("OBJEKTBEZEICHNUNG") or "").lower()
+    if "galerie" in name:
+        return "gallery"
+    if "tunnel" in name or "unterführung" in name or "unterfuehrung" in name or "tunnel" in bez:
+        return "tunnel"
+    if "brücke" in name or "bruecke" in name or "brücke" in bez or "bruecke" in bez:
+        return "bridge"
+    if "durchlass" in name:
+        return "culvert"
+    return "structure" if name and name != "none" else None
+
 
 def _load_feature_props_by_oid(site: dict) -> dict[int, dict]:
     """Cached GIP geojson feature properties, keyed by OBJECTID."""
@@ -288,6 +317,24 @@ def _yaml_snippets(rows: list[dict]) -> str:
         s0, s1 = float(ab[0]), float(ab[1])
         lines.append(f"  #     - match: {{ objectid: {int(oid)} }}")
         lines.append(f"  #       abutment_s: [{s0:.2f}, {s1:.2f}]")
+    return "\n".join(lines) + "\n"
+
+def _yaml_filtered_snippets(rows: list[dict]) -> str:
+    """Commented-out candidate blocks with filter reasons."""
+    lines: list[str] = []
+    lines.append("# Filtered candidates (NOT suggested automatically).")
+    lines.append("# Copy individual blocks into your site YAML if you decide they are needed.")
+    if not rows:
+        lines.append("# (none)")
+        return "\n".join(lines) + "\n"
+    for r in rows:
+        oid = r.get("objectid")
+        reason = str(r.get("filter_reason") or "filtered").strip()
+        lines.append(f"# - objectid: {oid}   # {reason}")
+        ab = r.get("abutment_s")
+        if ab:
+            lines.append(f"#   abutment_s: [{float(ab[0]):.2f}, {float(ab[1]):.2f}]")
+        lines.append("#")
     return "\n".join(lines) + "\n"
 
 
@@ -350,7 +397,9 @@ def main() -> None:
 
     only_code = str(args.only_str_code or "").strip()
 
-    hits: list[dict] = []
+    suggested: list[dict] = []
+    filtered: list[dict] = []
+    all_rows: list[dict] = []
     scanned = 0
     for c in corridors:
         code = str(c.get("str_code") or "").strip()
@@ -431,32 +480,64 @@ def main() -> None:
                 x=float(xm),
                 y=float(ym),
             )
-            if oid is not None and _already_bridge(int(oid), props_by_oid):
-                continue
+            row = {
+                "str_code": code,
+                "corridor_id": str(road.get("id") or ""),
+                "corridor_kind": str(road.get("corridor_kind") or ""),
+                "objectid": None if oid is None else int(oid),
+                "name": None if oid is None else f"Brücke {int(oid)}",
+                "span_s": [round(s0, 2), round(s1, 2)],
+                "span_len_m": round(span_len, 2),
+                "abutment_s": [round(s_ab0, 2), round(s_ab1, 2)],
+                "abut_info": ab_info,
+                "max_drop_m": round(max_drop, 3),
+                "max_sag_m": round(float(sag), 3),
+                "oid_candidates": [
+                    {"objectid": int(o), "dist_m": round(float(d), 3)} for o, d in scored
+                ],
+                "heightmap": hm_label,
+            }
 
-            hits.append(
-                {
-                    "str_code": code,
-                    "corridor_id": str(road.get("id") or ""),
-                    "corridor_kind": str(road.get("corridor_kind") or ""),
-                    "objectid": None if oid is None else int(oid),
-                    "name": None if oid is None else f"Brücke {int(oid)}",
-                    "span_s": [round(s0, 2), round(s1, 2)],
-                    "span_len_m": round(span_len, 2),
-                    "abutment_s": [round(s_ab0, 2), round(s_ab1, 2)],
-                    "abut_info": ab_info,
-                    "max_drop_m": round(max_drop, 3),
-                    "max_sag_m": round(float(sag), 3),
-                    "oid_candidates": [{"objectid": int(o), "dist_m": round(float(d), 3)} for o, d in scored],
-                    "heightmap": hm_label,
-                }
-            )
+            status = "suggested"
+            reason = None
+            if oid is None:
+                status = "filtered"
+                reason = "no_objectid_match"
+            else:
+                kind = _structure_kind(int(oid), props_by_oid)
+                row["object_kind"] = kind
+                if kind is not None and kind != "bridge":
+                    status = "filtered"
+                    reason = f"object_is_{kind}"
+                elif _already_bridge(int(oid), props_by_oid):
+                    status = "filtered"
+                    reason = "already_bridge"
+
+            row["status"] = status
+            if reason:
+                row["filter_reason"] = reason
+            all_rows.append(row)
+            if status == "suggested":
+                suggested.append(row)
+            else:
+                filtered.append(row)
 
     # Stable ordering: by STR_CODE then corridor then station.
-    hits.sort(key=lambda r: (str(r.get("str_code") or ""), str(r.get("corridor_id") or ""), float((r.get("span_s") or [0])[0])))
+    def _key(r: dict) -> tuple:
+        return (
+            str(r.get("str_code") or ""),
+            str(r.get("corridor_id") or ""),
+            float((r.get("span_s") or [0])[0]),
+        )
+
+    all_rows.sort(key=_key)
+    suggested.sort(key=_key)
+    filtered.sort(key=_key)
 
     out_json = Path(args.out_json) if args.out_json else (proc / "diag_missing_bridges.json")
     out_yaml = Path(args.out_yaml) if args.out_yaml else (proc / "diag_missing_bridges_suggestions.yaml")
+    out_filtered_json = proc / "diag_missing_bridges_filtered.json"
+    out_filtered_yaml = proc / "diag_missing_bridges_filtered_suggestions.yaml"
     out_json.parent.mkdir(parents=True, exist_ok=True)
     out_yaml.parent.mkdir(parents=True, exist_ok=True)
 
@@ -472,32 +553,47 @@ def main() -> None:
             "only_str_code": only_code or None,
         },
         "corridors_scanned": scanned,
-        "candidates": hits,
+        "suggested": suggested,
+        "filtered": filtered,
+        "candidates": all_rows,
         "note": (
+            "This tool does not modify the central GIP store (data/roads/*). "
             "objectid is a best-effort spatial pick. "
-            "Copy YAML suggestions into beamng.bridges.gip_extra; "
-            "optionally pin abutment_s under beamng.bridges.items."
+            "Suggested entries are conservative defaults; filtered entries are kept with reasons "
+            "to allow intentional overrides."
         ),
     }
     out_json.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    out_yaml.write_text(_yaml_snippets([h for h in hits if h.get("objectid") is not None]), encoding="utf-8")
+    out_yaml.write_text(
+        _yaml_snippets([h for h in suggested if h.get("objectid") is not None]),
+        encoding="utf-8",
+    )
+    out_filtered_json.write_text(
+        json.dumps({"site": report["site"], "heightmap": hm_label, "filtered": filtered}, indent=2, ensure_ascii=False)
+        + "\n",
+        encoding="utf-8",
+    )
+    out_filtered_yaml.write_text(_yaml_filtered_snippets(filtered), encoding="utf-8")
 
     print(
-        f"diag_missing_bridges: corridors_scanned={scanned} candidates={len(hits)} "
+        f"diag_missing_bridges: corridors_scanned={scanned} "
+        f"suggested={len(suggested)} filtered={len(filtered)} total={len(all_rows)} "
         f"(dip>={dip_m:.2f}m len={min_len:.1f}..{max_len:.1f}m step={step:.2f}m) "
         f"heightmap={hm_label}"
     )
     print(f"  JSON: {out_json.relative_to(ROOT)}")
     print(f"  YAML: {out_yaml.relative_to(ROOT)}")
-    for r in hits[:40]:
+    print(f"  FILTERED JSON: {out_filtered_json.relative_to(ROOT)}")
+    print(f"  FILTERED YAML: {out_filtered_yaml.relative_to(ROOT)}")
+    for r in suggested[:40]:
         print(
             f"  {r.get('str_code')} {r.get('corridor_id')} "
             f"s={r.get('span_s')} len={r.get('span_len_m')}m "
             f"drop={r.get('max_drop_m')}m sag={r.get('max_sag_m')}m "
             f"oid={r.get('objectid')}"
         )
-    if len(hits) > 40:
-        print(f"  … {len(hits) - 40} more")
+    if len(suggested) > 40:
+        print(f"  … {len(suggested) - 40} more suggested")
 
 
 if __name__ == "__main__":
