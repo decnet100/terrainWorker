@@ -1,4 +1,4 @@
-# Roadtrip Tyrol portal graph (v1): one logical pair Hahntennjoch <-> Fernpass.
+# Alpine Roadtrip portal graph (v1): one logical pair Hahntennjoch <-> Fernpass.
 # Coordinates are BeamNG terrain meters (not site CRS). dwell_s is fixed today;
 # later replace with routed driving time through the geographic gap.
 #

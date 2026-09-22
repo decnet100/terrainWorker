@@ -1,13 +1,13 @@
--- Roadtrip Tyrol: dwell portals + session persist across core_levels.startLevel.
+-- Alpine Roadtrip: dwell portals + session persist across core_levels.startLevel.
 -- Load via scripts/modScript.lua (manual unload). Do not put this in mainLevel.lua.
--- Internal extension id stays "tirolrunde".
+-- Internal extension id is "alpine_rt".
 
 local M = {}
 
-local SESSION_PATH = "settings/tirolrunde/session.json"
-local PORTALS_PATH = "/lua/ge/extensions/tirolrunde/portals.json"
+local SESSION_PATH = "settings/alpine_rt/session.json"
+local PORTALS_PATH = "/lua/ge/extensions/alpine_rt/portals.json"
 -- Bump this when Lua changes; shown on load so a stale in-memory copy is obvious.
-local LUA_REV = "2026-09-20b"
+local LUA_REV = "2026-09-22a"
 -- 24x: 1 real hour = 1 game day (radio hour = 150 s). Weather tick stays UDW's real-time clock.
 local DAY_LENGTH_S = 3600
 
@@ -67,7 +67,7 @@ local function uiMsg(text, ttl)
   if ui_message then
     ui_message(text, ttl, "info")
   elseif guihooks then
-    guihooks.trigger("Message", { ttl = ttl, msg = text, category = "tirolrunde" })
+    guihooks.trigger("Message", { ttl = ttl, msg = text, category = "alpine_rt" })
   end
 end
 
@@ -75,9 +75,9 @@ local function loadPortals()
   local data = jsonReadFile(PORTALS_PATH)
   if type(data) == "table" and type(data.gates) == "table" then
     portals = data
-    log("I", "tirolrunde", "Loaded " .. tostring(#portals.gates) .. " gates from " .. PORTALS_PATH)
+    log("I", "alpine_rt", "Loaded " .. tostring(#portals.gates) .. " gates from " .. PORTALS_PATH)
   else
-    log("W", "tirolrunde", "No portals.json at " .. PORTALS_PATH)
+    log("W", "alpine_rt", "No portals.json at " .. PORTALS_PATH)
     portals = { grace_s = 8, gates = {} }
   end
 end
@@ -94,7 +94,7 @@ local function writeSession(data)
   jsonWriteFile(SESSION_PATH, data, true)
 end
 
-local function isTirolLevel(level)
+local function isAlpineRoadtripLevel(level)
   level = level or currentLevel()
   if not level then
     return false
@@ -187,14 +187,14 @@ local function applyUdw(st)
   end
   local jbw = ensureJbWeather()
   if not jbw then
-    log("W", "tirolrunde", "jbWeather not loaded, skip UDW restore")
+    log("W", "alpine_rt", "jbWeather not loaded, skip UDW restore")
     return
   end
   if st.look and jbw.setLookAll then
     pcall(jbw.setLookAll, st.look.dark, st.look.cloud, st.look.fog, st.look.grey)
   end
   if st.current == "custom" then
-    log("I", "tirolrunde", "UDW was custom; sliders are not in getForecast, skip")
+    log("I", "alpine_rt", "UDW was custom; sliders are not in getForecast, skip")
   elseif jbw.setPreset then
     pcall(jbw.setPreset, st.current, 1)
   end
@@ -208,7 +208,7 @@ local function applyUdw(st)
     end
     udwResumeLeft = math.max(0.05, wait)
   end
-  log("I", "tirolrunde", "UDW restore " .. tostring(st.current)
+  log("I", "alpine_rt", "UDW restore " .. tostring(st.current)
     .. (st.forecastOn and (" forecast in " .. tostring(udwResumeLeft) .. "s") or ""))
 end
 
@@ -231,7 +231,7 @@ local function tickUdwResume(dtReal)
     tick = session.udw.tickInterval
   end
   pcall(jbw.startForecast, tick)
-  log("I", "tirolrunde", "UDW forecast resumed")
+  log("I", "alpine_rt", "UDW forecast resumed")
 end
 
 local function snapshotEnvironment()
@@ -409,7 +409,7 @@ local function hideAllArcs()
       end)
     end
   end
-  local leftover = scenetree.findObject and scenetree.findObject("tirolrunde_arc_live")
+  local leftover = scenetree.findObject and scenetree.findObject("alpine_rt_arc_live")
   if leftover then
     pcall(function()
       leftover:delete()
@@ -447,7 +447,7 @@ local function ensureLiveArc(gate)
   )
   local obj = createObject("TSStatic")
   if not obj then
-    log("E", "tirolrunde", "createObject TSStatic failed")
+    log("E", "alpine_rt", "createObject TSStatic failed")
     return false
   end
   obj.canSave = false
@@ -460,9 +460,9 @@ local function ensureLiveArc(gate)
   obj.scale = vec3(1, 1, 1)
   obj.hidden = false
   obj.isRenderEnabled = true
-  obj:registerObject("tirolrunde_arc_live")
+  obj:registerObject("alpine_rt_arc_live")
   local grp = scenetree.findObject and (
-    scenetree.findObject("tirolrunde_portals") or scenetree.findObject("MissionGroup")
+    scenetree.findObject("alpine_rt_portals") or scenetree.findObject("MissionGroup")
   )
   if grp and grp.addObject then
     pcall(function()
@@ -471,7 +471,7 @@ local function ensureLiveArc(gate)
   end
   liveArcId = obj:getId()
   liveArcGateId = gate.id
-  log("I", "tirolrunde", "Spawned arc " .. shape)
+  log("I", "alpine_rt", "Spawned arc " .. shape)
   return true
 end
 
@@ -499,7 +499,7 @@ local function queueSwitch(gate)
     arrive = gate.arrive,
   }
   writeSession(session)
-  log("I", "tirolrunde", "Queued switch " .. tostring(gate.from_level) .. " -> " .. tostring(gate.to_level))
+  log("I", "alpine_rt", "Queued switch " .. tostring(gate.from_level) .. " -> " .. tostring(gate.to_level))
   switchQueued = {
     to_level = gate.to_level,
     vehicle = vehicle,
@@ -517,19 +517,19 @@ local function doQueuedSwitch()
   if q.vehicle and q.vehicle.model then
     spawnArg = { q.vehicle.model, { config = q.vehicle.config } }
   end
-  log("I", "tirolrunde", "startLevel " .. path)
+  log("I", "alpine_rt", "startLevel " .. path)
   -- next frame / after JSON flush; not from a trigger callback
   if core_levels and core_levels.startLevel then
     core_levels.startLevel(path, false, nil, spawnArg)
   else
-    log("E", "tirolrunde", "core_levels.startLevel missing")
+    log("E", "alpine_rt", "core_levels.startLevel missing")
   end
 end
 
 local function applyPendingRestore()
   local session = readSession()
   if not session or not session.pending_restore then
-    if isTirolLevel() then
+    if isAlpineRoadtripLevel() then
       applyClock(session and session.settings and session.settings.environment)
       applyUdw(session and session.udw)
     end
@@ -544,7 +544,7 @@ local function applyPendingRestore()
   local pending = session.pending_restore
   local level = currentLevel()
   if pending.to_level and level and pending.to_level ~= level then
-    log("W", "tirolrunde", "pending_restore for " .. tostring(pending.to_level) .. " but on " .. tostring(level))
+    log("W", "alpine_rt", "pending_restore for " .. tostring(pending.to_level) .. " but on " .. tostring(level))
     restoreArmed = false
     return true
   end
@@ -569,8 +569,8 @@ local function applyPendingRestore()
   dwellAcc = 0
   restoreArmed = false
   restoreTries = 0
-  uiMsg("Roadtrip Tyrol: map loaded", 3)
-  log("I", "tirolrunde", "Restore done, grace " .. tostring(grace) .. "s")
+  uiMsg("Alpine Roadtrip: map loaded", 3)
+  log("I", "alpine_rt", "Restore done, grace " .. tostring(grace) .. "s")
   return true
 end
 
@@ -607,7 +607,7 @@ local function collectFanRotors()
       end
     end
   end
-  log("I", "tirolrunde", "fan rotors " .. tostring(#fanRotors) .. " @ " .. tostring(FAN_RPM) .. " rpm")
+  log("I", "alpine_rt", "fan rotors " .. tostring(#fanRotors) .. " @ " .. tostring(FAN_RPM) .. " rpm")
 end
 
 local function tickFanRotors(dt)
@@ -645,8 +645,8 @@ local function onExtensionLoaded()
   math.randomseed(os.time())
   hideAllArcs()
   ensureJbWeather()
-  log("I", "tirolrunde", "extension loaded " .. LUA_REV)
-  uiMsg("Roadtrip Tyrol Lua " .. LUA_REV, 4)
+  log("I", "alpine_rt", "extension loaded " .. LUA_REV)
+  uiMsg("Alpine Roadtrip Lua " .. LUA_REV, 4)
 end
 
 local function onWorldReadyState(state)
@@ -685,7 +685,7 @@ local function onUpdate(dtReal)
     hideAllArcs()
     if applyPendingRestore() or restoreTries > 180 then
       if restoreTries > 180 then
-        log("W", "tirolrunde", "Restore timed out waiting for player vehicle")
+        log("W", "alpine_rt", "Restore timed out waiting for player vehicle")
       end
       restoreArmed = false
     end
@@ -740,7 +740,7 @@ local function onUpdate(dtReal)
       km0 = tonumber(inside.arc.geo_distance_m) or tonumber(inside.arc.length_m) or 0
     end
     local need0 = km0 > 0 and (km0 / 1000) or (tonumber(inside.dwell_s) or 5)
-    log("I", "tirolrunde", string.format(
+    log("I", "alpine_rt", string.format(
       "enter %s need=%.1fs geo=%.0f dwell_s=%s rev=%s",
       tostring(inside.id),
       need0,

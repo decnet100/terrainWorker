@@ -2,7 +2,7 @@
 
 ## Goal
 
-A semi-automated pipeline from public Tyrolean geodata to a **playable BeamNG.drive level** for alpine pass roads, then a multi-map tour (**Roadtrip Tyrol**) between those levels.
+A semi-automated pipeline from public Tyrolean geodata to a **playable BeamNG.drive level** for alpine pass roads, then a multi-map tour (**Alpine Roadtrip**) between those levels.
 
 **In scope today:** road surface, terrain, materials, structures (bridges / galleries), ridge silhouette, first portal switch.
 
@@ -112,10 +112,10 @@ Working directory: `C:\temp\beamng_autoroad`
 
 ---
 
-## Multi-map: Roadtrip Tyrol
+## Multi-map: Alpine Roadtrip
 
 Pass levels link with a hard switch and a session file (environment + vehicle config). The terrain pipeline stays independent.  
-Status and commands: [ROADTRIP_TYROL.md](ROADTRIP_TYROL.md).
+Status and commands: [ALPINE_ROADTRIP.md](ALPINE_ROADTRIP.md).
 
 ---
 
