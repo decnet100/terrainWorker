@@ -26,6 +26,20 @@ cd C:\temp\beamng_autoroad; python tools\fetch_gip.py --force
 - Summary: `data/processed/<site>/gip_structures.json` including `str_code_counts`
 - **Extras:** `beamng.bridges.gip_extra` — OBJECTIDs without `KUNSTBAUTEN` (also outside `STR_CODE`) fetched via FeatureServer; default name `Brücke {oid}` / `Tunnel {oid}` (or `name:`)
 
+### Missing bridges (GIP does not flag Kunstbauten)
+
+If a bridge OBJECTID is present as a Verkehrswege polyline but has no bridge
+label in GIP, the road band follows the DGM notch and you get a short 1–2 m
+dip in the driving surface. Before spending time hand-hunting OIDs, run the
+precheck on **named** corridors (`STR_CODE` set):
+
+```powershell
+cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/fernpass_mega.yaml"; python tools\diag_missing_bridges.py
+```
+
+The script writes a JSON report plus a small YAML snippet you can copy into
+`beamng.bridges.gip_extra` (and optionally `beamng.bridges.items[].abutment_s`).
+
 ```yaml
 sources:
   gip:
