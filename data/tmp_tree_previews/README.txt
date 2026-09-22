@@ -1,0 +1,10 @@
+Stock BeamNG tree imposters (cropped + sheet). Source: official level zips.
+douglasfir_large: douglasfir_large.png / douglasfir_large_sheet.png (src 1024x1024)
+douglasfir_small: douglasfir_small.png / douglasfir_small_sheet.png (src 1024x1024)
+douglasfir_bush: douglasfir_bush.png / douglasfir_bush_sheet.png (src 256x256)
+beech_large: beech_large.png / beech_large_sheet.png (src 1024x1024)
+aspen_large: aspen_large.png / aspen_large_sheet.png (src 1024x1024)
+scots_pine: scots_pine.png / scots_pine_sheet.png (src 1024x1024)
+maritime_pine: maritime_pine.png / maritime_pine_sheet.png (src 1024x1024)
+maritime_pine_2: maritime_pine_2.png / maritime_pine_2_sheet.png (src 1024x1024)
+pine_radiata_large: pine_radiata_large.png / pine_radiata_large_sheet.png (src 1024x1024)

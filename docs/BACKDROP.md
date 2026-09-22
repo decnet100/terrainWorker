@@ -18,13 +18,13 @@ Distances below are measured **outward from the playable bbox**, not from the ma
 
 | Ring | Geometry | DEM | Texture | Mesh step (Fernpass Mega) |
 |------|----------|-----|---------|---------------------------|
-| **Near** | bbox → `near_m` (default 2 km; **Reschen 5 km**). Hole = the playable bbox. | Tirol WCS DGM (`near_dgm_res_m`, default 2 m). Cells outside Tyrol stay empty — **no Copernicus fill**. Mesh Z is **cubic-spline** sampled from that DGM (not a stride of raster cells). | SWISSIMAGE crop of the near extent | `near_step_m` 15 m |
-| **Mid** | `near_m` → `mid_m` (~10 km), with `near_overlap_m` / `mid_overlap_m` so rings overlap. **Always kept** (no viewshed). | Copernicus GLO-30 **+ filtered Tirol nDSM** (`mid_canopy`, `mid_dgm_res_m` default 8 m). Outside AT coverage the bump is 0. | SWISSIMAGE crop of the mid extent | `mid_step_m` 50 m |
+| **Near** | bbox → `near_m` (default 2 km; **Reschen 5 km**). Hole = the playable bbox. | Tirol WCS DGM (`near_dgm_res_m`, default 2 m). Cells outside Tyrol stay empty — **no Copernicus fill**. Mesh Z is **cubic-spline** sampled from that DGM (not a stride of raster cells). | SWISSIMAGE crop of the near extent | `near_step_m` 5 m |
+| **Mid** | `near_m` → `mid_m` (~10 km), with `near_overlap_m` / `mid_overlap_m` so rings overlap. **Always kept** (no viewshed). | Copernicus GLO-30 **+ filtered Tirol nDSM** (`mid_canopy`, `mid_dgm_res_m` default 8 m). Outside AT coverage the bump is 0. | SWISSIMAGE crop of the mid extent | `mid_step_m` 15 m |
 | **Far** | out to `radius_m` (~40 km from site centre), minus a hole through mid. **Viewshed-culled**. | Copernicus GLO-30 @ `viewshed_step_m` (50 m) | SWISSIMAGE of the full padded square | `mesh_step_m` 120 m |
 
 Near inner edge: vertices on the playable bbox are snapped to the bbox, Z clamped to the composed heightmap, then dropped by `near_lip_drop_m` (default 1 m). That is a **cliff under the lip**, not a tuck under the driveable surface (tucking z-fights / pokes through).
 
-Mesh Z used to take every *k*-th DGM cell (`elev[::stride]`). That is nearest-neighbour downsample and shows as terraces. Near now samples the 2 m DGM with a **cubic spline** at each 15 m vertex. Mid/far stay bilinear on the 50 m Copernicus grid (the GLO-30→site-CRS warp itself is cubic).
+Mesh Z used to take every *k*-th DGM cell (`elev[::stride]`). That is nearest-neighbour downsample and shows as terraces. Near samples the 2 m DGM with a **cubic spline** at each 5 m vertex. Mid samples Copernicus at 15 m (bilinear on the 50 m grid; the GLO-30→site-CRS warp itself is cubic). Far stays 120 m.
 
 Near canopy: Tirol **DOM − DGM** on the same 2 m ring. Heights **< 1 m** are ignored. Isolated spikes (masts) go away via a local-median outlier clip plus connected-component area (`near_canopy_min_area_m2`). Remaining nDSM is **added to DTM Z** on the same near mesh — no extra object, just a jagged ridgeline. Preview: `preview_backdrop_near_canopy.png`.
 
@@ -72,7 +72,7 @@ If `sources.backdrop_ortho` is missing, fetch still uses those defaults.
 2. Ray viewshed per observer (`n_rays`, earth curvature `curvature_cc` × \(d^2 / 2R\)). Keep far cells with `count >= min_views`, **close** internal holes (`viewshed_close_m`), small outer pad (`viewshed_pad_m`), clip to `radius_m`, punch the mid hole, then stitch N/S and E/W channels (`viewshed_stitch_m`) where keep exists on both sides.
 3. Bake RGB: ortho × weak hillshade (`ortho_hillshade`) × `albedo_gain`, else WorldCover LUT / hypsometric. DEM slope becomes a tangent-space `normalMap` so TimeOfDay lights the ring. Then, if `sources.snow` is set, the same DGM snow proxy as the playable map tints peaks toward `snow_light` / `snow_heavy`.
 4. Mesh quads where the keep-mask is solid. Face winding is **+Z / sky** (right-hand). No collision, no extra reverse winding.
-5. Split meshes so each DAE stays under BeamNG’s **16-bit** vertex index limit (65 535): far/near = four quadrants `nw|ne|sw|se`; mid = `mid_tiles`² (default 3×3) with **letter** names (`nw`, `n`, `ne`, …).
+5. Split meshes so each DAE stays under BeamNG’s **16-bit** vertex index limit (65 535): far = four quadrants `nw|ne|sw|se`; near/mid = letter grids (`near_tiles` / `mid_tiles`, e.g. Reschen 15×15 / 8×8).
 6. Copy DAE/PNG/`main.materials.json` to `levels/<level>/art/shapes/backdrop/` and inject TSStatics under SimGroup `backdrop`. Raise `LevelInfo.visibleDistance` to cover `radius_m`.
 
 ---
@@ -133,23 +133,23 @@ Defaults live in `fetch_backdrop.backdrop_cfg`. Fernpass Mega overrides many of 
 | `mesh_step_m` | 120 | Far triangle spacing |
 | `hole_pad_m` | 30 | Minimum far hole around the playable bbox (also at least mid−overlap) |
 | `near_m` | 2000 | Near ring outer distance from bbox (Reschen: 5000) |
-| `near_step_m` | 10 (Mega/Reschen: 15) | Near triangle spacing |
+| `near_step_m` | 5 | Near triangle spacing (2 m DGM; 15 m is the mid ring) |
 | `near_dgm_res_m` | 2 | Near WCS request resolution |
 | `near_overlap_m` | 80 | Mid starts this far inside `near_m` |
 | `near_lip_drop_m` | 1 | Drop near verts on the bbox vs playable Z |
 | `near_texture_size` | 2048 | Near albedo PNG |
 | `near_normal_size` | = albedo | Near `normalMap` PNG. Reschen 4096 from the 2 m DGM (~4.5 m/texel). |
-| `near_tiles` | 3 | Near Collada grid (letter names). Reschen 5 km @ 15 m uses 5×5 so each tile stays under 65 535 verts. |
+| `near_tiles` | 9 | Near Collada grid (letter names). Reschen 5 km @ 5 m uses 15×15 so each tile stays under 65 535 verts. |
 | `near_canopy` | true | Add filtered nDSM (DOM−DGM) onto near mesh Z. Needs `sources.dom`. |
 | `near_canopy_min_m` | 1 | Ignore objects shorter than this |
 | `near_canopy_spike_m` | 8 | Clip pixels this far above a 5×5 local median (masts) |
 | `near_canopy_median_px` | 5 | Median window (cells) for the spike clip |
 | `near_canopy_min_area_m2` | 40 | Drop connected blobs smaller than this |
 | `mid_m` | 10000 | Mid ring outer distance from bbox |
-| `mid_step_m` | 50 | Mid triangle spacing |
+| `mid_step_m` | 15 | Mid triangle spacing |
 | `mid_overlap_m` | 150 | Far hole starts this far inside `mid_m` |
 | `mid_texture_size` | 2048 | Mid PNG |
-| `mid_tiles` | 3 | Mid Collada grid (letter names, not digits) |
+| `mid_tiles` | 8 | Mid Collada grid (letter names, not digits). 10 km @ 15 m. |
 | `mid_canopy` | = `near_canopy` | Add the same filtered nDSM onto Copernicus mid Z. Needs `sources.dom`. |
 | `mid_dgm_res_m` | 8 | Tirol WCS cell size for mid nDSM only (mesh stays `mid_step_m`). |
 | `texture_size` | 2048 | Far PNG |

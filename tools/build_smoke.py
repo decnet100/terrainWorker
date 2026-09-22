@@ -1,4 +1,9 @@
-"""Inspect DGM GeoTIFF and emit BeamNG 16-bit heightmap + OSM road stub."""
+"""Inspect DGM GeoTIFF and emit BeamNG 16-bit heightmap + road axis JSON.
+
+GIP sites (``decal_roads.centerline_source: gip`` or ``sources.roads.type: gip``)
+write the axis from Verkehrswege and do not call Overpass. OSM is only the
+fallback when the site still uses Overpass roads.
+"""
 from __future__ import annotations
 
 import json
@@ -74,6 +79,17 @@ def to_heightmap(elev: np.ndarray, out_size: int = 512) -> tuple[np.ndarray, flo
     # BeamNG: row 0 is typically +Y / north depending on import; keep geo top=north
     img = img.resize((out_size, out_size), resample=PILImage.Resampling.BILINEAR)
     return np.array(img), z0, z1
+
+
+def _uses_gip_axis(site: dict | None = None) -> bool:
+    site = site or SITE
+    bng = site.get("beamng") or {}
+    if str((bng.get("decal_roads") or {}).get("centerline_source") or "").lower() == "gip":
+        return True
+    if str((bng.get("guardrails") or {}).get("centerline") or "").lower() == "gip":
+        return True
+    roads_type = str(((site.get("sources") or {}).get("roads") or {}).get("type") or "").lower()
+    return roads_type == "gip"
 
 
 def fetch_osm_roads() -> list[dict]:
@@ -262,11 +278,27 @@ def main() -> None:
     print("Wrote", hm_path)
     print(f"max_height_m={meta['max_height_m']:.2f} mpp={meta['meters_per_pixel']:.3f}")
 
-    roads = fetch_osm_roads()
-    roads = fill_road_heights(roads, elev, z0)
     roads_path = PROC / "roads_beamng.json"
-    roads_path.write_text(json.dumps(roads_to_beamng_json(roads), indent=2), encoding="utf-8")
-    print("Wrote", roads_path, "roads=", len(roads))
+    if _uses_gip_axis(SITE):
+        from gip_road_segments import load_gip_road_segments  # noqa: WPS433
+
+        print("Axis from GIP — skipping Overpass")
+        gip_roads = load_gip_road_segments(SITE)
+        roads_path.write_text(json.dumps(gip_roads, indent=2), encoding="utf-8")
+        print(f"Wrote {roads_path} roads={len(gip_roads)} (gip)")
+    else:
+        try:
+            roads = fetch_osm_roads()
+            roads = fill_road_heights(roads, elev, z0)
+            roads_path.write_text(
+                json.dumps(roads_to_beamng_json(roads), indent=2), encoding="utf-8"
+            )
+            print("Wrote", roads_path, "roads=", len(roads))
+        except RuntimeError as ex:
+            print(f"WARNING: {ex}")
+            print("Heightmap is written; roads_beamng.json left empty.")
+            if not roads_path.is_file():
+                roads_path.write_text("{}", encoding="utf-8")
 
     # Simple preview hillshade PNG for sanity check
     from PIL import Image as PILImage

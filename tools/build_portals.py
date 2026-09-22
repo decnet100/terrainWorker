@@ -830,6 +830,8 @@ def _level_short_name(level_name: str, sites: dict[str, dict]) -> str:
         "autoroad_m28_test": "Hahntennjoch",
         "autoroad_fernpass_8192": "Fernpass",
         "autoroad_fernpass_4096": "Fernpass",
+        "autoroad_imst_8192": "Imst",
+        "autoroad_reschen_8192": "Reschen",
     }
     if level_name in aliases:
         return aliases[level_name]
@@ -903,12 +905,46 @@ def inject_arrivals(level_name: str, gates: list[dict]) -> None:
         return
     path = user_level / "main" / "MissionGroup" / "PlayerDropPoints" / "items.level.json"
     rows = _read_ndjson(path)
-    names_new = {f"tirolrunde_arrive_{g['id']}" for g in gates}
-    kept = [r for r in rows if r.get("name") not in names_new]
+    kept = [
+        r
+        for r in rows
+        if not str(r.get("name") or "").startswith("tirolrunde_arrive_")
+    ]
     for g in gates:
         kept.append(make_arrive_spawn(g))
     _write_ndjson(path, kept)
     print(f"Injected {len(gates)} arrival SpawnSphere(s) -> {level_name}")
+
+
+def clear_stale_portal_level(level_name: str, sites: dict[str, dict]) -> None:
+    """Drop leftover boxes / arrives on maps no longer in the graph."""
+    user_level = USER_LEVELS / level_name
+    if not user_level.is_dir():
+        return
+    box_path = (
+        user_level
+        / "main"
+        / "MissionGroup"
+        / "level_objects"
+        / "tirolrunde_portals"
+        / "items.level.json"
+    )
+    if box_path.is_file():
+        _write_ndjson(box_path, [])
+        print(f"Cleared stale portal boxes -> {level_name}")
+    spawn_path = (
+        user_level / "main" / "MissionGroup" / "PlayerDropPoints" / "items.level.json"
+    )
+    rows = _read_ndjson(spawn_path)
+    kept = [
+        r
+        for r in rows
+        if not str(r.get("name") or "").startswith("tirolrunde_arrive_")
+    ]
+    if len(kept) != len(rows):
+        _write_ndjson(spawn_path, kept)
+        print(f"Cleared stale arrival SpawnSphere(s) -> {level_name}")
+    patch_info_spawn_points(level_name, [], sites)
 
 
 def patch_level_time_of_day(level_name: str, site: dict | None) -> None:
@@ -956,6 +992,21 @@ def main() -> None:
         inject_arrivals(level, gates)
         ensure_named_default_spawn(level)
         patch_info_spawn_points(level, gates, sites)
+
+    active = set(from_levels) | set(to_levels)
+    if USER_LEVELS.is_dir():
+        for level_dir in USER_LEVELS.iterdir():
+            if not level_dir.is_dir() or level_dir.name in active:
+                continue
+            marker = (
+                level_dir
+                / "main"
+                / "MissionGroup"
+                / "level_objects"
+                / "tirolrunde_portals"
+            )
+            if marker.is_dir():
+                clear_stale_portal_level(level_dir.name, sites)
 
 
 if __name__ == "__main__":

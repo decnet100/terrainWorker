@@ -422,17 +422,6 @@ STEPS: tuple[Step, ...] = (
         needs="beamng.decal_roads",
     ),
     Step(
-        id="build_water",
-        title="Water",
-        summary="Water plane and the water heightmap layer (added onto the DGM).",
-        script="tools/build_water.py",
-        group="5  Carriageway and structures",
-        docs="docs/HEIGHTMAP_COMPOSE.md",
-        yaml_keys=("beamng.water.enabled", "beamng.water.z_m"),
-        outputs=("data/processed/{slug}/heightmap_layers/water_w.png",),
-        needs="beamng.water",
-    ),
-    Step(
         id="build_bridges",
         title="Bridges",
         summary="MeshRoad decks and the span/bridge heightmap part at the abutments.",
@@ -469,6 +458,28 @@ STEPS: tuple[Step, ...] = (
             Flag("skip_holemap", "--skip-holemap", "bool", "Leave the hole map alone"),
         ),
         needs="beamng.galleries",
+    ),
+    Step(
+        id="build_water",
+        title="Water",
+        summary=(
+            "WaterBlocks + optional lake basin on the heightmap. "
+            "fit_check vs terrain and MeshRoad (run after bridges/galleries)."
+        ),
+        script="tools/build_water.py",
+        group="5  Carriageway and structures",
+        docs="docs/HEIGHTMAP_COMPOSE.md",
+        yaml_keys=(
+            "beamng.water.enabled",
+            "beamng.water.fit_check",
+            "beamng.water.hang_max_m",
+            "beamng.water.meshroad_clearance_m",
+        ),
+        outputs=(
+            "data/processed/{slug}/heightmap_layers/water_w.png",
+            "data/processed/{slug}/water_items.level.json",
+        ),
+        needs="beamng.water",
     ),
     Step(
         id="compose_heightmap",
