@@ -40,6 +40,8 @@ cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/fernpass_mega.yam
 The script writes a JSON report plus a small YAML snippet you can copy into
 `beamng.bridges.gip_extra` (and optionally `beamng.bridges.items[].abutment_s`).
 
+Details: [DIAG_MISSING_BRIDGES.md](DIAG_MISSING_BRIDGES.md)
+
 ```yaml
 sources:
   gip:
