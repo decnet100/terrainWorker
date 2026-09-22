@@ -15,9 +15,10 @@ box_size_m: [12.0, 8.0, 6.0]  # along-road, across, height
 # Omit length_m to use the real span (~15–18 km). peak_frac = extra bulge vs span.
 arc:
   width_m: 20
-  # Apex bulge: max(peak_height_m, peak_frac * span). 0.06 clipped into Fernpass peaks.
-  peak_frac: 0.16
-  peak_height_m: 2000
+  # Apex bulge: max(peak_height_m, peak_frac * span).
+  # Keep this low: maps will be closer together; the sky arrow is a hint, not a skyline object.
+  peak_frac: 0.04
+  peak_height_m: 250
   samples: 56
 
 gates:
