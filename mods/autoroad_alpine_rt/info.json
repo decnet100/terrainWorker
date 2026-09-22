@@ -1,0 +1,7 @@
+{
+  "name": "Alpine Roadtrip",
+  "title": "Alpine Roadtrip",
+  "author": "autoroad",
+  "version": "0.1.0",
+  "description": "Dwell portals and session persist (time of day, weather, vehicle config) between Alpine Roadtrip maps."
+}

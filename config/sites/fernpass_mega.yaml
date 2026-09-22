@@ -8,7 +8,7 @@ bbox:
   - 242004.0
   - 42496.0
   - 250196.0
-# Absolute GHA (m) at DGM-bbox center — Roadtrip Tyrol sky-arc target.
+# Absolute GHA (m) at DGM-bbox center — Alpine Roadtrip sky-arc target.
 center_z_m: 1065.3
 
 sources:

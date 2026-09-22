@@ -1,4 +1,4 @@
-# Roadtrip Tyrol portal graph: Fernpass <-> Imst <-> Reschen.
+# Alpine Roadtrip portal graph: Fernpass <-> Imst <-> Reschen.
 # Boxes sit at the midpoint of the named GIP OBJECTID. Arrival is 20 m
 # further toward that map's bbox center so the player does not re-enter.
 # Hahntennjoch is a later branch from Imst — not in this graph.
@@ -11,8 +11,9 @@ box_size_m: [12.0, 8.0, 6.0]  # along-road, across, height
 # Sky ribbon while inside a box: full CRS distance to dest DGM-bbox center.
 arc:
   width_m: 20
-  peak_frac: 0.16
-  peak_height_m: 2000
+  # Keep this low: maps are closer together; the sky arrow is a hint, not a skyline object.
+  peak_frac: 0.04
+  peak_height_m: 250
   samples: 56
 
 gates:

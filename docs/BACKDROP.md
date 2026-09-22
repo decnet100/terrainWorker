@@ -4,7 +4,7 @@ Far scenery around the **playable** heightmap: Collada TSStatics with `collision
 
 Fernpass Mega and Reschen are wired (`beamng.backdrop` + `sources.backdrop_ortho` in those site YAMLs). Other sites pick up the same YAML keys (or code defaults).
 
-Related: [BEAMNG_IMPORT.md](BEAMNG_IMPORT.md) (playable terrain), [HEIGHTMAP_COMPOSE.md](HEIGHTMAP_COMPOSE.md) (Z datum), [ROADTRIP_TYROL.md](ROADTRIP_TYROL.md) (portal sky-arc later sits in front of this).
+Related: [BEAMNG_IMPORT.md](BEAMNG_IMPORT.md) (playable terrain), [HEIGHTMAP_COMPOSE.md](HEIGHTMAP_COMPOSE.md) (Z datum), [ALPINE_ROADTRIP.md](ALPINE_ROADTRIP.md) (portal sky-arc later sits in front of this).
 
 Status: **POC that already injects**. Not a replacement for Forest / terrain paint on the playable map.
 
@@ -107,7 +107,7 @@ Build flags: `--skip-fetch`, `--no-inject` (write `data/processed/<site>/backdro
 
 `--skip-ortho` skips **using** the ortho PNGs even if they are already on disk (hypsometric tint instead). Omit it when you want Swissimage.
 
-After inject of **Lua, portals, DAE, or materials**: **quit BeamNG entirely** and start a new session. Freeroam reload / World-Editor reload keeps the old in-memory materials and `tirolrunde` extension. `textures-only` plus a file swap also does **not** bind new mesh textures — full remesh + quit.
+After inject of **Lua, portals, DAE, or materials**: **quit BeamNG entirely** and start a new session. Freeroam reload / World-Editor reload keeps the old in-memory materials and `alpine_rt` extension. `textures-only` plus a file swap also does **not** bind new mesh textures — full remesh + quit.
 
 The World Editor keeps the object list from when you *loaded*; **Save Level** from that old session writes that list back to disk and drops objects the script just added. Do not save over inject.
 
