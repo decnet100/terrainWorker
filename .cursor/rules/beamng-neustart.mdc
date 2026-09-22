@@ -5,8 +5,8 @@ alwaysApply: true
 
 # BeamNG schließen, nicht nur die Karte neu laden
 
-`tirolrunde` bleibt mit `setExtensionUnloadMode(..., "manual")` über `startLevel` und Freeroam-Reload **im Speicher**. Terrain/NDJSON kommen neu, **Lua und das in-memory `portals`-Table nicht**.
+`alpinert` bleibt mit `setExtensionUnloadMode(..., "manual")` über `startLevel` und Freeroam-Reload **im Speicher**. Terrain/NDJSON kommen neu, **Lua und das in-memory `portals`-Table nicht**.
 
 Nach Änderungen an Lua, `portals.json`, injizierten TSStatics/DAE/Materials, unpacked Mods: **ausdrücklich sagen, BeamNG ganz zu beenden und neu zu starten** (nicht nur Freeroam → Karte laden, nicht nur World-Editor-Reload). World Editor nicht speichern, wenn Inject die Quelle ist.
 
-In `beamng.log` prüfen: `extension loaded` / `LUA_REV` nur einmal am Session-Start = noch der alte Code. Optional Konsole: `extensions.reload("tirolrunde")`.
+In `beamng.log` prüfen: `extension loaded` / `LUA_REV` nur einmal am Session-Start = noch der alte Code. Optional Konsole: `extensions.reload("alpinert")`.

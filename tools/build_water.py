@@ -7,6 +7,10 @@ Large lakes: shrink by shore_inset_m, then tile WaterBlocks that overlap the
 core. standing_depress_m lowers the DGM under LN-GWS so blocks sit in a hole.
 WaterBlock Z comes from densified shoreline samples (not centroid — islands).
 
+After placement, fit_check trims / subdivides / drops blocks that hang over
+terrain steps or punch through MeshRoad decks (tunnels under lakes). Run
+bridges/galleries before water so MeshRoad NDJSON exists.
+
 Flowing water (LN-GWF) → optional River, or WaterBlocks when wide_flowing_min_width_m
 is set and the floodplain is wide enough.
 
@@ -16,6 +20,7 @@ Usage:
 """
 from __future__ import annotations
 
+import copy
 import json
 import math
 import sys
@@ -73,6 +78,17 @@ def _cfg(bng: dict) -> dict:
         "grid_element_size": float(raw.get("grid_element_size") or 4.0),
         "segment_length": float(raw.get("segment_length") or 8.0),
         "subdivide_length": float(raw.get("subdivide_length") or 2.5),
+        # Post-placement fit: hang over terrain steps / punch MeshRoad decks.
+        "fit_check": bool(raw.get("fit_check", True)),
+        "hang_max_m": float(raw.get("hang_max_m") or 2.5),
+        "bank_max_m": float(raw.get("bank_max_m") or 2.5),
+        "fit_bad_frac": float(raw.get("fit_bad_frac") or 0.15),
+        "fit_sample_m": float(raw.get("fit_sample_m") or 8.0),
+        "fit_min_side_m": float(raw.get("fit_min_side_m") or 8.0),
+        "fit_subdivide": bool(raw.get("fit_subdivide", True)),
+        "fit_shrink": bool(raw.get("fit_shrink", True)),
+        "meshroad_clearance_m": float(raw.get("meshroad_clearance_m") or 0.75),
+        "fit_min_depth_m": float(raw.get("fit_min_depth_m") or 0.5),
     }
 
 
@@ -370,6 +386,370 @@ def _load_water_features(proc: Path) -> list[tuple[str, dict]]:
     return out
 
 
+def _load_ndjson_meshroads(path: Path) -> list[dict]:
+    if not path.is_file():
+        return []
+    out: list[dict] = []
+    for ln in path.read_text(encoding="utf-8").splitlines():
+        ln = ln.strip()
+        if not ln:
+            continue
+        try:
+            e = json.loads(ln)
+        except json.JSONDecodeError:
+            continue
+        if e.get("class") == "MeshRoad" and len(e.get("nodes") or []) >= 2:
+            out.append(e)
+    return out
+
+
+def _load_meshroads(proc: Path, level_name: str) -> list[dict]:
+    """Bridges + galleries MeshRoads (level first, then processed sidecars)."""
+    found: list[dict] = []
+    seen: set[str] = set()
+    paths = [
+        USER_LEVELS
+        / level_name
+        / "main"
+        / "MissionGroup"
+        / "level_objects"
+        / "bridges"
+        / "items.level.json",
+        proc / "bridges_items.level.json",
+        USER_LEVELS
+        / level_name
+        / "main"
+        / "MissionGroup"
+        / "level_objects"
+        / "galleries"
+        / "items.level.json",
+        proc / "galleries_items.level.json",
+    ]
+    for path in paths:
+        for e in _load_ndjson_meshroads(path):
+            name = str(e.get("name") or "")
+            if name in seen:
+                continue
+            seen.add(name)
+            found.append(e)
+    return found
+
+
+def _project_meshroad(
+    px: float, py: float, nodes: list
+) -> tuple[float, float, float, float] | None:
+    """Perp. hit on a span segment (t in [0,1]). Returns (dist, z_top, half_w, depth)."""
+    best: tuple[float, float, float, float] | None = None
+    for a, b in zip(nodes, nodes[1:]):
+        ax, ay, az = float(a[0]), float(a[1]), float(a[2])
+        bx, by, bz = float(b[0]), float(b[1]), float(b[2])
+        dx, dy = bx - ax, by - ay
+        seg2 = dx * dx + dy * dy
+        if seg2 < 1e-12:
+            continue
+        t = ((px - ax) * dx + (py - ay) * dy) / seg2
+        if t < 0.0 or t > 1.0:
+            continue
+        qx, qy = ax + t * dx, ay + t * dy
+        dist = math.hypot(px - qx, py - qy)
+        z_top = az + t * (bz - az)
+        wa = float(a[3]) if len(a) > 3 else 7.5
+        wb = float(b[3]) if len(b) > 3 else wa
+        half = 0.5 * (wa + t * (wb - wa))
+        depth_a = float(a[4]) if len(a) > 4 else 0.4
+        depth_b = float(b[4]) if len(b) > 4 else depth_a
+        depth = depth_a + t * (depth_b - depth_a)
+        if best is None or dist < best[0]:
+            best = (dist, z_top, half, depth)
+    return best
+
+
+def _nearest_meshroad_under(
+    px: float, py: float, meshroads: list[dict], surface_z: float, pad_m: float = 0.0
+) -> float | None:
+    """Lowest MeshRoad deck Z under (px,py) that sits below the water surface."""
+    best_z: float | None = None
+    for e in meshroads:
+        hit = _project_meshroad(px, py, e.get("nodes") or [])
+        if hit is None:
+            continue
+        dist, z_top, half, _depth = hit
+        if dist > half + max(0.0, pad_m):
+            continue
+        if z_top >= surface_z - 0.05:
+            continue
+        if best_z is None or z_top < best_z:
+            best_z = float(z_top)
+    return best_z
+
+
+def _block_xy(block: dict) -> tuple[float, float, float, float, float]:
+    """cx, cy, sx, sy, surface_z from a WaterBlock entry."""
+    pos = block["position"]
+    scale = block["scale"]
+    return (
+        float(pos[0]),
+        float(pos[1]),
+        float(scale[0]),
+        float(scale[1]),
+        float(pos[2]),
+    )
+
+
+def _sample_grid(
+    cx: float, cy: float, sx: float, sy: float, sample_m: float
+) -> list[tuple[float, float]]:
+    """Interior sample points over an axis-aligned footprint."""
+    spacing = max(2.0, float(sample_m))
+    nx = max(2, int(math.ceil(sx / spacing)) + 1)
+    ny = max(2, int(math.ceil(sy / spacing)) + 1)
+    nx = min(nx, 24)
+    ny = min(ny, 24)
+    pts: list[tuple[float, float]] = []
+    for iy in range(ny):
+        ty = (iy + 0.5) / ny
+        y = cy - 0.5 * sy + ty * sy
+        for ix in range(nx):
+            tx = (ix + 0.5) / nx
+            x = cx - 0.5 * sx + tx * sx
+            pts.append((x, y))
+    return pts
+
+
+def _terrain_bad_mask(
+    z_at,
+    cx: float,
+    cy: float,
+    sx: float,
+    sy: float,
+    surface_z: float,
+    cfg: dict,
+) -> tuple[float, np.ndarray, int, int]:
+    """Return (bad_frac, good_bool[ny,nx], nx, ny)."""
+    hang = float(cfg["hang_max_m"])
+    bank = float(cfg["bank_max_m"])
+    spacing = max(2.0, float(cfg["fit_sample_m"]))
+    nx = max(2, int(math.ceil(sx / spacing)) + 1)
+    ny = max(2, int(math.ceil(sy / spacing)) + 1)
+    nx = min(nx, 24)
+    ny = min(ny, 24)
+    good = np.ones((ny, nx), dtype=bool)
+    n_bad = 0
+    for iy in range(ny):
+        ty = (iy + 0.5) / ny
+        y = cy - 0.5 * sy + ty * sy
+        for ix in range(nx):
+            tx = (ix + 0.5) / nx
+            x = cx - 0.5 * sx + tx * sx
+            tz = float(z_at(x, y))
+            if (surface_z - tz) > hang or (tz - surface_z) > bank:
+                good[iy, ix] = False
+                n_bad += 1
+    total = nx * ny
+    return (float(n_bad) / float(total) if total else 0.0), good, nx, ny
+
+
+def _shrink_to_good(
+    block: dict, good: np.ndarray, nx: int, ny: int, cfg: dict
+) -> dict | None:
+    """Crop WaterBlock XY to the bounding box of good sample cells."""
+    if not np.any(good):
+        return None
+    rows = np.any(good, axis=1)
+    cols = np.any(good, axis=0)
+    iy0 = int(np.argmax(rows))
+    iy1 = int(ny - 1 - np.argmax(rows[::-1]))
+    ix0 = int(np.argmax(cols))
+    ix1 = int(nx - 1 - np.argmax(cols[::-1]))
+    cx, cy, sx, sy, surface_z = _block_xy(block)
+    # Cell centers span the footprint; map cell index range back to meters.
+    x0 = cx - 0.5 * sx + ((ix0 + 0.0) / nx) * sx
+    x1 = cx - 0.5 * sx + ((ix1 + 1.0) / nx) * sx
+    y0 = cy - 0.5 * sy + ((iy0 + 0.0) / ny) * sy
+    y1 = cy - 0.5 * sy + ((iy1 + 1.0) / ny) * sy
+    new_sx = max(0.0, x1 - x0)
+    new_sy = max(0.0, y1 - y0)
+    if new_sx * new_sy < float(cfg["min_area_m2"]) * 0.25:
+        return None
+    if new_sx < float(cfg["fit_min_side_m"]) or new_sy < float(cfg["fit_min_side_m"]):
+        return None
+    out = copy.deepcopy(block)
+    out["position"] = [0.5 * (x0 + x1), 0.5 * (y0 + y1), surface_z]
+    out["scale"] = [new_sx, new_sy, float(block["scale"][2])]
+    out["persistentId"] = str(uuid.uuid4())
+    return out
+
+
+def _subdivide_2x2(block: dict) -> list[dict]:
+    """Split one AABB WaterBlock into four half-size quads."""
+    cx, cy, sx, sy, surface_z = _block_xy(block)
+    depth = float(block["scale"][2])
+    hx, hy = 0.5 * sx, 0.5 * sy
+    name = str(block.get("name") or "water")
+    kids: list[dict] = []
+    for qi, (ox, oy) in enumerate(((-0.5, -0.5), (0.5, -0.5), (-0.5, 0.5), (0.5, 0.5))):
+        child = copy.deepcopy(block)
+        child["name"] = f"{name}_q{qi}"
+        child["position"] = [cx + ox * hx, cy + oy * hy, surface_z]
+        child["scale"] = [hx, hy, depth]
+        child["persistentId"] = str(uuid.uuid4())
+        kids.append(child)
+    return kids
+
+
+def _fit_terrain_one(block: dict, z_at, cfg: dict, *, depth: int = 0) -> list[dict]:
+    """Keep / shrink / subdivide / drop one WaterBlock vs terrain basin."""
+    cx, cy, sx, sy, surface_z = _block_xy(block)
+    min_side = float(cfg["fit_min_side_m"])
+    bad_frac, good, nx, ny = _terrain_bad_mask(z_at, cx, cy, sx, sy, surface_z, cfg)
+    thr = float(cfg["fit_bad_frac"])
+    if bad_frac <= thr:
+        if bad_frac > 0.0 and cfg.get("fit_shrink", True):
+            shrunk = _shrink_to_good(block, good, nx, ny, cfg)
+            if shrunk is not None:
+                # Re-check once after shrink; avoid infinite recursion.
+                bf2, _, _, _ = _terrain_bad_mask(
+                    z_at,
+                    float(shrunk["position"][0]),
+                    float(shrunk["position"][1]),
+                    float(shrunk["scale"][0]),
+                    float(shrunk["scale"][1]),
+                    float(shrunk["position"][2]),
+                    cfg,
+                )
+                if bf2 <= thr:
+                    return [shrunk]
+        return [block]
+
+    # Too many bad cells: subdivide if large enough.
+    if (
+        cfg.get("fit_subdivide", True)
+        and depth < 3
+        and min(sx, sy) >= 2.0 * min_side
+    ):
+        kept: list[dict] = []
+        for child in _subdivide_2x2(block):
+            kept.extend(_fit_terrain_one(child, z_at, cfg, depth=depth + 1))
+        return kept
+
+    # Last resort: shrink to good core, else drop.
+    if cfg.get("fit_shrink", True):
+        shrunk = _shrink_to_good(block, good, nx, ny, cfg)
+        if shrunk is not None:
+            bf2, _, _, _ = _terrain_bad_mask(
+                z_at,
+                float(shrunk["position"][0]),
+                float(shrunk["position"][1]),
+                float(shrunk["scale"][0]),
+                float(shrunk["scale"][1]),
+                float(shrunk["position"][2]),
+                cfg,
+            )
+            if bf2 <= thr:
+                return [shrunk]
+    return []
+
+
+def _clamp_meshroad_depth(
+    block: dict, meshroads: list[dict], cfg: dict
+) -> dict | None:
+    """Reduce scale.z so the volume stays above any MeshRoad under the footprint."""
+    if not meshroads:
+        return block
+    cx, cy, sx, sy, surface_z = _block_xy(block)
+    depth = float(block["scale"][2])
+    clearance = float(cfg["meshroad_clearance_m"])
+    min_depth = float(cfg["fit_min_depth_m"])
+    max_depth = depth
+    hit_any = False
+    for x, y in _sample_grid(cx, cy, sx, sy, float(cfg["fit_sample_m"])):
+        z_road = _nearest_meshroad_under(x, y, meshroads, surface_z)
+        if z_road is None:
+            continue
+        hit_any = True
+        # Surface already at/under the deck → cannot keep this block.
+        if surface_z <= z_road + clearance:
+            return None
+        allowed = surface_z - (z_road + clearance)
+        max_depth = min(max_depth, allowed)
+    if not hit_any:
+        return block
+    if max_depth < min_depth:
+        return None
+    if max_depth >= depth - 1e-3:
+        return block
+    out = copy.deepcopy(block)
+    out["scale"] = [sx, sy, float(max_depth)]
+    out["persistentId"] = str(uuid.uuid4())
+    return out
+
+
+def fit_water_blocks(
+    site: dict,
+    level_name: str,
+    entries: list[dict],
+    cfg: dict,
+    z_at=None,
+) -> list[dict]:
+    """Post-pass: terrain basin fit + MeshRoad depth clamp on WaterBlocks."""
+    if not cfg.get("fit_check", True):
+        return entries
+
+    if z_at is None:
+        z_at, _ = bg.load_terrain_z_slope(site)
+
+    proc = processed_dir(site)
+    meshroads = _load_meshroads(proc, level_name)
+    if not meshroads:
+        print(
+            "water fit: no MeshRoad items (run bridges/galleries first) — "
+            "terrain-only check"
+        )
+
+    out: list[dict] = []
+    n_keep = n_sub = n_shrink = n_drop_terrain = n_clamp = n_drop_road = 0
+    for e in entries:
+        if e.get("class") != "WaterBlock":
+            out.append(e)
+            continue
+        fitted = _fit_terrain_one(e, z_at, cfg)
+        if not fitted:
+            n_drop_terrain += 1
+            print(f"water fit drop (terrain): {e.get('name')}")
+            continue
+        if len(fitted) > 1:
+            n_sub += 1
+        elif fitted[0] is not e and (
+            abs(float(fitted[0]["scale"][0]) - float(e["scale"][0])) > 0.05
+            or abs(float(fitted[0]["scale"][1]) - float(e["scale"][1])) > 0.05
+        ):
+            n_shrink += 1
+        else:
+            n_keep += 1
+
+        for fb in fitted:
+            clamped = _clamp_meshroad_depth(fb, meshroads, cfg)
+            if clamped is None:
+                n_drop_road += 1
+                print(f"water fit drop (meshroad): {fb.get('name')}")
+                continue
+            if float(clamped["scale"][2]) < float(fb["scale"][2]) - 1e-3:
+                n_clamp += 1
+                print(
+                    f"water fit depth clamp: {fb.get('name')} "
+                    f"{float(fb['scale'][2]):.2f} -> {float(clamped['scale'][2]):.2f} m"
+                )
+            out.append(clamped)
+
+    print(
+        f"water fit: keep~{n_keep} subdivide={n_sub} shrink={n_shrink} "
+        f"depth_clamp={n_clamp} drop_terrain={n_drop_terrain} "
+        f"drop_meshroad={n_drop_road} meshroads={len(meshroads)} "
+        f"-> {sum(1 for x in out if x.get('class') == 'WaterBlock')} WaterBlocks"
+    )
+    return out
+
+
 def build_entries(site: dict, cfg: dict) -> list[dict]:
     proc = processed_dir(site)
     coords = SiteCoords(site)
@@ -577,6 +957,8 @@ def main() -> None:
     depress_standing_lakes(site, level_name, cfg)
 
     entries = build_entries(site, cfg)
+    z_at, _ = bg.load_terrain_z_slope(site)
+    entries = fit_water_blocks(site, level_name, entries, cfg, z_at=z_at)
     out = proc / "water_items.level.json"
     with out.open("w", encoding="utf-8", newline="\n") as f:
         for e in entries:

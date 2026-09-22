@@ -1,11 +1,11 @@
-"""Inject Roadtrip Tyrol portal volumes + arrival SpawnSpheres into BeamNG levels.
+"""Inject Alpine Roadtrip portal volumes + arrival SpawnSpheres into BeamNG levels.
 
-Reads config/tirolrunde/portals.yaml, writes the Lua-facing portals.json into
+Reads config/alpine_rt/portals.yaml, writes the Lua-facing portals.json into
 the unpacked mod, copies a translucent red unit cube into each involved level,
 and injects:
 
   - TSStatic box (collisionType None) on from_level
-  - SpawnSphere tirolrunde_arrive_<gate_id> on to_level (also listed in info.json)
+  - SpawnSphere alpine_rt_arrive_<gate_id> on to_level (also listed in info.json)
   - TimeOfDay lat/lon from the site bbox (Tyrol sun path)
 
 Usage:
@@ -40,8 +40,8 @@ USER_LEVELS = (
     / "levels"
 )
 
-MOD_DIR = ROOT / "mods" / "autoroad_tirolrunde"
-PORTALS_YAML = ROOT / "config" / "tirolrunde" / "portals.yaml"
+MOD_DIR = ROOT / "mods" / "autoroad_alpine_rt"
+PORTALS_YAML = ROOT / "config" / "alpine_rt" / "portals.yaml"
 CUBE_DAE_NAME = "portal_cube.dae"
 MAT_NAME = "portal_red"
 SITES_DIR = ROOT / "config" / "sites"
@@ -261,6 +261,7 @@ def load_portals_yaml(path: Path | None = None) -> dict:
     default_size = list(data.get("box_size_m") or [12.0, 8.0, 6.0])
     grace_s = float(data.get("grace_s") or 8)
     arc_cfg = dict(data.get("arc") or {})
+    map_cfg = dict(data.get("map") or {})
     sites = _sites_by_level()
     out_gates = []
     for g in gates:
@@ -302,25 +303,372 @@ def load_portals_yaml(path: Path | None = None) -> dict:
             target_z_override=float(z_over) if z_over is not None else None,
         )
         if arc:
-            arc["object"] = f"tirolrunde_arc_{gate['id']}"
+            arc["object"] = f"alpine_rt_arc_{gate['id']}"
             gate["arc"] = arc
-            gate["dwell_s"] = max(1.0, round(float(arc["geo_distance_m"]) / 1000.0, 1))
             print(
                 f"Arc {gate['id']}: heading={arc['heading']} "
                 f"geo={arc['geo_distance_m']:.0f}m peak={arc['peak_height_m']:.0f}m "
-                f"dest_z={arc['dest_center_z_m']} dwell={gate['dwell_s']}s"
+                f"dest_z={arc['dest_center_z_m']}"
             )
         else:
             print(f"Arc {gate['id']}: skipped (missing site YAML for level)")
+        cdist = _center_distance_m(sites.get(gate["from_level"]), sites.get(gate["to_level"]))
+        if cdist is not None:
+            gate["center_distance_m"] = round(cdist, 1)
+            gate["dwell_base_s"] = max(1.0, round(cdist / 1000.0, 1))
+            gate["dwell_s"] = gate["dwell_base_s"]
+            print(f"  dwell base={gate['dwell_base_s']}s (map centers {cdist:.0f} m)")
+        mark = _gate_map_mark(
+            g,
+            gate,
+            sites.get(gate["from_level"]),
+            sites.get(gate["to_level"]),
+            map_cfg,
+        )
+        if mark:
+            gate["map_mark"] = mark
         out_gates.append(gate)
-    return {"grace_s": grace_s, "gates": out_gates}
+    involved = sorted({g["from_level"] for g in out_gates} | {g["to_level"] for g in out_gates})
+    map_out = dict(map_cfg)
+    if not map_out.get("bbox"):
+        ub = _union_site_bbox(sites, involved)
+        if ub:
+            map_out["content_bbox"] = ub
+            aspect = map_out.get("image_aspect")
+            if aspect:
+                from fetch_overview_basemap import expand_bbox_to_aspect  # noqa: WPS433
+
+                map_out["bbox"] = expand_bbox_to_aspect(ub, float(aspect))
+            else:
+                map_out["bbox"] = ub
+    if not map_out.get("image"):
+        map_out["image"] = "/ui/modules/apps/alpineRtTrafficMap/basemap.png"
+    from fetch_overview_basemap import apply_source_metadata  # noqa: WPS433
+
+    map_out = apply_source_metadata(map_out)
+    side = str(map_out.get("driving_side") or "right").strip().lower()
+    if side not in ("right", "left"):
+        side = "right"
+    map_out["driving_side"] = side
+    icons = dict(map_out.get("icons") or {})
+    icons.setdefault("size_px", 36)
+    icons.setdefault("stack_gap_px", 4)
+    icons.setdefault("offset_px", [0, -8])
+    icons.setdefault("dir", "/ui/modules/apps/alpineRtTrafficMap/icons")
+    map_out["icons"] = icons
+    map_out.setdefault("detail_zoom", 12)
+    levels_meta: dict[str, dict] = {}
+    aspect = map_out.get("image_aspect")
+    for ln in involved:
+        site = sites.get(ln) or {}
+        raw = site.get("bbox")
+        if not raw or len(raw) < 4:
+            continue
+        content = [float(v) for v in raw[:4]]
+        box = content
+        if aspect:
+            from fetch_overview_basemap import expand_bbox_to_aspect  # noqa: WPS433
+
+            box = expand_bbox_to_aspect(content, float(aspect))
+        short = _level_short(ln)
+        cx = 0.5 * (content[0] + content[2])
+        cy = 0.5 * (content[1] + content[3])
+        levels_meta[ln] = {
+            "bbox": box,
+            "content_bbox": content,
+            "crs": [round(cx, 1), round(cy, 1)],
+            "image": f"/ui/modules/apps/alpineRtTrafficMap/basemap_{short}.png",
+        }
+    if levels_meta:
+        map_out["levels"] = levels_meta
+    roads = _build_roads(data, out_gates, map_out)
+    return {"grace_s": grace_s, "gates": out_gates, "map": map_out, "roads": roads}
+
+
+def _center_distance_m(from_site: dict | None, to_site: dict | None) -> float | None:
+    if not from_site or not to_site:
+        return None
+    if not from_site.get("bbox") or not to_site.get("bbox"):
+        return None
+    ax, ay = _bbox_center_crs(from_site)
+    bx, by = _bbox_center_crs(to_site)
+    return math.hypot(bx - ax, by - ay)
+
+
+def _union_site_bbox(sites: dict[str, dict], levels: list[str]) -> list[float] | None:
+    xs: list[float] = []
+    ys: list[float] = []
+    for ln in levels:
+        site = sites.get(ln) or {}
+        raw = site.get("bbox")
+        if not raw or len(raw) < 4:
+            continue
+        xmin, ymin, xmax, ymax = map(float, raw[:4])
+        xs.extend((xmin, xmax))
+        ys.extend((ymin, ymax))
+    if not xs:
+        return None
+    pad = 2500.0
+    return [
+        round(min(xs) - pad, 1),
+        round(min(ys) - pad, 1),
+        round(max(xs) + pad, 1),
+        round(max(ys) + pad, 1),
+    ]
+
+
+def _gate_map_mark(
+    raw_gate: dict,
+    gate: dict,
+    from_site: dict | None,
+    to_site: dict | None,
+    map_cfg: dict,
+) -> dict | None:
+    raw = dict(raw_gate.get("map_mark") or {})
+    length_px = float(raw.get("length_px") if raw.get("length_px") is not None else map_cfg.get("mark_length_px") or 22)
+    gap_px = float(raw.get("gap_px") if raw.get("gap_px") is not None else map_cfg.get("mark_gap_px") or 5)
+    crs = raw.get("crs")
+    heading = raw.get("heading")
+    if from_site is not None and (crs is None or heading is None):
+        sc = SiteCoords(from_site)
+        box = gate["box"]
+        portal_crs = sc.beamng_to_crs(float(box["pos"][0]), float(box["pos"][1]))
+        if crs is None:
+            crs = [round(portal_crs[0], 1), round(portal_crs[1], 1)]
+        if heading is None:
+            if to_site is not None:
+                dest = _bbox_center_crs(to_site)
+                hx, hy = dest[0] - portal_crs[0], dest[1] - portal_crs[1]
+            else:
+                # BeamNG tangent is only a fallback; CRS heading is preferred.
+                hx, hy = float(box["tangent"][0]), float(box["tangent"][1])
+            hx, hy = _norm2(hx, hy)
+            heading = [round(hx, 4), round(hy, 4)]
+    if crs is None or heading is None:
+        return None
+    ce = [float(crs[0]), float(crs[1])]
+    hx, hy = _norm2(float(heading[0]), float(heading[1]))
+    return {
+        "crs": [round(ce[0], 1), round(ce[1], 1)],
+        "heading": [round(hx, 4), round(hy, 4)],
+        "length_px": round(length_px, 1),
+        "gap_px": round(gap_px, 1),
+    }
+
+
+def _level_short(level_name: str) -> str:
+    return (
+        str(level_name)
+        .replace("autoroad_", "")
+        .replace("_8192", "")
+        .replace("_4096", "")
+    )
+
+
+def _build_roads(raw: dict, gates: list[dict], map_cfg: dict) -> list[dict]:
+    """One overview roadway per opposite gate pair (two carriageways)."""
+    by_id = {g["id"]: g for g in gates}
+    used: set[str] = set()
+    out: list[dict] = []
+    for raw_road in raw.get("roads") or []:
+        a_id = str(raw_road.get("a") or raw_road.get("forward") or "")
+        b_id = str(raw_road.get("b") or raw_road.get("reverse") or "")
+        if a_id not in by_id or b_id not in by_id:
+            print(f"Road {raw_road.get('id')}: missing gate {a_id!r} / {b_id!r}")
+            continue
+        out.append(_road_payload(raw_road, by_id[a_id], by_id[b_id], map_cfg))
+        used.add(a_id)
+        used.add(b_id)
+    leftover = [g for g in gates if g["id"] not in used]
+    seen: set[str] = set()
+    for gate in leftover:
+        if gate["id"] in seen:
+            continue
+        rev = next(
+            (
+                other
+                for other in leftover
+                if other["id"] not in seen
+                and other["from_level"] == gate["to_level"]
+                and other["to_level"] == gate["from_level"]
+            ),
+            None,
+        )
+        names = sorted((_level_short(gate["from_level"]), _level_short(gate["to_level"])))
+        rid = f"{names[0]}_{names[1]}"
+        out.append(_road_payload({"id": rid}, gate, rev, map_cfg))
+        seen.add(gate["id"])
+        if rev:
+            seen.add(rev["id"])
+    return out
+
+
+def _road_payload(raw_road: dict, a: dict, b: dict | None, map_cfg: dict) -> dict:
+    mark_raw = dict(raw_road.get("map_mark") or {})
+    a_mark = a.get("map_mark") or {}
+    b_mark = (b.get("map_mark") or {}) if b else {}
+    a_crs = a_mark.get("crs")
+    b_crs = b_mark.get("crs")
+    if mark_raw.get("crs"):
+        crs = [float(mark_raw["crs"][0]), float(mark_raw["crs"][1])]
+    elif a_crs and b_crs:
+        crs = [0.5 * (float(a_crs[0]) + float(b_crs[0])), 0.5 * (float(a_crs[1]) + float(b_crs[1]))]
+    elif a_crs:
+        crs = [float(a_crs[0]), float(a_crs[1])]
+    else:
+        crs = None
+    if mark_raw.get("heading"):
+        hx, hy = _norm2(float(mark_raw["heading"][0]), float(mark_raw["heading"][1]))
+    elif a_crs and b_crs:
+        hx, hy = _norm2(float(b_crs[0]) - float(a_crs[0]), float(b_crs[1]) - float(a_crs[1]))
+    elif a_mark.get("heading"):
+        hx, hy = _norm2(float(a_mark["heading"][0]), float(a_mark["heading"][1]))
+    else:
+        hx, hy = 1.0, 0.0
+    length_px = float(
+        mark_raw.get("length_px")
+        if mark_raw.get("length_px") is not None
+        else map_cfg.get("mark_length_px") or 22
+    )
+    gap_px = float(
+        mark_raw.get("gap_px") if mark_raw.get("gap_px") is not None else map_cfg.get("mark_gap_px") or 7
+    )
+    label = raw_road.get("label")
+    if not label:
+        la = _level_short(a["from_level"])
+        lb = _level_short(a["to_level"])
+        label = f"{la} – {lb}"
+    road = {
+        "id": str(raw_road.get("id") or a["id"]),
+        "label": str(label),
+        "a": a["id"],
+        "b": b["id"] if b else None,
+    }
+    if crs is not None:
+        road["map_mark"] = {
+            "crs": [round(crs[0], 1), round(crs[1], 1)],
+            "heading": [round(hx, 4), round(hy, 4)],
+            "length_px": round(length_px, 1),
+            "gap_px": round(gap_px, 1),
+        }
+    marks_by_level: dict[str, dict] = {}
+    if a_mark.get("crs"):
+        marks_by_level[a["from_level"]] = {
+            "crs": [round(float(a_mark["crs"][0]), 1), round(float(a_mark["crs"][1]), 1)],
+            "heading": list(a_mark.get("heading") or [hx, hy]),
+        }
+    if b and b_mark.get("crs"):
+        marks_by_level[b["from_level"]] = {
+            "crs": [round(float(b_mark["crs"][0]), 1), round(float(b_mark["crs"][1]), 1)],
+            "heading": list(b_mark.get("heading") or [-hx, -hy]),
+        }
+    if marks_by_level:
+        road["marks_by_level"] = marks_by_level
+    icons = dict(raw_road.get("icons") or {})
+    if icons:
+        road["icons"] = icons
+    if raw_road.get("weather"):
+        road["weather"] = str(raw_road["weather"])
+    if raw_road.get("alert") is not None:
+        road["alert"] = bool(raw_road["alert"])
+    print(f"Road {road['id']}: a={road['a']} b={road['b']} mark={road.get('map_mark')}")
+    return road
 
 
 def portals_json_payload(cfg: dict) -> dict:
-    return {
+    out = {
         "grace_s": cfg["grace_s"],
         "gates": cfg["gates"],
     }
+    if cfg.get("map"):
+        out["map"] = cfg["map"]
+    if cfg.get("roads"):
+        out["roads"] = cfg["roads"]
+    return out
+
+
+def write_overview_basemap(cfg: dict, *, force: bool = False, skip: bool = False) -> None:
+    """basemap.at (or stub source) warped onto map.bbox; schematic if fetch is off."""
+    try:
+        from write_map_icons import write_map_icons
+
+        write_map_icons(force=False)
+    except Exception as ex:  # noqa: BLE001
+        print(f"Map icons skip: {ex}")
+    if skip:
+        write_schematic_basemap(cfg)
+        return
+    map_cfg = cfg.get("map") or {}
+    try:
+        from fetch_overview_basemap import fetch_overview_basemap
+    except ImportError as ex:
+        print(f"Overview fetch import failed: {ex}")
+        write_schematic_basemap(cfg)
+        return
+    dest = fetch_overview_basemap(map_cfg, force=force)
+    if dest is None:
+        write_schematic_basemap(cfg)
+    detail_zoom = int(map_cfg.get("detail_zoom") or 12)
+    for level, rec in (map_cfg.get("levels") or {}).items():
+        image = str(rec.get("image") or "")
+        name = Path(image.replace("\\", "/")).name
+        if not name:
+            continue
+        site_cfg = dict(map_cfg)
+        site_cfg["bbox"] = rec.get("bbox") or rec.get("content_bbox")
+        site_cfg["zoom"] = detail_zoom
+        fetch_overview_basemap(site_cfg, dest=MOD_DIR / "ui" / "modules" / "apps" / "alpineRtTrafficMap" / name, force=force)
+
+
+def write_schematic_basemap(cfg: dict) -> None:
+    """Write a stand-in overview PNG if the user has not dropped a real map yet."""
+    map_cfg = cfg.get("map") or {}
+    image = str(map_cfg.get("image") or "/ui/modules/apps/alpineRtTrafficMap/basemap.png")
+    name = Path(image.replace("\\", "/")).name or "basemap.png"
+    dest = MOD_DIR / "ui" / "modules" / "apps" / "alpineRtTrafficMap" / name
+    if dest.is_file():
+        return
+    bbox = map_cfg.get("bbox")
+    if not bbox or len(bbox) < 4:
+        return
+    try:
+        from PIL import Image, ImageDraw
+    except ImportError:
+        print("Pillow missing, skip schematic basemap")
+        return
+    xmin, ymin, xmax, ymax = map(float, bbox[:4])
+    span_x = max(1.0, xmax - xmin)
+    span_y = max(1.0, ymax - ymin)
+    h_px = 900
+    w_px = max(360, int(round(h_px * span_x / span_y)))
+    img = Image.new("RGB", (w_px, h_px), (28, 32, 36))
+    draw = ImageDraw.Draw(img)
+    sites = _sites_by_level()
+    levels = {g["from_level"] for g in (cfg.get("gates") or [])}
+    levels |= {g["to_level"] for g in (cfg.get("gates") or [])}
+
+    def to_px(e: float, n: float) -> tuple[int, int]:
+        u = (e - xmin) / span_x
+        v = (n - ymin) / span_y
+        return int(round(u * (w_px - 1))), int(round((1.0 - v) * (h_px - 1)))
+
+    fill = (58, 72, 62)
+    outline = (110, 128, 112)
+    for ln in sorted(levels):
+        site = sites.get(ln) or {}
+        raw = site.get("bbox")
+        if not raw or len(raw) < 4:
+            continue
+        x0, y0, x1, y1 = map(float, raw[:4])
+        p0 = to_px(x0, y0)
+        p1 = to_px(x1, y1)
+        box = [min(p0[0], p1[0]), min(p0[1], p1[1]), max(p0[0], p1[0]), max(p0[1], p1[1])]
+        draw.rectangle(box, fill=fill, outline=outline, width=2)
+        label = str(site.get("name") or ln)
+        draw.text((box[0] + 8, box[1] + 8), label, fill=(210, 216, 208))
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    img.save(dest, "PNG")
+    print(f"Wrote schematic {dest.relative_to(ROOT)} (replace with a real map, keep bbox)")
 
 
 def write_rgba_png(path: Path, rgba: tuple[int, int, int, int], size: int = 4) -> None:
@@ -655,7 +1003,9 @@ def write_portal_material(mats_path: Path, tex_dir: str = "") -> None:
     mats_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 
 
-def ensure_mod_art(cfg: dict) -> Path:
+def ensure_mod_art(
+    cfg: dict, *, force_basemap: bool = False, skip_basemap: bool = False
+) -> Path:
     art = MOD_DIR / "art" / "shapes" / "portals"
     write_cube_dae(art / CUBE_DAE_NAME)
     write_rgba_png(art / "portal_ghost.png", (255, 90, 55, 255), size=64)
@@ -670,7 +1020,8 @@ def ensure_mod_art(cfg: dict) -> Path:
                 float(arc.get("width_m") or 20),
             )
     write_portal_material(art / "main.materials.json", "/art/shapes/portals")
-    json_path = MOD_DIR / "lua" / "ge" / "extensions" / "tirolrunde" / "portals.json"
+    write_overview_basemap(cfg, force=force_basemap, skip=skip_basemap)
+    json_path = MOD_DIR / "lua" / "ge" / "extensions" / "alpinert" / "portals.json"
     json_path.parent.mkdir(parents=True, exist_ok=True)
     json_path.write_text(
         json.dumps(portals_json_payload(cfg), indent=2) + "\n", encoding="utf-8"
@@ -707,7 +1058,7 @@ def _register_simgroup(user_level: Path, name: str) -> None:
             "class": "SimGroup",
             "__parent": "level_objects",
             "enabled": "1",
-            "persistentId": str(uuid.uuid5(uuid.NAMESPACE_URL, f"tirolrunde:{name}")),
+            "persistentId": str(uuid.uuid5(uuid.NAMESPACE_URL, f"alpine_rt:{name}")),
         }
     )
     _write_ndjson(lo_items, rows)
@@ -721,10 +1072,10 @@ def make_box_tsstatic(level_name: str, gate: dict) -> dict:
     sx, sy, sz = box["size"]
     gid = gate["id"]
     return {
-        "name": f"tirolrunde_box_{gid}",
+        "name": f"alpine_rt_box_{gid}",
         "class": "TSStatic",
-        "__parent": "tirolrunde_portals",
-        "persistentId": str(uuid.uuid5(uuid.NAMESPACE_URL, f"tirolrunde:box:{gid}")),
+        "__parent": "alpine_rt_portals",
+        "persistentId": str(uuid.uuid5(uuid.NAMESPACE_URL, f"alpine_rt:box:{gid}")),
         "position": list(box["pos"]),
         "rotationMatrix": [round(v, 6) for v in rot],
         "scale": [sx, sy, sz],
@@ -747,10 +1098,10 @@ def make_arc_tsstatic(level_name: str, gate: dict) -> dict | None:
     gid = gate["id"]
     start = pts[0]
     return {
-        "name": arc.get("object") or f"tirolrunde_arc_{gid}",
+        "name": arc.get("object") or f"alpine_rt_arc_{gid}",
         "class": "TSStatic",
-        "__parent": "tirolrunde_portals",
-        "persistentId": str(uuid.uuid5(uuid.NAMESPACE_URL, f"tirolrunde:arc:{gid}")),
+        "__parent": "alpine_rt_portals",
+        "persistentId": str(uuid.uuid5(uuid.NAMESPACE_URL, f"alpine_rt:arc:{gid}")),
         "position": [start[0], start[1], start[2] - 50000.0],
         "rotationMatrix": [1, 0, 0, 0, 1, 0, 0, 0, 1],
         "scale": [1.0, 1.0, 1.0],
@@ -772,10 +1123,10 @@ def make_arrive_spawn(gate: dict) -> dict:
     rot = _rot_matrix_along(tx, ty)
     gid = gate["id"]
     return {
-        "name": f"tirolrunde_arrive_{gid}",
+        "name": f"alpine_rt_arrive_{gid}",
         "class": "SpawnSphere",
         "__parent": "PlayerDropPoints",
-        "persistentId": str(uuid.uuid5(uuid.NAMESPACE_URL, f"tirolrunde:arrive:{gid}")),
+        "persistentId": str(uuid.uuid5(uuid.NAMESPACE_URL, f"alpine_rt:arrive:{gid}")),
         "position": list(arrive["pos"]),
         "rotationMatrix": [round(v, 6) for v in rot],
         "dataBlock": "SpawnSphereMarker",
@@ -819,9 +1170,9 @@ def inject_boxes(level_name: str, gates: list[dict]) -> None:
         return
     entries = [make_box_tsstatic(level_name, g) for g in gates]
     # Arc mesh is spawned by Lua only while the player is in the box.
-    group_dir = user_level / "main" / "MissionGroup" / "level_objects" / "tirolrunde_portals"
+    group_dir = user_level / "main" / "MissionGroup" / "level_objects" / "alpine_rt_portals"
     _write_ndjson(group_dir / "items.level.json", entries)
-    _register_simgroup(user_level, "tirolrunde_portals")
+    _register_simgroup(user_level, "alpine_rt_portals")
     print(f"Injected {len(entries)} portal object(s) -> {level_name}")
 
 
@@ -830,6 +1181,8 @@ def _level_short_name(level_name: str, sites: dict[str, dict]) -> str:
         "autoroad_m28_test": "Hahntennjoch",
         "autoroad_fernpass_8192": "Fernpass",
         "autoroad_fernpass_4096": "Fernpass",
+        "autoroad_imst_8192": "Imst",
+        "autoroad_reschen_8192": "Reschen",
     }
     if level_name in aliases:
         return aliases[level_name]
@@ -878,7 +1231,7 @@ def patch_info_spawn_points(level_name: str, arrive_gates: list[dict], sites: di
     ]
     seen = {"spawns_default"}
     for g in arrive_gates:
-        obj = f"tirolrunde_arrive_{g['id']}"
+        obj = f"alpine_rt_arrive_{g['id']}"
         if obj in seen:
             continue
         seen.add(obj)
@@ -903,12 +1256,46 @@ def inject_arrivals(level_name: str, gates: list[dict]) -> None:
         return
     path = user_level / "main" / "MissionGroup" / "PlayerDropPoints" / "items.level.json"
     rows = _read_ndjson(path)
-    names_new = {f"tirolrunde_arrive_{g['id']}" for g in gates}
-    kept = [r for r in rows if r.get("name") not in names_new]
+    kept = [
+        r
+        for r in rows
+        if not str(r.get("name") or "").startswith("alpine_rt_arrive_")
+    ]
     for g in gates:
         kept.append(make_arrive_spawn(g))
     _write_ndjson(path, kept)
     print(f"Injected {len(gates)} arrival SpawnSphere(s) -> {level_name}")
+
+
+def clear_stale_portal_level(level_name: str, sites: dict[str, dict]) -> None:
+    """Drop leftover boxes / arrives on maps no longer in the graph."""
+    user_level = USER_LEVELS / level_name
+    if not user_level.is_dir():
+        return
+    box_path = (
+        user_level
+        / "main"
+        / "MissionGroup"
+        / "level_objects"
+        / "alpine_rt_portals"
+        / "items.level.json"
+    )
+    if box_path.is_file():
+        _write_ndjson(box_path, [])
+        print(f"Cleared stale portal boxes -> {level_name}")
+    spawn_path = (
+        user_level / "main" / "MissionGroup" / "PlayerDropPoints" / "items.level.json"
+    )
+    rows = _read_ndjson(spawn_path)
+    kept = [
+        r
+        for r in rows
+        if not str(r.get("name") or "").startswith("alpine_rt_arrive_")
+    ]
+    if len(kept) != len(rows):
+        _write_ndjson(spawn_path, kept)
+        print(f"Cleared stale arrival SpawnSphere(s) -> {level_name}")
+    patch_info_spawn_points(level_name, [], sites)
 
 
 def patch_level_time_of_day(level_name: str, site: dict | None) -> None:
@@ -928,9 +1315,21 @@ def main() -> None:
         action="store_true",
         help="Only write mod portals.json + cube art, do not touch levels",
     )
+    ap.add_argument(
+        "--force-basemap",
+        action="store_true",
+        help="Re-download the overview map even if the cache matches",
+    )
+    ap.add_argument(
+        "--skip-basemap",
+        action="store_true",
+        help="Do not fetch basemap.at; keep or write the schematic",
+    )
     args = ap.parse_args()
     cfg = load_portals_yaml(args.config)
-    art_src = ensure_mod_art(cfg)
+    art_src = ensure_mod_art(
+        cfg, force_basemap=args.force_basemap, skip_basemap=args.skip_basemap
+    )
     if args.no_inject:
         return
 
@@ -956,6 +1355,21 @@ def main() -> None:
         inject_arrivals(level, gates)
         ensure_named_default_spawn(level)
         patch_info_spawn_points(level, gates, sites)
+
+    active = set(from_levels) | set(to_levels)
+    if USER_LEVELS.is_dir():
+        for level_dir in USER_LEVELS.iterdir():
+            if not level_dir.is_dir() or level_dir.name in active:
+                continue
+            marker = (
+                level_dir
+                / "main"
+                / "MissionGroup"
+                / "level_objects"
+                / "alpine_rt_portals"
+            )
+            if marker.is_dir():
+                clear_stale_portal_level(level_dir.name, sites)
 
 
 if __name__ == "__main__":

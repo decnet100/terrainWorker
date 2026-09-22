@@ -375,7 +375,7 @@ def main() -> None:
     ap.add_argument(
         "--all-known",
         action="store_true",
-        help="Fernpass 8192 + 4096 + Reschen",
+        help="Fernpass 4096/8192, Reschen, Imst",
     )
     ap.add_argument(
         "--force",

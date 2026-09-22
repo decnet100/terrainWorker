@@ -4,11 +4,9 @@ Default source is tiris Dachflächen (roofprints), walls inset 0.9 m from
 the roof so eaves do not sit on the carriageway. OSM ways are opt-in
 (``beamng.buildings.source: osm``).
 
-Per-building style (seeded by id):
-  - wall / roof colors (tinted facade albedo)
-  - window / timber facade tiled in metres per wall
-  - slight height jitter
-  - gable roof when the roofprint is box-like enough
+Near-rectangular houses share a small catalog of DAEs (roof × storeys ×
+facade × colour). Each TSStatic keeps the same shapeName and only differs
+by position, yaw, and XYZ scale. Odd footprints stay unique, capped.
 
 Outputs under data/processed/<site>/:
   - osm_buildings.json (cache)
@@ -148,6 +146,9 @@ def _cfg(site: dict) -> dict:
         "facade_tile_w_m": float(raw.get("facade_tile_w_m", facades.TILE_W_M)),
         "facade_tile_h_m": float(raw.get("facade_tile_h_m", raw.get("level_height_m", facades.TILE_H_M))),
         "skip_osm_ids": _int_id_set(raw.get("skip_osm_ids")),
+        "instance": bool(raw.get("instance", True)),
+        "instance_fill_min": float(raw.get("instance_fill_min", 0.60)),
+        "instance_unique_max": int(raw.get("instance_unique_max", 80)),
     }
 
 
@@ -585,6 +586,111 @@ def _obb_corners(poly: Polygon) -> tuple[list[tuple[float, float]], float, float
     e12 = math.hypot(corners[2][0] - corners[1][0], corners[2][1] - corners[1][1])
     length, width = max(e01, e12), min(e01, e12)
     return corners, length, width, fill
+
+
+REF_LEN_M = 10.0
+REF_WID_M = 8.0
+WALL_INSTANCE_BINS: list[tuple[float, float, float]] = [
+    (0.94, 0.90, 0.78),
+    (0.90, 0.88, 0.88),
+    (0.86, 0.80, 0.72),
+]
+
+
+def _nearest_rgb(
+    rgb: tuple[float, float, float],
+    bins: list[tuple[float, float, float]],
+) -> tuple[float, float, float]:
+    return min(
+        bins,
+        key=lambda b: (b[0] - rgb[0]) ** 2 + (b[1] - rgb[1]) ** 2 + (b[2] - rgb[2]) ** 2,
+    )
+
+
+def _rot_matrix_heading(hx: float, hy: float) -> list[float]:
+    n = math.hypot(hx, hy) or 1.0
+    xx, xy = hx / n, hy / n
+    return [
+        round(xx, 6),
+        round(xy, 6),
+        0.0,
+        round(-xy, 6),
+        round(xx, 6),
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+    ]
+
+
+def _obb_pose(ring: list[tuple[float, float]]) -> tuple[float, float, float, float, float, float, float] | None:
+    """Center, heading (long axis), length, width, fill — in the ring's XY."""
+    if len(ring) < 3:
+        return None
+    closed = list(ring) + ([ring[0]] if ring[0] != ring[-1] else [])
+    poly = _poly_from_ring(closed)
+    if poly is None:
+        return None
+    obb = _obb_corners(orient(poly, sign=1.0))
+    if obb is None:
+        return None
+    corners, length, width, fill = obb
+    e01 = math.hypot(corners[1][0] - corners[0][0], corners[1][1] - corners[0][1])
+    e12 = math.hypot(corners[2][0] - corners[1][0], corners[2][1] - corners[1][1])
+    if e01 >= e12:
+        hx, hy = corners[1][0] - corners[0][0], corners[1][1] - corners[0][1]
+    else:
+        hx, hy = corners[2][0] - corners[1][0], corners[2][1] - corners[1][1]
+    n = math.hypot(hx, hy) or 1.0
+    cx = sum(c[0] for c in corners) / 4.0
+    cy = sum(c[1] for c in corners) / 4.0
+    return cx, cy, hx / n, hy / n, float(length), float(width), float(fill)
+
+
+def _catalog_rings(inset_m: float) -> tuple[list[tuple[float, float]], list[tuple[float, float]]]:
+    hl, hw = REF_LEN_M * 0.5, REF_WID_M * 0.5
+    roof = [(-hl, -hw), (hl, -hw), (hl, hw), (-hl, hw)]
+    inset = min(max(0.15, float(inset_m)), hl - 0.6, hw - 0.6)
+    wall = [
+        (-hl + inset, -hw + inset),
+        (hl - inset, -hw + inset),
+        (hl - inset, hw - inset),
+        (-hl + inset, hw - inset),
+    ]
+    return wall, roof
+
+
+def _instance_style(style: BuildingStyle) -> BuildingStyle:
+    wall = _nearest_rgb(style.wall_rgb, WALL_INSTANCE_BINS)
+    return BuildingStyle(
+        wall_rgb=wall,
+        roof_rgb=style.roof_rgb,
+        height_scale=style.height_scale,
+        roof_kind=style.roof_kind,
+        gable_pitch=0.45,
+        facade=style.facade,
+        roof_color=style.roof_color,
+    )
+
+
+def _catalog_key(style: BuildingStyle, storeys: int) -> str:
+    wall = _nearest_rgb(style.wall_rgb, WALL_INSTANCE_BINS)
+    widx = WALL_INSTANCE_BINS.index(wall)
+    return f"{style.roof_kind}_s{storeys}_{style.facade}_{style.roof_color}_w{widx}"
+
+
+def _catalog_mesh(style: BuildingStyle, storeys: int, cfg: dict) -> BuildingMesh:
+    height = max(2.5, storeys * float(cfg["level_height_m"]))
+    wall, roof = _catalog_rings(float(cfg["eave_inset_m"]))
+    return build_mesh(
+        wall,
+        height,
+        style,
+        fill_min=0.5,
+        tile_w=cfg["facade_tile_w_m"],
+        tile_h=cfg["facade_tile_h_m"],
+        roof_ring_centered=roof,
+    )
 
 
 def _wall_uv_span(length_m: float, tile_w: float) -> tuple[float, float]:
@@ -1423,59 +1529,99 @@ def build_and_inject(site: dict) -> None:
     entries: list[dict] = []
     meta_rows: list[dict] = []
     n_gable = 0
+    n_inst = 0
+    n_unique = 0
+    unique_left = int(cfg["instance_unique_max"]) if cfg["instance"] else 10**9
+    catalog: dict[str, tuple[str, BuildingMesh, BuildingStyle]] = {}
     mats_used: dict[str, tuple[float, float, float]] = {}
     for i, feat in enumerate(feats):
         oid = feat["osm_id"]
         slug = _slug(feat["name"] or feat.get("source") or feat["building"] or str(oid))
-        stem = f"bldg_{slug}_{oid}"
         try:
             cx, cy = feat["centroid_beamng"]
-            ring_local = [(x - cx, y - cy) for x, y in feat["ring_beamng"]]
-            roof_abs = feat.get("roof_ring_beamng") or feat["ring_beamng"]
+            ring_abs = feat["ring_beamng"]
+            roof_abs = feat.get("roof_ring_beamng") or ring_abs
+            ring_local = [(x - cx, y - cy) for x, y in ring_abs]
             roof_local = [(x - cx, y - cy) for x, y in roof_abs]
-            use_split = roof_abs is not feat["ring_beamng"]
-            # Gable from the roofprint, not the inset walls
-            poly = _poly_from_ring(
-                roof_local + ([roof_local[0]] if roof_local[0] != roof_local[-1] else [])
-            )
-            can_gable = False
-            if poly is not None:
-                obb = _obb_corners(orient(poly, sign=1.0))
-                if obb is not None:
-                    _c, _l, width, fill = obb
-                    can_gable = fill >= cfg["gable_fill_min"] and width >= 2.5
+            use_split = roof_abs is not ring_abs
+            pose = _obb_pose(roof_abs)
+            fill = 0.0
+            width = 0.0
+            length = 0.0
+            hx, hy = 1.0, 0.0
+            px, py = float(cx), float(cy)
+            if pose is not None:
+                px, py, hx, hy, length, width, fill = pose
+            can_gable = fill >= cfg["gable_fill_min"] and width >= 2.5
             style = pick_style(oid, feat["building"], cfg, can_gable=can_gable)
             height = max(2.5, float(feat["height_m"]) * style.height_scale)
-            mesh = build_mesh(
-                ring_local,
-                height,
-                style,
-                fill_min=cfg["gable_fill_min"],
-                tile_w=cfg["facade_tile_w_m"],
-                tile_h=cfg["facade_tile_h_m"],
-                roof_ring_centered=roof_local if use_split else None,
-            )
+            area = float(feat.get("area_m2") or 0.0)
+            instance = False
+            if cfg["instance"] and pose is not None:
+                too_big = area >= 1800.0
+                boxy = fill >= cfg["instance_fill_min"] and length >= 3.0 and width >= 2.5
+                if not too_big and (boxy or unique_left <= 0):
+                    instance = True
+            if instance:
+                style = _instance_style(style)
+                storeys = min(3, max(1, int(round(height / float(cfg["level_height_m"])))))
+                key = _catalog_key(style, storeys)
+                if key not in catalog:
+                    mesh = _catalog_mesh(style, storeys, cfg)
+                    stem = f"bldg_cat_{key}"
+                    dae_proc = mesh_dir / f"{stem}.dae"
+                    used = write_building_collada(dae_proc, mesh, style, mesh_stem=stem)
+                    mats_used.update(used)
+                    if user_level.exists():
+                        (shapes_dir / f"{stem}.dae").write_bytes(dae_proc.read_bytes())
+                    catalog[key] = (stem, mesh, style)
+                stem, mesh, _st = catalog[key]
+                shape_vfs = f"/levels/{level_name}/art/shapes/buildings/{stem}.dae"
+                templ_h = max(2.5, storeys * float(cfg["level_height_m"]))
+                rot = _rot_matrix_heading(hx, hy)
+                scale = [
+                    round(max(0.15, length / REF_LEN_M), 4),
+                    round(max(0.15, width / REF_WID_M), 4),
+                    round(max(0.35, height / templ_h), 4),
+                ]
+                pos_x, pos_y = px, py
+                n_inst += 1
+            else:
+                mesh = build_mesh(
+                    ring_local,
+                    height,
+                    style,
+                    fill_min=cfg["gable_fill_min"],
+                    tile_w=cfg["facade_tile_w_m"],
+                    tile_h=cfg["facade_tile_h_m"],
+                    roof_ring_centered=roof_local if use_split else None,
+                )
+                stem = f"bldg_{slug}_{oid}"
+                dae_proc = mesh_dir / f"{stem}.dae"
+                used = write_building_collada(dae_proc, mesh, style, mesh_stem=stem)
+                mats_used.update(used)
+                if user_level.exists():
+                    (shapes_dir / f"{stem}.dae").write_bytes(dae_proc.read_bytes())
+                shape_vfs = f"/levels/{level_name}/art/shapes/buildings/{stem}.dae"
+                rot = IDENTITY_ROT
+                scale = [1.0, 1.0, 1.0]
+                pos_x, pos_y = float(cx), float(cy)
+                unique_left -= 1
+                n_unique += 1
             if mesh.roof_kind == "gable":
                 n_gable += 1
         except Exception as ex:  # noqa: BLE001
             print(f"  skip {oid}: {ex}")
             continue
 
-        dae_proc = mesh_dir / f"{stem}.dae"
-        used = write_building_collada(dae_proc, mesh, style, mesh_stem=stem)
-        mats_used.update(used)
-        shape_vfs = f"/levels/{level_name}/art/shapes/buildings/{stem}.dae"
-        if user_level.exists():
-            (shapes_dir / f"{stem}.dae").write_bytes(dae_proc.read_bytes())
-
         z = float(feat["z_min"]) - float(cfg["sink_m"])
         entries.append({
-            "name": stem,
+            "name": f"bldg_{slug}_{oid}",
             "class": "TSStatic",
             "__parent": "buildings",
-            "position": [round(cx, 3), round(cy, 3), round(z, 3)],
-            "rotationMatrix": IDENTITY_ROT,
-            "scale": [1.0, 1.0, 1.0],
+            "position": [round(pos_x, 3), round(pos_y, 3), round(z, 3)],
+            "rotationMatrix": rot,
+            "scale": scale,
             "shapeName": shape_vfs,
             "collisionType": "Collision Mesh",
             "decalType": "Collision Mesh",
@@ -1484,7 +1630,8 @@ def build_and_inject(site: dict) -> None:
         })
         meta_rows.append({
             "osm_id": oid,
-            "stem": stem,
+            "stem": Path(shape_vfs).stem,
+            "instance": instance,
             "building": feat["building"],
             "roof": mesh.roof_kind,
             "facade": style.facade,
@@ -1493,6 +1640,7 @@ def build_and_inject(site: dict) -> None:
             "roof_rgb": [round(c, 3) for c in style.roof_rgb],
             "height_m": round(height, 2),
             "position": entries[-1]["position"],
+            "scale": scale,
         })
         if (i + 1) % 200 == 0:
             print(f"  meshed {i + 1}/{len(feats)}")
@@ -1507,6 +1655,11 @@ def build_and_inject(site: dict) -> None:
         "eave_inset_m": cfg.get("eave_inset_m") or 0.0,
         "gable_count": n_gable,
         "flat_count": len(entries) - n_gable,
+        "instance": cfg["instance"],
+        "instance_count": n_inst,
+        "unique_count": n_unique,
+        "catalog_count": len(catalog),
+        "catalog_keys": sorted(catalog),
         "sink_m": cfg["sink_m"],
         "items_sample": meta_rows[:50],
         "items_file": str(items_out.relative_to(ROOT)),
@@ -1514,10 +1667,11 @@ def build_and_inject(site: dict) -> None:
     (proc / "buildings_meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
     print(
         f"Wrote {items_out} ({len(entries)} buildings, "
-        f"gable={n_gable} flat={len(entries) - n_gable})"
+        f"gable={n_gable} flat={len(entries) - n_gable} "
+        f"instanced={n_inst} unique={n_unique} catalog={len(catalog)})"
     )
 
-    keep_dae = {f"{e['name']}.dae" for e in entries}
+    keep_dae = {Path(str(e["shapeName"])).name for e in entries}
     for folder in (mesh_dir, shapes_dir if user_level.exists() else None):
         if folder is None:
             continue

@@ -2,7 +2,7 @@
 
 Snapshot after the Hahntennjoch smoke test and Fernpass Mega work (BeamNG 0.39).  
 Details: [BEAMNG_IMPORT.md](BEAMNG_IMPORT.md), [ROADS.md](ROADS.md), [ANNOTATIONS.md](ANNOTATIONS.md), [CONCEPT.md](CONCEPT.md), [GIP.md](GIP.md), [STRUCTURES.md](STRUCTURES.md), [HEIGHTMAP_COMPOSE.md](HEIGHTMAP_COMPOSE.md), [BACKDROP.md](BACKDROP.md).  
-Multi-map session (first portal switch): [ROADTRIP_TYROL.md](ROADTRIP_TYROL.md).
+Multi-map session (first portal switch): [ALPINE_ROADTRIP.md](ALPINE_ROADTRIP.md).
 
 ## Done
 
@@ -38,9 +38,9 @@ Multi-map session (first portal switch): [ROADTRIP_TYROL.md](ROADTRIP_TYROL.md).
 
 - Schema + seed + GPKG consume for guardrails — [ANNOTATIONS.md](ANNOTATIONS.md)
 
-### Roadtrip Tyrol
+### Alpine Roadtrip
 
-- First hard switch Hahntennjoch ↔ Fernpass Mega — [ROADTRIP_TYROL.md](ROADTRIP_TYROL.md)
+- First hard switch Hahntennjoch ↔ Fernpass Mega — [ALPINE_ROADTRIP.md](ALPINE_ROADTRIP.md)
 
 ### Backdrop (horizon)
 
@@ -61,7 +61,7 @@ Multi-map session (first portal switch): [ROADTRIP_TYROL.md](ROADTRIP_TYROL.md).
 | 3 | Span principle bridge/gallery/tunnel | Heightmap at abutments, not under the slab — [HEIGHTMAP_COMPOSE.md](HEIGHTMAP_COMPOSE.md) |
 | 4 | `road_edge` → asphalt / shoulder masks | same two-step workflow |
 | 5 | Terrain look meadow/moss | `t_moss` |
-| — | Roadtrip Tyrol product | Segment times, more gates, traffic, damage — [ROADTRIP_TYROL.md](ROADTRIP_TYROL.md) |
+| — | Alpine Roadtrip product | Segment times, more gates, traffic, damage — [ALPINE_ROADTRIP.md](ALPINE_ROADTRIP.md) |
 
 ## Deliberately not automatic
 
