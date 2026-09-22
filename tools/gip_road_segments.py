@@ -911,7 +911,14 @@ def load_gip_road_segments(site: dict, *, width_m: float | None = None) -> dict:
     path = find_gip_geojson(site)
     data = json.loads(path.read_text(encoding="utf-8"))
     feats = data.get("features") or []
-    to_site = Transformer.from_crs("EPSG:4326", sc.crs, always_xy=True)
+    auth_key = None
+    if site.get("authorities"):
+        from authorities import gip_authority_key, level_objectid, transformer_into_working
+
+        auth_key = gip_authority_key(site)
+        to_site = transformer_into_working(site, auth_key, "EPSG:4326")
+    else:
+        to_site = Transformer.from_crs("EPSG:4326", sc.crs, always_xy=True)
     z_at = _load_z_at(site)
     bng = site.get("beamng") or {}
     if width_m is None:
@@ -935,6 +942,10 @@ def load_gip_road_segments(site: dict, *, width_m: float | None = None) -> dict:
         oid = props.get("OBJECTID")
         if oid is None:
             continue
+        if auth_key:
+            oid_level, source_id = level_objectid(site, int(oid), auth_key)
+        else:
+            oid_level, source_id = int(oid), int(oid)
         pts_ll: list = []
         _coords_walk((f.get("geometry") or {}).get("coordinates"), pts_ll)
         xy_site: list[tuple[float, float]] = []
@@ -994,13 +1005,13 @@ def load_gip_road_segments(site: dict, *, width_m: float | None = None) -> dict:
             or props.get("STR_CODE")
             or f"gip_{oid}"
         )
-        roads[str(int(oid))] = {
+        road_rec = {
             "nodes": nodes,
             "highway": "primary",
             "name": name,
-            "osm_id": int(oid),
-            "objectid": int(oid),
-            "osm_ids": [int(oid)],
+            "osm_id": int(oid_level),
+            "objectid": int(oid_level),
+            "osm_ids": [int(oid_level)],
             "str_code": props.get("STR_CODE"),
             "kunstbauten": props.get("KUNSTBAUTEN"),
             "objekt": props.get("OBJEKT"),
@@ -1020,6 +1031,10 @@ def load_gip_road_segments(site: dict, *, width_m: float | None = None) -> dict:
                 )
             ),
         }
+        if auth_key:
+            road_rec["authority"] = auth_key
+            road_rec["source_id"] = int(source_id)
+        roads[str(int(oid_level))] = road_rec
         code_k = str(props.get("STR_CODE") or "")
         str_counts[code_k] = str_counts.get(code_k, 0) + 1
 

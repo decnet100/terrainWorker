@@ -69,10 +69,14 @@ def wgs84_center(site: dict | None = None) -> tuple[float, float]:
     from pyproj import Transformer
 
     site = site or load_site()
+    crs = str(site.get("crs", "EPSG:31254"))
     xmin, ymin, xmax, ymax = map(float, site["bbox"])
-    to_wgs = Transformer.from_crs(
-        str(site.get("crs", "EPSG:31254")), "EPSG:4326", always_xy=True
-    )
+    if site.get("authorities"):
+        from authorities import apply_working_frame
+
+        crs, bbox = apply_working_frame(site)
+        xmin, ymin, xmax, ymax = bbox
+    to_wgs = Transformer.from_crs(crs, "EPSG:4326", always_xy=True)
     lon, lat = to_wgs.transform(0.5 * (xmin + xmax), 0.5 * (ymin + ymax))
     return float(lat), float(lon)
 
@@ -85,6 +89,10 @@ class SiteCoords:
         self.site = site
         self.crs = str(site.get("crs", "EPSG:31254"))
         bbox = list(map(float, site["bbox"]))
+        if site.get("authorities"):
+            from authorities import apply_working_frame
+
+            self.crs, bbox = apply_working_frame(site)
         self.xmin, self.ymin, self.xmax, self.ymax = bbox
         self.bw = self.xmax - self.xmin
         self.bh = self.ymax - self.ymin
