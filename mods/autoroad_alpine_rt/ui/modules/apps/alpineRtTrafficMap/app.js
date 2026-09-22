@@ -72,7 +72,8 @@ angular.module('beamng.apps').directive('alpinerttrafficmap', [function () {
     if (!segs.length) {
       ctx.fillStyle = 'rgba(255,255,255,0.55)';
       ctx.font = '12px system-ui, sans-serif';
-      ctx.fillText('No map segments yet (build_portals arc points).', 12, 22);
+      var msg = (state && state.error) ? String(state.error) : 'No map segments yet (build_portals arc points).';
+      ctx.fillText(msg, 12, 22);
       return;
     }
 
@@ -170,7 +171,13 @@ angular.module('beamng.apps').directive('alpinerttrafficmap', [function () {
 
       function poll() {
         if (!window.bngApi || !bngApi.engineLua) return;
-        bngApi.engineLua('extensions.alpine_rt.getTrafficMap()', apply);
+        bngApi.engineLua(
+          "extensions.load('alpine_rt'); "
+          + "return (extensions.alpine_rt and extensions.alpine_rt.getTrafficMap) "
+          + "and extensions.alpine_rt.getTrafficMap() "
+          + "or { level = (getCurrentLevelIdentifier and getCurrentLevelIdentifier() or nil), segments = {}, error = 'alpine_rt extension not loaded' }",
+          apply
+        );
       }
 
       scope.refresh = function () {
