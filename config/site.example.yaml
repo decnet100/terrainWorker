@@ -8,6 +8,37 @@ name: tirol-test-ausschnitt
 #   EPSG:31255 = MGI / Austria GK Central
 crs: EPSG:31254
 
+# Optional, only for a level that crosses a map authority. Without this block
+# the site stays on the single crs above. Tirol keeps objectid unchanged
+# (offset 0). Other authorities add a fixed stride. Working crs is the
+# authority whose validity polygon covers most of bbox, unless level.crs is
+# an EPSG code. A missing official grid aborts the reprojection.
+# authorities:
+#   tirol:
+#     crs: EPSG:31254
+#     road_id_offset: 0
+#     validity: data/boundaries/tirol.geojson
+#     landcover: tirol_landnutzung
+#   suedtirol:
+#     crs: EPSG:25832
+#     road_id_offset: 10000000
+#     grid: data/grids/suedtirol_to_mgi_west.gsb
+#     validity: data/boundaries/suedtirol.geojson
+#     roads: data/raw/suedtirol_roads.geojson
+#     roads_crs: EPSG:25832
+#     landcover_path: data/raw/suedtirol_landcover.geojson
+#     landcover_crs: EPSG:25832
+#     landcover_field: KLASSE
+#     landcover:
+#       wald: forest_high
+# level:
+#   crs: auto
+#   border_band_m: 40
+#   border_snap_m: 15
+#   road_id_stride: 10000000
+#   # border_confirmed:
+#   #   - {from_objectid: 4365, to_objectid: 10004365}
+
 # xmin, ymin, xmax, ymax in the CRS above (metres)
 # Placeholder — replace with a real pass crop
 bbox:
