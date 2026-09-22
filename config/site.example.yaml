@@ -9,8 +9,9 @@ name: tirol-test-ausschnitt
 crs: EPSG:31254
 
 # Optional, only for a level that crosses a map authority. Without this block
-# the site stays on the single crs above. Tirol keeps objectid unchanged
-# (offset 0). Other authorities add a fixed stride. Working crs is the
+# the site stays on the single crs above. Level objectid = offset + local:
+#   Tirol 0, Südtirol 10_000_000, Schweiz 20_000_000 (stride 10_000_000).
+# Working crs is the
 # authority whose validity polygon covers most of bbox, unless level.crs is
 # an EPSG code. A missing official grid aborts the reprojection.
 # authorities:
@@ -31,6 +32,11 @@ crs: EPSG:31254
 #     landcover_field: KLASSE
 #     landcover:
 #       wald: forest_high
+#   # schweiz:
+#   #   crs: EPSG:2056
+#   #   road_id_offset: 20000000
+#   #   grid: data/grids/schweiz_to_mgi_west.gsb
+#   #   validity: data/boundaries/schweiz.geojson
 # level:
 #   crs: auto
 #   border_band_m: 40

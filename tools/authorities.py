@@ -8,6 +8,7 @@ behaviour. With the block:
 * geometry from a smaller authority is reprojected only through that
   authority's official grid; a missing file aborts
 * road ``objectid`` stays an int: offset + local id
+  (Tirol 0, Südtirol +10_000_000, Schweiz +20_000_000; stride 10_000_000)
 * border continuations are automatic for an unambiguous pair and a review
   list from three endpoints onward
 * land-cover classes of a foreign authority map through that authority's
