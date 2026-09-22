@@ -1,10 +1,10 @@
-"""Copy or junction mods/autoroad_tirolrunde into BeamNG unpacked mods.
+"""Copy or junction mods/autoroad_alpine_rt into BeamNG unpacked mods.
 
-Roadtrip Tyrol GE mod. Folder name stays autoroad_tirolrunde.
+Alpine Roadtrip GE mod.
 
 Usage:
-  python tools\\deploy_tirolrunde_mod.py
-  python tools\\deploy_tirolrunde_mod.py --link
+  python tools\\deploy_alpine_rt_mod.py
+  python tools\\deploy_alpine_rt_mod.py --link
 """
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SRC = ROOT / "mods" / "autoroad_tirolrunde"
+SRC = ROOT / "mods" / "autoroad_alpine_rt"
 DST = (
     Path.home()
     / "AppData"
@@ -25,7 +25,7 @@ DST = (
     / "current"
     / "mods"
     / "unpacked"
-    / "autoroad_tirolrunde"
+    / "autoroad_alpine_rt"
 )
 
 

@@ -1,4 +1,4 @@
-# Roadtrip Tyrol — multi-map session
+# Alpine Roadtrip — multi-map session
 
 **Status (2026-09-18):** first hard switch Hahntennjoch ↔ Fernpass is in the repo.  
 Not yet: segment-time UI, driving-time countdown, more than two gates, traffic, vehicle damage.
@@ -7,7 +7,7 @@ Related: [CONCEPT.md](CONCEPT.md) (geodata → level), [BEAMNG_IMPORT.md](BEAMNG
 
 The two test maps **do not share a geographic edge**. The boxes are logical gates (east end of Hahntennjoch ↔ south end of Fernpass / toward Imst), not a landscape seam.
 
-The product name is **Roadtrip Tyrol**. Internal paths and the GE extension still use `tirolrunde` (mod folder `autoroad_tirolrunde`, `settings/tirolrunde/session.json`) so existing installs keep working.
+The product name is **Alpine Roadtrip**. Internal id is `alpine_rt` (mod folder `autoroad_alpine_rt`, session file `settings/alpine_rt/session.json`).
 
 ---
 
@@ -16,17 +16,17 @@ The product name is **Roadtrip Tyrol**. Internal paths and the GE extension stil
 ### Layers
 
 - **Maps:** Python injects visible volumes + arrival spawns. The terrain pipeline stays independent.
-- **Session:** GE extension `tirolrunde` with `setExtensionUnloadMode(..., "manual")` in `scripts/modScript.lua` (not `mainLevel.lua`).
-- **Source of truth on switch:** `settings/tirolrunde/session.json` (user folder). In-memory: countdown / grace only.
+- **Session:** GE extension `alpine_rt` with `setExtensionUnloadMode(..., "manual")` in `scripts/modScript.lua` (not `mainLevel.lua`).
+- **Source of truth on switch:** `settings/alpine_rt/session.json` (user folder). In-memory: countdown / grace only.
 
 ### Files
 
 | Path | Role |
 |------|------|
-| [config/tirolrunde/portals.yaml](../config/tirolrunde/portals.yaml) | Portal graph (edit this) |
-| `mods/autoroad_tirolrunde/` | GE mod (Lua + cube/arc art) |
-| `lua/ge/extensions/tirolrunde/portals.json` | Generated from the YAML by `build_portals.py` |
-| `settings/tirolrunde/session.json` | Runtime, BeamNG user folder only |
+| [config/alpine_rt/portals.yaml](../config/alpine_rt/portals.yaml) | Portal graph (edit this) |
+| `mods/autoroad_alpine_rt/` | GE mod (Lua + cube/arc art + UI apps) |
+| `lua/ge/extensions/alpine_rt/portals.json` | Generated from the YAML by `build_portals.py` |
+| `settings/alpine_rt/session.json` | Runtime, BeamNG user folder only |
 
 ### Persistence (today)
 
@@ -82,10 +82,10 @@ cd C:\temp\beamng_autoroad; python tools\build_portals.py
 ```
 
 ```powershell
-cd C:\temp\beamng_autoroad; python tools\deploy_tirolrunde_mod.py --link
+cd C:\temp\beamng_autoroad; python tools\deploy_alpine_rt_mod.py --link
 ```
 
-`--link` creates a junction to `%LOCALAPPDATA%\BeamNG\BeamNG.drive\current\mods\unpacked\autoroad_tirolrunde\`.
+`--link` creates a junction to `%LOCALAPPDATA%\BeamNG\BeamNG.drive\current\mods\unpacked\autoroad_alpine_rt\`.
 
 Lua / `portals.json` / injected TSStatics: **quit BeamNG entirely and start it again** (not only Freeroam → load map, not only World Editor reload). Do not Save Level in the World Editor if inject is the source of the portal objects.
 
@@ -96,7 +96,7 @@ New gate: add YAML, run `build_portals.py`, reload the level. `dwell_s` will lat
 ## Session JSON
 
 ```text
-settings/tirolrunde/session.json
+settings/alpine_rt/session.json
   session_id, started_at
   settings: { environment: { time, play, cloudCover, fogDensity, ... }, weather_preset }
   vehicle: { model, config }

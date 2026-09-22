@@ -1,11 +1,11 @@
-"""Inject Roadtrip Tyrol portal volumes + arrival SpawnSpheres into BeamNG levels.
+"""Inject Alpine Roadtrip portal volumes + arrival SpawnSpheres into BeamNG levels.
 
-Reads config/tirolrunde/portals.yaml, writes the Lua-facing portals.json into
+Reads config/alpine_rt/portals.yaml, writes the Lua-facing portals.json into
 the unpacked mod, copies a translucent red unit cube into each involved level,
 and injects:
 
   - TSStatic box (collisionType None) on from_level
-  - SpawnSphere tirolrunde_arrive_<gate_id> on to_level (also listed in info.json)
+  - SpawnSphere alpine_rt_arrive_<gate_id> on to_level (also listed in info.json)
   - TimeOfDay lat/lon from the site bbox (Tyrol sun path)
 
 Usage:
@@ -40,8 +40,8 @@ USER_LEVELS = (
     / "levels"
 )
 
-MOD_DIR = ROOT / "mods" / "autoroad_tirolrunde"
-PORTALS_YAML = ROOT / "config" / "tirolrunde" / "portals.yaml"
+MOD_DIR = ROOT / "mods" / "autoroad_alpine_rt"
+PORTALS_YAML = ROOT / "config" / "alpine_rt" / "portals.yaml"
 CUBE_DAE_NAME = "portal_cube.dae"
 MAT_NAME = "portal_red"
 SITES_DIR = ROOT / "config" / "sites"
@@ -302,7 +302,7 @@ def load_portals_yaml(path: Path | None = None) -> dict:
             target_z_override=float(z_over) if z_over is not None else None,
         )
         if arc:
-            arc["object"] = f"tirolrunde_arc_{gate['id']}"
+            arc["object"] = f"alpine_rt_arc_{gate['id']}"
             gate["arc"] = arc
             gate["dwell_s"] = max(1.0, round(float(arc["geo_distance_m"]) / 1000.0, 1))
             print(
@@ -670,7 +670,7 @@ def ensure_mod_art(cfg: dict) -> Path:
                 float(arc.get("width_m") or 20),
             )
     write_portal_material(art / "main.materials.json", "/art/shapes/portals")
-    json_path = MOD_DIR / "lua" / "ge" / "extensions" / "tirolrunde" / "portals.json"
+    json_path = MOD_DIR / "lua" / "ge" / "extensions" / "alpine_rt" / "portals.json"
     json_path.parent.mkdir(parents=True, exist_ok=True)
     json_path.write_text(
         json.dumps(portals_json_payload(cfg), indent=2) + "\n", encoding="utf-8"
@@ -707,7 +707,7 @@ def _register_simgroup(user_level: Path, name: str) -> None:
             "class": "SimGroup",
             "__parent": "level_objects",
             "enabled": "1",
-            "persistentId": str(uuid.uuid5(uuid.NAMESPACE_URL, f"tirolrunde:{name}")),
+            "persistentId": str(uuid.uuid5(uuid.NAMESPACE_URL, f"alpine_rt:{name}")),
         }
     )
     _write_ndjson(lo_items, rows)
@@ -721,10 +721,10 @@ def make_box_tsstatic(level_name: str, gate: dict) -> dict:
     sx, sy, sz = box["size"]
     gid = gate["id"]
     return {
-        "name": f"tirolrunde_box_{gid}",
+        "name": f"alpine_rt_box_{gid}",
         "class": "TSStatic",
-        "__parent": "tirolrunde_portals",
-        "persistentId": str(uuid.uuid5(uuid.NAMESPACE_URL, f"tirolrunde:box:{gid}")),
+        "__parent": "alpine_rt_portals",
+        "persistentId": str(uuid.uuid5(uuid.NAMESPACE_URL, f"alpine_rt:box:{gid}")),
         "position": list(box["pos"]),
         "rotationMatrix": [round(v, 6) for v in rot],
         "scale": [sx, sy, sz],
@@ -747,10 +747,10 @@ def make_arc_tsstatic(level_name: str, gate: dict) -> dict | None:
     gid = gate["id"]
     start = pts[0]
     return {
-        "name": arc.get("object") or f"tirolrunde_arc_{gid}",
+        "name": arc.get("object") or f"alpine_rt_arc_{gid}",
         "class": "TSStatic",
-        "__parent": "tirolrunde_portals",
-        "persistentId": str(uuid.uuid5(uuid.NAMESPACE_URL, f"tirolrunde:arc:{gid}")),
+        "__parent": "alpine_rt_portals",
+        "persistentId": str(uuid.uuid5(uuid.NAMESPACE_URL, f"alpine_rt:arc:{gid}")),
         "position": [start[0], start[1], start[2] - 50000.0],
         "rotationMatrix": [1, 0, 0, 0, 1, 0, 0, 0, 1],
         "scale": [1.0, 1.0, 1.0],
@@ -772,10 +772,10 @@ def make_arrive_spawn(gate: dict) -> dict:
     rot = _rot_matrix_along(tx, ty)
     gid = gate["id"]
     return {
-        "name": f"tirolrunde_arrive_{gid}",
+        "name": f"alpine_rt_arrive_{gid}",
         "class": "SpawnSphere",
         "__parent": "PlayerDropPoints",
-        "persistentId": str(uuid.uuid5(uuid.NAMESPACE_URL, f"tirolrunde:arrive:{gid}")),
+        "persistentId": str(uuid.uuid5(uuid.NAMESPACE_URL, f"alpine_rt:arrive:{gid}")),
         "position": list(arrive["pos"]),
         "rotationMatrix": [round(v, 6) for v in rot],
         "dataBlock": "SpawnSphereMarker",
@@ -819,9 +819,9 @@ def inject_boxes(level_name: str, gates: list[dict]) -> None:
         return
     entries = [make_box_tsstatic(level_name, g) for g in gates]
     # Arc mesh is spawned by Lua only while the player is in the box.
-    group_dir = user_level / "main" / "MissionGroup" / "level_objects" / "tirolrunde_portals"
+    group_dir = user_level / "main" / "MissionGroup" / "level_objects" / "alpine_rt_portals"
     _write_ndjson(group_dir / "items.level.json", entries)
-    _register_simgroup(user_level, "tirolrunde_portals")
+    _register_simgroup(user_level, "alpine_rt_portals")
     print(f"Injected {len(entries)} portal object(s) -> {level_name}")
 
 
@@ -878,7 +878,7 @@ def patch_info_spawn_points(level_name: str, arrive_gates: list[dict], sites: di
     ]
     seen = {"spawns_default"}
     for g in arrive_gates:
-        obj = f"tirolrunde_arrive_{g['id']}"
+        obj = f"alpine_rt_arrive_{g['id']}"
         if obj in seen:
             continue
         seen.add(obj)
@@ -903,7 +903,7 @@ def inject_arrivals(level_name: str, gates: list[dict]) -> None:
         return
     path = user_level / "main" / "MissionGroup" / "PlayerDropPoints" / "items.level.json"
     rows = _read_ndjson(path)
-    names_new = {f"tirolrunde_arrive_{g['id']}" for g in gates}
+    names_new = {f"alpine_rt_arrive_{g['id']}" for g in gates}
     kept = [r for r in rows if r.get("name") not in names_new]
     for g in gates:
         kept.append(make_arrive_spawn(g))
