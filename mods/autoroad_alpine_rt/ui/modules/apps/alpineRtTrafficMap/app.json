@@ -1,0 +1,11 @@
+{
+  "name": "Alpine Roadtrip Map",
+  "author": "autoroad",
+  "description": "In-game road-style overlay for Alpine Roadtrip: shows expected traffic (low/medium/high) on key segments.",
+  "directive": "alpinerttrafficmap",
+  "domElement": "<alpinerttrafficmap></alpinerttrafficmap>",
+  "category": "Gameplay",
+  "css": { "width": "420px", "height": "360px", "top": "60px", "left": "60px" },
+  "interactive": "yes",
+  "version": "0.1.0"
+}

@@ -481,8 +481,85 @@ local function ensureSession(session)
     session.session_id = tostring(os.time()) .. "-" .. tostring(math.random(10000, 99999))
     session.started_at = os.date("!%Y-%m-%dT%H:%M:%SZ")
     session.segments = session.segments or {}
+    session.traffic = session.traffic or { epoch = os.time(), seed = math.random(100000, 999999) }
   end
   return session
+end
+
+local function ensureTraffic()
+  local session = ensureSession()
+  if type(session.traffic) ~= "table" then
+    session.traffic = { epoch = os.time(), seed = math.random(100000, 999999) }
+    writeSession(session)
+    return session.traffic.epoch, session.traffic.seed, session
+  end
+  local epoch = tonumber(session.traffic.epoch)
+  local seed = tonumber(session.traffic.seed)
+  local changed = false
+  if not epoch then
+    epoch = os.time()
+    session.traffic.epoch = epoch
+    changed = true
+  end
+  if not seed then
+    seed = math.random(100000, 999999)
+    session.traffic.seed = seed
+    changed = true
+  end
+  if changed then
+    writeSession(session)
+  end
+  return epoch, seed, session
+end
+
+local function segDensity(segId, tSec, seed)
+  local h = 0
+  local text = tostring(segId or "")
+  for i = 1, #text do
+    h = (h * 131 + string.byte(text, i)) % 2147483647
+  end
+  local x = (h + (seed or 0) * 1013) % 2147483647
+  local a = (x % 10000) / 10000.0
+  local b = ((math.floor(x / 10000) % 10000)) / 10000.0
+  local p1 = math.sin((tSec or 0) * (0.0009 + 0.0022 * a) + 6.28318 * b)
+  local p2 = math.sin((tSec or 0) * (0.0041 + 0.0011 * b) + 6.28318 * a)
+  local v = 0.52 + 0.30 * p1 + 0.18 * p2
+  if v < 0 then
+    v = 0
+  elseif v > 1 then
+    v = 1
+  end
+  return v
+end
+
+local function getTrafficMap()
+  local epoch, seed = ensureTraffic()
+  local t = os.time() - (epoch or os.time())
+  local level = currentLevel()
+  local segs = {}
+  for _, g in ipairs(portals.gates or {}) do
+    local arc = g.arc
+    if arc and type(arc.points) == "table" and #arc.points >= 2 then
+      local id = tostring(g.id or "")
+      segs[#segs + 1] = {
+        id = id,
+        label = g.label or id,
+        from_level = g.from_level,
+        to_level = g.to_level,
+        points = arc.points,
+        density = segDensity(id, t, seed),
+      }
+    end
+  end
+  return {
+    product = "Alpine Roadtrip",
+    short = "alpine-rt",
+    lua_rev = LUA_REV,
+    level = level,
+    now_s = os.time(),
+    t_s = t,
+    segments = segs,
+  }
 end
 
 local function queueSwitch(gate)
@@ -800,5 +877,7 @@ M.onClientEndMission = onClientEndMission
 M.onUpdate = onUpdate
 M.onSerialize = onSerialize
 M.onDeserialized = onDeserialized
+
+M.getTrafficMap = getTrafficMap
 
 return M
