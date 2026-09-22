@@ -15,8 +15,9 @@ deep dips that look like a bridge span. For each candidate it:
       * beamng.bridges.gip_extra (to label the OBJECTID as a bridge)
       * optional beamng.bridges.items[].abutment_s (to pin the abutments)
   - is conservative: candidates that map onto tunnel/gallery/other structures
-    are not suggested as bridges, but are still written out with a reason so
-    they can be adopted intentionally.
+    *or sit next to an existing Kunstbau* are not suggested as bridges, but
+    are still written out with a reason so they can be adopted intentionally.
+    Classification uses both ``KUNSTBAUTEN`` and GIP ``OBJEKT`` (S-AT / S-AB…).
 
 Run (PowerShell, single line):
   cd C:\\temp\\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/<site>.yaml"; python tools\\diag_missing_bridges.py
@@ -221,40 +222,31 @@ def _pick_oid_for_span(
     return best, scored[:8]
 
 
-def _already_bridge(oid: int, feature_props_by_oid: dict) -> bool:
-    """True if cached GIP feature is already classified as a bridge."""
-    try:
-        import build_bridges as bb  # noqa: WPS433
-    except Exception:
-        bb = None  # type: ignore
-    props = feature_props_by_oid.get(int(oid)) or {}
-    if not isinstance(props, dict):
-        return False
-    if props.get("_autoroad_gip_extra_kind") == "bridge":
-        return True
-    if bb is not None:
-        try:
-            return bb._structure_kind(props) == "bridge"  # noqa: SLF001
-        except Exception:
-            pass
-    name = str(props.get("KUNSTBAUTEN") or "").lower()
-    bez = str(props.get("OBJEKTBEZEICHNUNG") or "").lower()
-    return ("brücke" in name or "bruecke" in name or "brücke" in bez or "bruecke" in bez)
+# GIP OBJEKT is stronger than an empty KUNSTBAUTEN field (see docs/GIP.md).
+_OBJEKT_KIND = {
+    "S-AT": "tunnel",
+    "S-BT": "tunnel",
+    "S-LT": "tunnel",
+    "S-BG": "gallery",
+    "S-AB": "bridge",
+    "S-BB": "bridge",
+}
 
-def _structure_kind(oid: int, feature_props_by_oid: dict) -> str | None:
-    """Best-effort structure kind for this OBJECTID (bridge/tunnel/gallery/…)."""
+
+def _kind_from_props(props: dict | None, road: dict | None = None) -> str | None:
+    """Classify a GIP piece: YAML extra, KUNSTBAUTEN, then OBJEKT code."""
+    props = props if isinstance(props, dict) else {}
+    extra = str(props.get("_autoroad_gip_extra_kind") or "").strip().lower()
+    if extra in {"bridge", "gallery", "tunnel", "culvert", "structure"}:
+        return extra
     try:
         import build_bridges as bb  # noqa: WPS433
+
+        kind = bb._structure_kind(props)  # noqa: SLF001
+        if kind:
+            return kind
     except Exception:
-        bb = None  # type: ignore
-    props = feature_props_by_oid.get(int(oid)) or {}
-    if not isinstance(props, dict):
-        return None
-    if bb is not None:
-        try:
-            return bb._structure_kind(props)  # noqa: SLF001
-        except Exception:
-            pass
+        pass
     name = str(props.get("KUNSTBAUTEN") or "").lower()
     bez = str(props.get("OBJEKTBEZEICHNUNG") or "").lower()
     if "galerie" in name:
@@ -265,7 +257,108 @@ def _structure_kind(oid: int, feature_props_by_oid: dict) -> str | None:
         return "bridge"
     if "durchlass" in name:
         return "culvert"
-    return "structure" if name and name != "none" else None
+    if name and name != "none":
+        return "structure"
+    objekt = str(
+        props.get("OBJEKT") or (road or {}).get("objekt") or ""
+    ).upper().strip()
+    return _OBJEKT_KIND.get(objekt)
+
+
+def _structure_kind(oid: int, feature_props_by_oid: dict, roads_by_oid: dict | None = None) -> str | None:
+    """Best-effort structure kind for this OBJECTID (bridge/tunnel/gallery/…)."""
+    props = feature_props_by_oid.get(int(oid)) or {}
+    road = None
+    if roads_by_oid:
+        road = roads_by_oid.get(str(int(oid)))
+    return _kind_from_props(props, road)
+
+
+def _already_bridge(
+    oid: int, feature_props_by_oid: dict, roads_by_oid: dict | None = None
+) -> bool:
+    return _structure_kind(oid, feature_props_by_oid, roads_by_oid) == "bridge"
+
+
+def _road_xy(road: dict) -> list[tuple[float, float]]:
+    nodes = road.get("nodes") or []
+    return [(float(n[0]), float(n[1])) for n in nodes if len(n) >= 2]
+
+
+def _collect_existing_structures(
+    roads_by_oid: dict, feature_props_by_oid: dict
+) -> list[dict]:
+    """Known Kunstbauten already in GIP (by name or OBJEKT)."""
+    out: list[dict] = []
+    for key, road in (roads_by_oid or {}).items():
+        try:
+            oid = int(key)
+        except (TypeError, ValueError):
+            continue
+        kind = _kind_from_props(feature_props_by_oid.get(oid), road)
+        if kind is None:
+            continue
+        xy = _road_xy(road)
+        if len(xy) < 2:
+            continue
+        out.append(
+            {
+                "objectid": oid,
+                "kind": kind,
+                "xy": xy,
+                "str_code": str(road.get("str_code") or "").strip() or None,
+            }
+        )
+    return out
+
+
+def _project_structure_on_corridor(
+    struct: dict,
+    corridor: dict,
+    *,
+    max_off_m: float,
+) -> tuple[float, float] | None:
+    """Station window of a structure on this corridor, or None if it is off-axis."""
+    import road_span_profile as rsp  # noqa: WPS433
+
+    s_vals: list[float] = []
+    max_d = 0.0
+    for x, y in struct.get("xy") or []:
+        s, px, py = rsp.project_xy(corridor, float(x), float(y))
+        max_d = max(max_d, math.hypot(float(x) - px, float(y) - py))
+        s_vals.append(float(s))
+    if not s_vals or max_d > float(max_off_m):
+        return None
+    return min(s_vals), max(s_vals)
+
+
+def _adjacent_structure(
+    *,
+    s0: float,
+    s1: float,
+    samples_xy: list[tuple[float, float]],
+    structures: list[dict],
+    corridor_stations: dict[int, tuple[float, float]],
+    keepout_m: float,
+    skip_oid: int | None,
+) -> tuple[dict | None, str | None]:
+    """Return (structure, reason) if the candidate sits on/next to a Kunstbau."""
+    keepout = max(0.0, float(keepout_m))
+    lo, hi = min(s0, s1), max(s0, s1)
+    for st in structures:
+        oid = int(st["objectid"])
+        if skip_oid is not None and oid == int(skip_oid):
+            continue
+        kind = str(st.get("kind") or "structure")
+        win = corridor_stations.get(oid)
+        if win is not None:
+            a0, a1 = win
+            if hi + keepout >= a0 and lo - keepout <= a1:
+                return st, f"adjacent_{kind}_oid_{oid}"
+        for x, y in samples_xy:
+            if _dist_point_to_poly_xy(float(x), float(y), st["xy"]) <= keepout:
+                return st, f"near_{kind}_oid_{oid}"
+    return None, None
 
 
 def _load_feature_props_by_oid(site: dict) -> dict[int, dict]:
@@ -356,9 +449,15 @@ def main() -> None:
     ap.add_argument("--min-len", type=float, default=6.0, help="Min candidate length (m)")
     ap.add_argument("--max-len", type=float, default=160.0, help="Max candidate length (m)")
     ap.add_argument(
+        "--keepout",
+        type=float,
+        default=15.0,
+        help="Meters of station/XY buffer around existing Kunstbauten (default 15)",
+    )
+    ap.add_argument(
         "--only-str-code",
         default="",
-        help="Restrict to one STR_CODE (e.g. B179). Empty = all named corridors.",
+        help="Restrict to one STR_CODE (e.g. B189). Empty = all named corridors.",
     )
     ap.add_argument(
         "--out-json",
@@ -387,6 +486,7 @@ def main() -> None:
     corridors = load_gip_corridors(site)
     roads_by_oid = load_gip_road_segments(site)
     props_by_oid = _load_feature_props_by_oid(site)
+    existing = _collect_existing_structures(roads_by_oid, props_by_oid)
 
     step = max(0.25, float(args.step))
     dip_m = max(0.05, float(args.dip))
@@ -394,6 +494,7 @@ def main() -> None:
     win = max(1, int(round(solid_run / step)))
     min_len = max(step, float(args.min_len))
     max_len = max(min_len, float(args.max_len))
+    keepout_m = max(0.0, float(args.keepout))
 
     only_code = str(args.only_str_code or "").strip()
 
@@ -412,6 +513,11 @@ def main() -> None:
         length = float(road.get("length") or 0.0)
         if length < 5.0:
             continue
+        corridor_stations: dict[int, tuple[float, float]] = {}
+        for st in existing:
+            win_s = _project_structure_on_corridor(st, road, max_off_m=max(25.0, keepout_m))
+            if win_s is not None:
+                corridor_stations[int(st["objectid"])] = win_s
         # Even chainage samples.
         s_vals = list(np.arange(0.0, length + 0.5 * step, step))
         if abs(s_vals[-1] - length) > 0.01:
@@ -504,14 +610,36 @@ def main() -> None:
                 status = "filtered"
                 reason = "no_objectid_match"
             else:
-                kind = _structure_kind(int(oid), props_by_oid)
+                kind = _structure_kind(int(oid), props_by_oid, roads_by_oid)
                 row["object_kind"] = kind
                 if kind is not None and kind != "bridge":
                     status = "filtered"
                     reason = f"object_is_{kind}"
-                elif _already_bridge(int(oid), props_by_oid):
+                elif _already_bridge(int(oid), props_by_oid, roads_by_oid):
                     status = "filtered"
                     reason = "already_bridge"
+            if status == "suggested":
+                span_xy = [
+                    xy
+                    for s, xy in zip(s_vals, xys)
+                    if float(s) >= min(s0, s1) - 1e-9 and float(s) <= max(s0, s1) + 1e-9
+                ]
+                hit, why = _adjacent_structure(
+                    s0=s0,
+                    s1=s1,
+                    samples_xy=span_xy or [(xm, ym)],
+                    structures=existing,
+                    corridor_stations=corridor_stations,
+                    keepout_m=keepout_m,
+                    skip_oid=None if oid is None else int(oid),
+                )
+                if hit is not None and why:
+                    status = "filtered"
+                    reason = why
+                    row["adjacent"] = {
+                        "objectid": int(hit["objectid"]),
+                        "kind": hit.get("kind"),
+                    }
 
             row["status"] = status
             if reason:
@@ -550,7 +678,9 @@ def main() -> None:
             "solid_run_m": solid_run,
             "min_len_m": min_len,
             "max_len_m": max_len,
+            "keepout_m": keepout_m,
             "only_str_code": only_code or None,
+            "existing_structures": len(existing),
         },
         "corridors_scanned": scanned,
         "suggested": suggested,
@@ -559,8 +689,8 @@ def main() -> None:
         "note": (
             "This tool does not modify the central GIP store (data/roads/*). "
             "objectid is a best-effort spatial pick. "
-            "Suggested entries are conservative defaults; filtered entries are kept with reasons "
-            "to allow intentional overrides."
+            "Suggested entries skip known Kunstbauten (KUNSTBAUTEN + OBJEKT) and "
+            "neighbors within keepout_m; filtered entries keep a reason for override."
         ),
     }
     out_json.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
@@ -578,7 +708,8 @@ def main() -> None:
     print(
         f"diag_missing_bridges: corridors_scanned={scanned} "
         f"suggested={len(suggested)} filtered={len(filtered)} total={len(all_rows)} "
-        f"(dip>={dip_m:.2f}m len={min_len:.1f}..{max_len:.1f}m step={step:.2f}m) "
+        f"(dip>={dip_m:.2f}m len={min_len:.1f}..{max_len:.1f}m keepout={keepout_m:.1f}m "
+        f"step={step:.2f}m existing={len(existing)}) "
         f"heightmap={hm_label}"
     )
     print(f"  JSON: {out_json.relative_to(ROOT)}")

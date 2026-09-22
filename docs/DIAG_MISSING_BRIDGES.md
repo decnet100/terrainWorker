@@ -40,7 +40,7 @@ cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/<site>.yaml"; pyt
 Einschränkung auf eine Straße:
 
 ```powershell
-cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/<site>.yaml"; python tools\diag_missing_bridges.py --only-str-code B179
+cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/imst.yaml"; python tools\diag_missing_bridges.py --only-str-code B189
 ```
 
 ## Wichtige Parameter (Heuristik)
@@ -49,6 +49,7 @@ cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/<site>.yaml"; pyt
 - `--min-len` / `--max-len` (Default `6..160`): sinnvolle Spannweitenbegrenzung, damit keine langen Täler oder Mikrorauigkeit gemeldet werden  
 - `--step` (Default `1.0`): Abtastabstand entlang des Korridors  
 - `--solid-run` (Default `4.0`): Fensterlänge, aus der eine „solide“ Baseline (rolling max) gebildet wird
+- `--keepout` (Default `15`): Abstand in Metern zu einem bereits bekannten Kunstbau (Station entlang des Korridors oder Abstand in der Ebene)
 
 Wenn du sehr viele false positives bekommst, zuerst `--dip` erhöhen und/oder `--min-len` erhöhen.
 
@@ -66,6 +67,9 @@ Das Tool erzeugt ein YAML‑Snippet, das du in die Site‑YAML kopieren kannst:
 
 - Die `OBJECTID`-Zuordnung ist eine räumliche Heuristik („nächste Linie“). Wenn im Report `oid_candidates` merkwürdig aussehen, nimm die passendere OID manuell.
 - Das Tool prüft nur `STR_CODE`-Korridore (benannte Straßen). Unbenannte Wege sind absichtlich ausgenommen.
-- Konservativ: Kandidaten, die bereits als **Tunnel/Galerie/sonstiger Kunstbau** erkannt werden, landen standardmäßig in den „filtered“-Dateien und werden nicht automatisch als Brücke vorgeschlagen.
+- Konservativ:
+  - Kandidaten, die bereits als **Tunnel/Galerie/sonstiger Kunstbau** erkannt werden (`KUNSTBAUTEN` **oder** GIP-`OBJEKT` wie `S-AT` / `S-BT` / `S-BG` / `S-LT` / `S-AB` / `S-BB`), landen in den „filtered“-Dateien.
+  - Dasselbe gilt für Dips, die **direkt an** einem bestehenden Kunstbau liegen (Korridor-Station oder Abstand in der Ebene, Default `--keepout 15`).
+  - Diese Fälle bleiben mit `filter_reason` erhalten und können einzeln übernommen werden.
 - Für exakte Fahrbarkeit ist weiterhin entscheidend, dass Brücken/Galerien das **Widerlager-System** nutzen (Auflagen/Pad/`approach_conform`/`force_deck_z`). Die Diagnose ist nur der „Finder“.
 

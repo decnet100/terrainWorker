@@ -34,7 +34,7 @@ dip in the driving surface. Before spending time hand-hunting OIDs, run the
 precheck on **named** corridors (`STR_CODE` set):
 
 ```powershell
-cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/fernpass_mega.yaml"; python tools\diag_missing_bridges.py
+cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/imst.yaml"; python tools\diag_missing_bridges.py --only-str-code B189
 ```
 
 The script writes a JSON report plus a small YAML snippet you can copy into
