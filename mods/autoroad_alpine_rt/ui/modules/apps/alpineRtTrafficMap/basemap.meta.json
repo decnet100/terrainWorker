@@ -1,0 +1,31 @@
+{
+  "source": "basemap_at",
+  "crs": "EPSG:31254",
+  "bbox": [
+    -4643.4,
+    210800.0,
+    69839.4,
+    252696.0
+  ],
+  "width": 1800,
+  "height": 1012,
+  "zoom": 10,
+  "attribution": "Datenquelle: basemap.at",
+  "license": "CC-BY 4.0",
+  "wgs84_bbox": [
+    10.27148310439615,
+    47.03251784875593,
+    11.258362947486576,
+    47.41300503830266
+  ],
+  "pixel_size_m": [
+    41.379,
+    41.399
+  ],
+  "transform": {
+    "u": "(easting - xmin) / (xmax - xmin)",
+    "v": "(northing - ymin) / (ymax - ymin)",
+    "px": "u * (width - 1)",
+    "py": "(1 - v) * (height - 1)"
+  }
+}

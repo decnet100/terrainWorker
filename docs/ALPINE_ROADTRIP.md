@@ -16,7 +16,7 @@ The product name is **Alpine Roadtrip**. Internal id is `alpine_rt` (mod folder 
 ### Layers
 
 - **Maps:** Python injects visible volumes + arrival spawns. The terrain pipeline stays independent.
-- **Session:** GE extension `alpine_rt` with `setExtensionUnloadMode(..., "manual")` in `scripts/modScript.lua` (not `mainLevel.lua`).
+- **Session:** GE extension `alpinert` with `setExtensionUnloadMode(..., "manual")` in `scripts/modScript.lua` (not `mainLevel.lua`).
 - **Source of truth on switch:** `settings/alpine_rt/session.json` (user folder). In-memory: countdown / grace only.
 
 ### Files
@@ -25,7 +25,7 @@ The product name is **Alpine Roadtrip**. Internal id is `alpine_rt` (mod folder 
 |------|------|
 | [config/alpine_rt/portals.yaml](../config/alpine_rt/portals.yaml) | Portal graph (edit this) |
 | `mods/autoroad_alpine_rt/` | GE mod (Lua + cube/arc art) |
-| `lua/ge/extensions/alpine_rt/portals.json` | Generated from the YAML by `build_portals.py` |
+| `lua/ge/extensions/alpinert/portals.json` | Generated from the YAML by `build_portals.py` |
 | `settings/alpine_rt/session.json` | Runtime, BeamNG user folder only |
 
 ### Persistence (today)
@@ -45,6 +45,8 @@ Anti ping-pong: arrival sits ~20 m further **into the map** than the destination
 
 - Red, **very** transparent TSStatic box, `collisionType: None`, 12×8×6 m. Logic = Lua OBB.
 - While the vehicle is in the box: 20 m-wide ballistic arc toward the **DGM bbox centre of the destination map** (full CRS distance, end at `center_z_m` in the current map’s Z scale). `visibleDistance` is raised for that (template otherwise 7.5 km). Later the same mesh sits in front of the backdrop panorama — [BACKDROP.md](BACKDROP.md).
+- HUD app **Alpine Roadtrip Map**: weather + traffic icons sit on each **map centre** (not the portals). The loaded map has no stack. Portal wait is the distance between the two map centres in km as seconds, then rolled from destination-map traffic (low ±25 %, medium 100–150 %, heavy 150–200 %). Leave and re-enter rolls again.
+- Background map: `build_portals` / `tools/fetch_overview_basemap.py` pulls [basemap.at](https://basemap.at/) WMTS tiles (CC-BY 4.0), warps them onto `map.bbox` in EPSG:31254, and writes `basemap.png` plus a world file (`.pgw`). `image_aspect` grows that box to landscape so a wide HUD fills. The app crops a view matching the window aspect (all portal marks stay visible). Same aspect, larger window: same region, more pixels. Attribution: „Datenquelle: basemap.at“.
 
 | Gate | from | to | Box (BeamNG m) |
 |------|------|-----|----------------|

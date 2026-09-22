@@ -6,7 +6,7 @@
       "from_level": "autoroad_fernpass_8192",
       "to_level": "autoroad_imst_8192",
       "label": "Richtung Imst",
-      "dwell_s": 8.9,
+      "dwell_s": 12.5,
       "box": {
         "pos": [
           3000.598,
@@ -337,6 +337,20 @@
           ]
         ],
         "object": "alpine_rt_arc_fernpass_to_imst"
+      },
+      "center_distance_m": 12548.0,
+      "dwell_base_s": 12.5,
+      "map_mark": {
+        "crs": [
+          37304.6,
+          242053.2
+        ],
+        "heading": [
+          -0.7831,
+          -0.6219
+        ],
+        "length_px": 28.0,
+        "gap_px": 7.0
       }
     },
     {
@@ -344,7 +358,7 @@
       "from_level": "autoroad_imst_8192",
       "to_level": "autoroad_fernpass_8192",
       "label": "Richtung Fernpass",
-      "dwell_s": 9.8,
+      "dwell_s": 12.5,
       "box": {
         "pos": [
           7917.217,
@@ -675,6 +689,20 @@
           ]
         ],
         "object": "alpine_rt_arc_imst_to_fernpass"
+      },
+      "center_distance_m": 12548.0,
+      "dwell_base_s": 12.5,
+      "map_mark": {
+        "crs": [
+          34047.7,
+          237274.2
+        ],
+        "heading": [
+          0.4423,
+          0.8969
+        ],
+        "length_px": 28.0,
+        "gap_px": 7.0
       }
     },
     {
@@ -682,7 +710,7 @@
       "from_level": "autoroad_imst_8192",
       "to_level": "autoroad_reschen_8192",
       "label": "Richtung Reschen",
-      "dwell_s": 15.8,
+      "dwell_s": 19.5,
       "box": {
         "pos": [
           4266.27,
@@ -1013,6 +1041,20 @@
           ]
         ],
         "object": "alpine_rt_arc_imst_to_reschen"
+      },
+      "center_distance_m": 19540.5,
+      "dwell_base_s": 19.5,
+      "map_mark": {
+        "crs": [
+          30482.3,
+          232670.5
+        ],
+        "heading": [
+          -0.2389,
+          -0.971
+        ],
+        "length_px": 28.0,
+        "gap_px": 7.0
       }
     },
     {
@@ -1020,7 +1062,7 @@
       "from_level": "autoroad_reschen_8192",
       "to_level": "autoroad_imst_8192",
       "label": "Richtung Imst",
-      "dwell_s": 18.2,
+      "dwell_s": 19.5,
       "box": {
         "pos": [
           981.27,
@@ -1351,6 +1393,196 @@
           ]
         ],
         "object": "alpine_rt_arc_reschen_to_imst"
+      },
+      "center_distance_m": 19540.5,
+      "dwell_base_s": 19.5,
+      "map_mark": {
+        "crs": [
+          23658.3,
+          219528.0
+        ],
+        "heading": [
+          0.3651,
+          0.931
+        ],
+        "length_px": 28.0,
+        "gap_px": 7.0
+      }
+    }
+  ],
+  "map": {
+    "source": "basemap_at",
+    "crs": "EPSG:31254",
+    "image": "/ui/modules/apps/alpineRtTrafficMap/basemap.png",
+    "driving_side": "right",
+    "mark_length_px": 28,
+    "mark_gap_px": 7,
+    "long_edge_px": 1800,
+    "zoom": 10,
+    "detail_zoom": 12,
+    "image_aspect": 1.7778,
+    "icons": {
+      "size_px": 36,
+      "stack_gap_px": 4,
+      "offset_px": [
+        0,
+        -8
+      ],
+      "dir": "/ui/modules/apps/alpineRtTrafficMap/icons"
+    },
+    "content_bbox": [
+      20200.0,
+      210800.0,
+      44996.0,
+      252696.0
+    ],
+    "bbox": [
+      -4643.4,
+      210800.0,
+      69839.4,
+      252696.0
+    ],
+    "attribution": "Datenquelle: basemap.at",
+    "license": "CC-BY 4.0",
+    "levels": {
+      "autoroad_fernpass_8192": {
+        "bbox": [
+          31118.1,
+          242004.0,
+          45681.9,
+          250196.0
+        ],
+        "content_bbox": [
+          34304.0,
+          242004.0,
+          42496.0,
+          250196.0
+        ],
+        "crs": [
+          38400.0,
+          246100.0
+        ],
+        "image": "/ui/modules/apps/alpineRtTrafficMap/basemap_fernpass.png"
+      },
+      "autoroad_imst_8192": {
+        "bbox": [
+          23204.8,
+          232503.0,
+          37427.2,
+          240503.0
+        ],
+        "content_bbox": [
+          26316.0,
+          232503.0,
+          34316.0,
+          240503.0
+        ],
+        "crs": [
+          30316.0,
+          236503.0
+        ],
+        "image": "/ui/modules/apps/alpineRtTrafficMap/basemap_imst.png"
+      },
+      "autoroad_reschen_8192": {
+        "bbox": [
+          19588.8,
+          213300.0,
+          33811.2,
+          221300.0
+        ],
+        "content_bbox": [
+          22700.0,
+          213300.0,
+          30700.0,
+          221300.0
+        ],
+        "crs": [
+          26700.0,
+          217300.0
+        ],
+        "image": "/ui/modules/apps/alpineRtTrafficMap/basemap_reschen.png"
+      }
+    }
+  },
+  "roads": [
+    {
+      "id": "fernpass_imst",
+      "label": "Fernpass",
+      "a": "fernpass_to_imst",
+      "b": "imst_to_fernpass",
+      "map_mark": {
+        "crs": [
+          35676.1,
+          239663.7
+        ],
+        "heading": [
+          -0.5632,
+          -0.8263
+        ],
+        "length_px": 28.0,
+        "gap_px": 7.0
+      },
+      "marks_by_level": {
+        "autoroad_fernpass_8192": {
+          "crs": [
+            37304.6,
+            242053.2
+          ],
+          "heading": [
+            -0.7831,
+            -0.6219
+          ]
+        },
+        "autoroad_imst_8192": {
+          "crs": [
+            34047.7,
+            237274.2
+          ],
+          "heading": [
+            0.4423,
+            0.8969
+          ]
+        }
+      }
+    },
+    {
+      "id": "imst_reschen",
+      "label": "Reschen",
+      "a": "imst_to_reschen",
+      "b": "reschen_to_imst",
+      "map_mark": {
+        "crs": [
+          27070.3,
+          226099.2
+        ],
+        "heading": [
+          -0.4608,
+          -0.8875
+        ],
+        "length_px": 28.0,
+        "gap_px": 7.0
+      },
+      "marks_by_level": {
+        "autoroad_imst_8192": {
+          "crs": [
+            30482.3,
+            232670.5
+          ],
+          "heading": [
+            -0.2389,
+            -0.971
+          ]
+        },
+        "autoroad_reschen_8192": {
+          "crs": [
+            23658.3,
+            219528.0
+          ],
+          "heading": [
+            0.3651,
+            0.931
+          ]
+        }
       }
     }
   ]

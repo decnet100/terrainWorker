@@ -580,7 +580,11 @@ STEPS: tuple[Step, ...] = (
         script="tools/build_portals.py",
         group="7  Alpine Roadtrip (all maps)",
         docs="docs/ALPINE_ROADTRIP.md",
-        flags=(Flag("no_inject", "--no-inject", "bool", "Do not write into the level"),),
+        flags=(
+            Flag("no_inject", "--no-inject", "bool", "Do not write into the level"),
+            Flag("force_basemap", "--force-basemap", "bool", "Re-download the overview map"),
+            Flag("skip_basemap", "--skip-basemap", "bool", "Skip basemap.at fetch"),
+        ),
         needs="roadtrip",
     ),
     Step(

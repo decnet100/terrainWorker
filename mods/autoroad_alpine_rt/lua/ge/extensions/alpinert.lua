@@ -1,19 +1,20 @@
 -- Alpine Roadtrip: dwell portals + session persist across core_levels.startLevel.
 -- Load via scripts/modScript.lua (manual unload). Do not put this in mainLevel.lua.
--- Internal extension id is "alpine_rt".
+-- Internal extension id is "alpinert" (no underscore: BeamNG maps foo_bar to foo/bar.lua).
 
 local M = {}
 
 local SESSION_PATH = "settings/alpine_rt/session.json"
-local PORTALS_PATH = "/lua/ge/extensions/alpine_rt/portals.json"
+local PORTALS_PATH = "/lua/ge/extensions/alpinert/portals.json"
 -- Bump this when Lua changes; shown on load so a stale in-memory copy is obvious.
-local LUA_REV = "2026-09-22c"
+local LUA_REV = "2026-09-22i"
 -- 24x: 1 real hour = 1 game day (radio hour = 150 s). Weather tick stays UDW's real-time clock.
 local DAY_LENGTH_S = 3600
 
 local portals = { grace_s = 8, gates = {} }
 local dwellGate = nil
 local dwellAcc = 0
+local dwellNeed = 0
 local lastMsgS = -1
 local graceUntil = 0
 local switchQueued = nil
@@ -532,24 +533,130 @@ local function segDensity(segId, tSec, seed)
   return v
 end
 
+local function gateById(id)
+  if not id then
+    return nil
+  end
+  for _, g in ipairs(portals.gates or {}) do
+    if tostring(g.id or "") == tostring(id) then
+      return g
+    end
+  end
+  return nil
+end
+
+local function classifyWeather(env)
+  if type(env) ~= "table" then
+    return "sun"
+  end
+  local snow = tonumber(env.snowCoef or env.snowAmount or env.snow) or 0
+  local rain = tonumber(env.precipitationAmount or env.precipitation or env.rainAmount) or 0
+  local clouds = tonumber(env.cloudCover) or 0
+  if snow > 0.15 then
+    return "snow"
+  end
+  if rain > 0.12 then
+    return "rain"
+  end
+  if clouds > 0.45 then
+    return "clouds"
+  end
+  return "sun"
+end
+
+local function classifyTraffic(d)
+  d = tonumber(d) or 0
+  if d < 0.40 then
+    return "clear"
+  end
+  if d < 0.70 then
+    return "medium"
+  end
+  return "heavy"
+end
+
+local function classifyWeatherSim(mapId, tSec, seed)
+  local v = segDensity("wx:" .. tostring(mapId), tSec, seed)
+  if v > 0.85 then
+    return "snow"
+  end
+  if v > 0.70 then
+    return "rain"
+  end
+  if v > 0.45 then
+    return "clouds"
+  end
+  return "sun"
+end
+
+local function mapDensity(levelId, tSec, seed)
+  return segDensity(tostring(levelId or ""), tSec, seed)
+end
+
+local function dwellBaseS(gate)
+  local m = gate and tonumber(gate.center_distance_m)
+  if m and m > 0 then
+    return m / 1000.0
+  end
+  return tonumber(gate and gate.dwell_base_s) or tonumber(gate and gate.dwell_s) or 5
+end
+
+-- New roll every time the player enters a box. Leave + re-enter is allowed to repeat.
+local function rollDwellNeed(gate, tSec, seed)
+  local base = dwellBaseS(gate)
+  local dest = gate and gate.to_level
+  local cls = classifyTraffic(mapDensity(dest, tSec, seed))
+  local u = math.random()
+  local need
+  if cls == "clear" then
+    need = base * (0.75 + 0.50 * u)
+  elseif cls == "medium" then
+    need = base * (1.00 + 0.50 * u)
+  else
+    need = base * (1.50 + 0.50 * u)
+  end
+  if need < 1 then
+    need = 1
+  end
+  return need, cls, base
+end
+
 local function getTrafficMap()
   local epoch, seed = ensureTraffic()
   local t = os.time() - (epoch or os.time())
   local level = currentLevel()
-  local segs = {}
-  for _, g in ipairs(portals.gates or {}) do
-    local arc = g.arc
-    if arc and type(arc.points) == "table" and #arc.points >= 2 then
-      local id = tostring(g.id or "")
-      segs[#segs + 1] = {
-        id = id,
-        label = g.label or id,
-        from_level = g.from_level,
-        to_level = g.to_level,
-        points = arc.points,
-        density = segDensity(id, t, seed),
+  local snap = snapshotEnvironment()
+  local env = snap and snap.environment or nil
+  local hereWeather = classifyWeather(env)
+  local roads = {}
+  for _, r in ipairs(portals.roads or {}) do
+    local a = gateById(r.a)
+    local b = gateById(r.b)
+    local mark = r.map_mark
+    if type(mark) == "table" and type(mark.crs) == "table" and #mark.crs >= 2 then
+      local da = a and mapDensity(a.to_level, t, seed) or nil
+      local db = b and mapDensity(b.to_level, t, seed) or nil
+      roads[#roads + 1] = {
+        id = tostring(r.id or r.a or ""),
+        mark = mark,
+        a = a and { id = tostring(a.id or r.a), to_level = a.to_level, density = da } or nil,
+        b = b and { id = tostring(b.id or r.b), to_level = b.to_level, density = db } or nil,
       }
     end
+  end
+  local maps = {}
+  local levels = (portals.map and portals.map.levels) or {}
+  for id, rec in pairs(levels) do
+    local dens = mapDensity(id, t, seed)
+    local wx = (id == level) and hereWeather or classifyWeatherSim(id, t, seed)
+    maps[#maps + 1] = {
+      id = tostring(id),
+      crs = rec.crs,
+      weather = wx,
+      traffic = classifyTraffic(dens),
+      density = dens,
+      alert = rec.alert == true,
+    }
   end
   return {
     product = "Alpine Roadtrip",
@@ -558,7 +665,10 @@ local function getTrafficMap()
     level = level,
     now_s = os.time(),
     t_s = t,
-    segments = segs,
+    weather = hereWeather,
+    map = portals.map,
+    maps = maps,
+    roads = roads,
   }
 end
 
@@ -644,6 +754,7 @@ local function applyPendingRestore()
   graceUntil = now() + grace
   dwellGate = nil
   dwellAcc = 0
+  dwellNeed = 0
   restoreArmed = false
   restoreTries = 0
   uiMsg("Alpine Roadtrip: map loaded", 3)
@@ -748,6 +859,7 @@ local function onClientEndMission()
   worldReady = false
   dwellGate = nil
   dwellAcc = 0
+  dwellNeed = 0
   udwResumeLeft = nil
   fanRotors = nil
   hideAllArcs()
@@ -785,6 +897,7 @@ local function onUpdate(dtReal)
   if not veh then
     dwellGate = nil
     dwellAcc = 0
+    dwellNeed = 0
     hideAllArcs()
     return
   end
@@ -804,6 +917,7 @@ local function onUpdate(dtReal)
     hideAllArcs()
     dwellGate = nil
     dwellAcc = 0
+    dwellNeed = 0
     lastMsgS = -1
     return
   end
@@ -812,17 +926,17 @@ local function onUpdate(dtReal)
     dwellGate = inside
     dwellAcc = 0
     lastMsgS = -1
-    local km0 = 0
-    if inside.arc then
-      km0 = tonumber(inside.arc.geo_distance_m) or tonumber(inside.arc.length_m) or 0
-    end
-    local need0 = km0 > 0 and (km0 / 1000) or (tonumber(inside.dwell_s) or 5)
+    local epoch, seed = ensureTraffic()
+    local t = os.time() - (epoch or os.time())
+    local cls, base
+    dwellNeed, cls, base = rollDwellNeed(inside, t, seed)
     log("I", "alpine_rt", string.format(
-      "enter %s need=%.1fs geo=%.0f dwell_s=%s rev=%s",
+      "enter %s need=%.1fs base=%.1fs traffic=%s dest=%s rev=%s",
       tostring(inside.id),
-      need0,
-      km0,
-      tostring(inside.dwell_s),
+      dwellNeed,
+      base,
+      tostring(cls),
+      tostring(inside.to_level),
       LUA_REV
     ))
   end
@@ -830,11 +944,10 @@ local function onUpdate(dtReal)
   drawGateArc(inside)
 
   dwellAcc = dwellAcc + (dtReal or 0)
-  local km = 0
-  if inside.arc then
-    km = tonumber(inside.arc.geo_distance_m) or tonumber(inside.arc.length_m) or 0
+  local need = dwellNeed
+  if need <= 0 then
+    need = dwellBaseS(inside)
   end
-  local need = km > 0 and (km / 1000) or (tonumber(inside.dwell_s) or 5)
   local remain = math.max(0, need - dwellAcc)
   local sec = math.ceil(remain)
   if sec ~= lastMsgS then
@@ -848,6 +961,7 @@ local function onUpdate(dtReal)
   if dwellAcc >= need then
     dwellGate = nil
     dwellAcc = 0
+    dwellNeed = 0
     hideAllArcs()
     uiMsg((inside.label or "Portal") .. " — loading map", 2)
     queueSwitch(inside)
@@ -857,6 +971,7 @@ end
 local function onSerialize()
   return {
     dwellAcc = dwellAcc,
+    dwellNeed = dwellNeed,
     dwellId = dwellGate and dwellGate.id or nil,
     graceUntil = graceUntil,
   }
@@ -867,6 +982,7 @@ local function onDeserialized(data)
   hideAllArcs()
   if type(data) == "table" then
     dwellAcc = data.dwellAcc or 0
+    dwellNeed = data.dwellNeed or 0
     graceUntil = data.graceUntil or 0
   end
 end
