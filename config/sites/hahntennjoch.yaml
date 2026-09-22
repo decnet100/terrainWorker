@@ -205,16 +205,17 @@ beamng:
     mesh_step_m: 120
     hole_pad_m: 30
     near_m: 1000
-    near_step_m: 15
+    near_step_m: 5
     near_dgm_res_m: 2
     near_overlap_m: 80
     near_lip_drop_m: 1.0
     near_texture_size: 2048
+    near_tiles: 9              # 1 km ring @ 5 m, stay under 65k verts/tile
     mid_m: 10000
-    mid_step_m: 50
+    mid_step_m: 15
     mid_overlap_m: 150
     mid_texture_size: 2048
-    mid_tiles: 3
+    mid_tiles: 8               # 10 km ring @ 15 m, stay under 65k verts/tile
     n_rays: 2048
     curvature_cc: 0.85714
     texture_size: 2048

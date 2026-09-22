@@ -1,9 +1,7 @@
-# Roadtrip Tyrol portal graph (v1): one logical pair Hahntennjoch <-> Fernpass.
-# Coordinates are BeamNG terrain meters (not site CRS). dwell_s is fixed today;
-# later replace with routed driving time through the geographic gap.
-#
-# Boxes sit on the main road near a bbox edge, ~28 m inward.
-# Arrival spawn is further inward (~48 m) so the player does not re-enter the box.
+# Roadtrip Tyrol portal graph: Fernpass <-> Imst <-> Reschen.
+# Boxes sit at the midpoint of the named GIP OBJECTID. Arrival is 20 m
+# further toward that map's bbox center so the player does not re-enter.
+# Hahntennjoch is a later branch from Imst — not in this graph.
 
 # dwell_s in YAML is fallback; build_portals sets 1 s per km of geo span.
 dwell_s_default: 5
@@ -11,36 +9,57 @@ grace_s: 8
 box_size_m: [12.0, 8.0, 6.0]  # along-road, across, height
 
 # Sky ribbon while inside a box: full CRS distance to dest DGM-bbox center.
-# Heading = portal → dest bbox midpoint; end height = dest center_z_m in this map's Z.
-# Omit length_m to use the real span (~15–18 km). peak_frac = extra bulge vs span.
 arc:
   width_m: 20
-  # Apex bulge: max(peak_height_m, peak_frac * span). 0.06 clipped into Fernpass peaks.
   peak_frac: 0.16
   peak_height_m: 2000
   samples: 56
 
 gates:
-  - id: hahntenn_to_fernpass
-    from_level: autoroad_m28_test
-    to_level: autoroad_fernpass_8192
-    label: Towards Fernpass
-    box:
-      pos: [485.542, 356.991, 100.905]
-      tangent: [-0.994, -0.113]
-      size: [12.0, 8.0, 6.0]
-    arrive:
-      pos: [3013.198, 40.940, 110.274]
-      tangent: [-0.835, 0.550]
-
-  - id: fernpass_to_hahntenn
+  - id: fernpass_to_imst
     from_level: autoroad_fernpass_8192
-    to_level: autoroad_m28_test
-    label: Towards Hahntennjoch
+    to_level: autoroad_imst_8192
+    label: Richtung Imst
     box:
-      pos: [3029.905, 29.946, 111.442]
-      tangent: [-0.835, 0.550]
+      pos: [3000.598, 49.156, 109.246]   # B179 OID 2372 mid
+      tangent: [0.8116, -0.5842]
       size: [12.0, 8.0, 6.0]
     arrive:
-      pos: [467.010, 350.079, 97.104]
-      tangent: [-0.849, -0.528]
+      pos: [7900.113, 4875.325, 175.632]  # B189 OID 8630 + 20 m inward
+      tangent: [-0.8552, -0.5183]
+
+  - id: imst_to_fernpass
+    from_level: autoroad_imst_8192
+    to_level: autoroad_fernpass_8192
+    label: Richtung Fernpass
+    box:
+      pos: [7917.217, 4885.691, 175.632]  # B189 OID 8630 mid
+      tangent: [-0.8552, -0.5183]
+      size: [12.0, 8.0, 6.0]
+    arrive:
+      pos: [2984.366, 60.841, 109.246]    # B179 OID 2372 + 20 m inward
+      tangent: [-0.8116, 0.5842]
+
+  - id: imst_to_reschen
+    from_level: autoroad_imst_8192
+    to_level: autoroad_reschen_8192
+    label: Richtung Reschen
+    box:
+      pos: [4266.270, 171.560, 170.576]   # B171 OID 4687 mid
+      tangent: [-0.4421, -0.8970]
+      size: [12.0, 8.0, 6.0]
+    arrive:
+      pos: [999.155, 6368.567, 116.247]   # A12 ramp OID 235616 + 20 m inward
+      tangent: [0.8943, -0.4476]
+
+  - id: reschen_to_imst
+    from_level: autoroad_reschen_8192
+    to_level: autoroad_imst_8192
+    label: Richtung Imst
+    box:
+      pos: [981.270, 6377.518, 116.247]   # A12 ramp OID 235616 mid (not the tunnel)
+      tangent: [-0.8943, 0.4476]
+      size: [12.0, 8.0, 6.0]
+    arrive:
+      pos: [4275.112, 189.499, 170.576]   # B171 OID 4687 + 20 m inward
+      tangent: [0.4421, 0.8970]

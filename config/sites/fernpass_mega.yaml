@@ -398,6 +398,10 @@ beamng:
     surface_lift_m: 0.15
     # Global WaterBlock Z nudge (m); negative = lower. Tune after visual check.
     waterlevel_z_offset_m: -4.0
+    # Post-pass (defaults on in build_water): hang over steps / MeshRoad under lake.
+    # fit_check: true
+    # hang_max_m: 2.5
+    # meshroad_clearance_m: 0.75
     min_area_m2: 40.0
     grid_element_size: 4.0
 
@@ -432,21 +436,21 @@ beamng:
     mesh_step_m: 120
     hole_pad_m: 30
     near_m: 2000
-    near_step_m: 15
+    near_step_m: 5
     near_dgm_res_m: 2
     near_overlap_m: 80
     near_lip_drop_m: 1.0     # inner ring sits below the playable lip (cliff, no tuck)
     near_texture_size: 2048
-    near_tiles: 3             # 2 km ring @ 15 m — letter tiles, stay under 65k verts
+    near_tiles: 9             # 2 km ring @ 5 m — letter tiles, stay under 65k verts
     near_canopy: true
     near_canopy_min_m: 1.0
     near_canopy_spike_m: 8.0
     near_canopy_min_area_m2: 40
     mid_m: 10000             # near→10 km band, Copernicus @ 50 m, own texture
-    mid_step_m: 50
+    mid_step_m: 15
     mid_overlap_m: 150
     mid_texture_size: 2048
-    mid_tiles: 3             # 3×3 Collada tiles, letter names (no _00 LOD trap)
+    mid_tiles: 8             # 10 km ring @ 15 m, letter names (no _00 LOD trap)
     n_rays: 2048
     curvature_cc: 0.85714
     texture_size: 2048
@@ -549,6 +553,7 @@ notes: |
   Pipeline: python tools/build_level.py --site config/sites/fernpass_mega.yaml
   (fetch_dgm/dom/bev → twi/snow → smoke/masks → setup → ensure_terrain_materials →
   compose_biomes → build_forest). Materials: dry_meadow (dirt base), ForestFloor
-  (50/50 mudgrass PNG). Then bridges/galleries/decal/guardrails as needed.
+  (50/50 mudgrass PNG). Then bridges/galleries, then water (fit_check needs MeshRoads),
+  decal/guardrails as needed.
   Biomes: mask_biome_{kill,water,snow_*,rock,forest_*,meadow_*,bare_*}.png (exclusive).
   Terrain soft refine: Mud from TWI-wet; Grass2 from canopy; snow paint on snow biomes.
