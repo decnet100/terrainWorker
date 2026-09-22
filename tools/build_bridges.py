@@ -874,12 +874,14 @@ def build_span_on_road(
 
 
 def bridge_features(site: dict, sc: SiteCoords) -> list[dict]:
+    from authorities import stamp_gip_props, transformer_gip_into_working  # noqa: WPS433
+
     path = find_gip_geojson(site)
     data = json.loads(path.read_text(encoding="utf-8"))
-    to_site = Transformer.from_crs("EPSG:4326", sc.crs, always_xy=True)
+    to_site = transformer_gip_into_working(site)
     out = []
     for f in data.get("features") or []:
-        props = f.get("properties") or {}
+        props = stamp_gip_props(site, f.get("properties") or {})
         if _structure_kind(props) != "bridge":
             continue
         raw_pts: list = []

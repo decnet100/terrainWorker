@@ -447,6 +447,99 @@ def level_objectid(site: dict, local_id: int, authority_key: str) -> tuple[int, 
     return oid, local
 
 
+def gip_ids(
+    site: dict | None,
+    raw_oid,
+    *,
+    authority_key: str | None = None,
+) -> tuple[int, int]:
+    """``(level_objectid, source_id)``. No ``authorities`` → identity."""
+    site = site or {}
+    local = _as_int(raw_oid, "GIP OBJECTID")
+    if not site.get("authorities"):
+        return local, local
+    return level_objectid(site, local, authority_key or gip_authority_key(site))
+
+
+def gip_source_oid(props: dict | None) -> int | None:
+    """Unshifted id from stamped or raw GIP properties."""
+    props = props if isinstance(props, dict) else {}
+    for key in ("_autoroad_source_id", "SOURCE_OBJECTID", "OBJECTID"):
+        raw = props.get(key)
+        if raw is None or raw == "":
+            continue
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def gip_ids_from_props(
+    site: dict | None,
+    props: dict | None,
+    *,
+    authority_key: str | None = None,
+) -> tuple[int, int] | None:
+    """Idempotent: source field wins, then ``OBJECTID`` is treated as local."""
+    src = gip_source_oid(props)
+    if src is None:
+        return None
+    return gip_ids(site, src, authority_key=authority_key)
+
+
+def split_level_objectid(site: dict | None, level_oid) -> tuple[int, str | None]:
+    """``(source_id, authority_key)``. No ``authorities`` → ``(oid, None)``."""
+    site = site or {}
+    oid = _as_int(level_oid, "level objectid")
+    if not site.get("authorities"):
+        return oid, None
+    stride = level_rules(site).road_id_stride
+    for auth in load_authorities(site):
+        if auth.road_id_offset <= oid < auth.road_id_offset + stride:
+            return oid - auth.road_id_offset, auth.key
+    raise SystemExit(f"objectid {oid} liegt in keinem Behörden-Nummernraum")
+
+
+def stamp_gip_props(
+    site: dict | None,
+    props: dict | None,
+    *,
+    authority_key: str | None = None,
+) -> dict:
+    """Rewrite ``OBJECTID`` to the level id; keep the service id as source."""
+    out = dict(props or {})
+    ids = gip_ids_from_props(site, out, authority_key=authority_key)
+    if ids is None:
+        return out
+    level, source = ids
+    out["OBJECTID"] = int(level)
+    out["SOURCE_OBJECTID"] = int(source)
+    out["_autoroad_source_id"] = int(source)
+    if site and site.get("authorities"):
+        out["_autoroad_authority"] = authority_key or gip_authority_key(site)
+    return out
+
+
+def stamp_gip_features(site: dict | None, features: list[dict]) -> list[dict]:
+    """Stamp every Feature's properties. Does not mutate the input list items."""
+    out: list[dict] = []
+    for feat in features or []:
+        copy = dict(feat)
+        copy["properties"] = stamp_gip_props(site, feat.get("properties") or {})
+        out.append(copy)
+    return out
+
+
+def transformer_gip_into_working(site: dict):
+    """GIP WFS geometry is EPSG:4326 → working CRS."""
+    if site.get("authorities"):
+        return transformer_into_working(site, gip_authority_key(site), "EPSG:4326")
+    return Transformer.from_crs(
+        "EPSG:4326", str(site.get("crs") or "EPSG:31254"), always_xy=True
+    )
+
+
 def landcover_kind(auth: Authority, props: dict) -> str | None:
     """Map one feature onto a semantic kind.
 
@@ -830,6 +923,15 @@ def _self_check() -> None:
     }
     assert level_objectid(site, 4365, "tirol") == (4365, 4365)
     assert level_objectid(site, 4365, "suedtirol") == (10_004_365, 4365)
+    assert gip_ids({}, 3992) == (3992, 3992)
+    assert gip_ids(site, 4365, authority_key="suedtirol") == (10_004_365, 4365)
+    stamped = stamp_gip_props(site, {"OBJECTID": 4365}, authority_key="suedtirol")
+    assert stamped["OBJECTID"] == 10_004_365
+    assert stamped["SOURCE_OBJECTID"] == 4365
+    again = stamp_gip_props(site, stamped, authority_key="suedtirol")
+    assert again["OBJECTID"] == 10_004_365
+    assert split_level_objectid(site, 10_004_365) == (4365, "suedtirol")
+    assert split_level_objectid({}, 3992) == (3992, None)
     try:
         level_objectid(site, 10_000_000, "suedtirol")
         raise AssertionError("Überlauf wurde nicht abgelehnt")

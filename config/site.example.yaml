@@ -38,6 +38,8 @@ crs: EPSG:31254
 #   road_id_stride: 10000000
 #   # border_confirmed:
 #   #   - {from_objectid: 4365, to_objectid: 10004365}
+# YAML objectid (gip_extra, items, spine_next) is the level id
+# (offset + local). The GIP service id is stored as SOURCE_OBJECTID.
 
 # xmin, ymin, xmax, ymax in the CRS above (metres)
 # Placeholder — replace with a real pass crop

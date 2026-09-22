@@ -871,22 +871,22 @@ def resolve_gip_width_m(
         site_width_by_objectid,
     )
 
-    oid_raw = props.get("OBJECTID")
-    if oid_raw is not None:
-        try:
-            oid = int(oid_raw)
-        except (TypeError, ValueError):
-            oid = None
-        if oid is not None:
-            sw = site_width_by_objectid(site).get(oid)
-            if sw is not None:
-                return float(sw), "site_oid"
-            cw = catalog_width_by_objectid().get(oid)
-            if cw is not None:
-                return float(cw), "catalog_oid"
-            mw = measured_width_m(oid)
-            if mw is not None:
-                return float(mw), "landnutzung"
+    from authorities import gip_ids_from_props  # noqa: WPS433
+
+    ids = gip_ids_from_props(site, props)
+    if ids is not None:
+        level_oid, source_oid = ids
+        sw = site_width_by_objectid(site).get(level_oid)
+        if sw is None:
+            sw = site_width_by_objectid(site).get(source_oid)
+        if sw is not None:
+            return float(sw), "site_oid"
+        cw = catalog_width_by_objectid().get(source_oid)
+        if cw is not None:
+            return float(cw), "catalog_oid"
+        mw = measured_width_m(source_oid)
+        if mw is not None:
+            return float(mw), "landnutzung"
     merged = dict(catalog_width_by_str_code())
     merged.update(by_code or {})
     return (
@@ -910,15 +910,16 @@ def load_gip_road_segments(site: dict, *, width_m: float | None = None) -> dict:
     sc = SiteCoords(site)
     path = find_gip_geojson(site)
     data = json.loads(path.read_text(encoding="utf-8"))
-    feats = data.get("features") or []
-    auth_key = None
-    if site.get("authorities"):
-        from authorities import gip_authority_key, level_objectid, transformer_into_working
+    from authorities import (  # noqa: WPS433
+        gip_authority_key,
+        gip_ids_from_props,
+        stamp_gip_props,
+        transformer_gip_into_working,
+    )
 
-        auth_key = gip_authority_key(site)
-        to_site = transformer_into_working(site, auth_key, "EPSG:4326")
-    else:
-        to_site = Transformer.from_crs("EPSG:4326", sc.crs, always_xy=True)
+    feats = data.get("features") or []
+    auth_key = gip_authority_key(site) if site.get("authorities") else None
+    to_site = transformer_gip_into_working(site)
     z_at = _load_z_at(site)
     bng = site.get("beamng") or {}
     if width_m is None:
@@ -938,14 +939,11 @@ def load_gip_road_segments(site: dict, *, width_m: float | None = None) -> dict:
     skipped_short = 0
     str_counts: dict[str, int] = {}
     for f in feats:
-        props = f.get("properties") or {}
-        oid = props.get("OBJECTID")
-        if oid is None:
+        props = stamp_gip_props(site, f.get("properties") or {})
+        ids = gip_ids_from_props(site, props)
+        if ids is None:
             continue
-        if auth_key:
-            oid_level, source_id = level_objectid(site, int(oid), auth_key)
-        else:
-            oid_level, source_id = int(oid), int(oid)
+        oid_level, source_id = ids
         pts_ll: list = []
         _coords_walk((f.get("geometry") or {}).get("coordinates"), pts_ll)
         xy_site: list[tuple[float, float]] = []
@@ -1003,7 +1001,7 @@ def load_gip_road_segments(site: dict, *, width_m: float | None = None) -> dict:
             props.get("STRNAME")
             or props.get("OBJEKTBEZEICHNUNG")
             or props.get("STR_CODE")
-            or f"gip_{oid}"
+            or f"gip_{oid_level}"
         )
         road_rec = {
             "nodes": nodes,
@@ -1031,9 +1029,9 @@ def load_gip_road_segments(site: dict, *, width_m: float | None = None) -> dict:
                 )
             ),
         }
+        road_rec["source_id"] = int(source_id)
         if auth_key:
             road_rec["authority"] = auth_key
-            road_rec["source_id"] = int(source_id)
         roads[str(int(oid_level))] = road_rec
         code_k = str(props.get("STR_CODE") or "")
         str_counts[code_k] = str_counts.get(code_k, 0) + 1
@@ -1640,6 +1638,7 @@ def is_gip_tunnel_segment(road: dict, site: dict | None = None) -> bool:
     oids: list[int] = []
     for raw in (
         road.get("objectid"),
+        road.get("source_id"),
         road.get("osm_id"),
         road.get("id"),
         *(road.get("osm_ids") or []),

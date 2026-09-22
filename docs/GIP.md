@@ -24,7 +24,7 @@ cd C:\temp\beamng_autoroad; python tools\fetch_gip.py --force
 - Then clip to `site.bbox`
 - Cache: `data/raw/gip_<site>_<hash>.geojson` (+ `.meta.json`); hash includes `include` / `str_codes`
 - Summary: `data/processed/<site>/gip_structures.json` including `str_code_counts`
-- **Extras:** `beamng.bridges.gip_extra` — OBJECTIDs without `KUNSTBAUTEN` (also outside `STR_CODE`) fetched via FeatureServer; default name `Brücke {oid}` / `Tunnel {oid}` (or `name:`)
+- **Extras:** `beamng.bridges.gip_extra` — OBJECTIDs without `KUNSTBAUTEN` (also outside `STR_CODE`) fetched via FeatureServer; default name `Brücke {oid}` / `Tunnel {oid}` (or `name:`). YAML `objectid` is the **level** id (`authorities.gip_ids`); the service id is `SOURCE_OBJECTID`.
 
 ### Missing bridges (GIP does not flag Kunstbauten)
 

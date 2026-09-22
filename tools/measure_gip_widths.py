@@ -253,7 +253,10 @@ def measure_feature(
     *,
     class_width_m: float,
 ) -> dict:
-    oid = int(props.get("OBJECTID"))
+    from authorities import gip_source_oid  # noqa: WPS433
+
+    src = gip_source_oid(props)
+    oid = int(src if src is not None else props.get("OBJECTID"))
     nodes = [[p[0], p[1], 0.0] for p in xy]
     length = polyline_length_xy(nodes)
     samples = []
@@ -330,12 +333,15 @@ def measure_site(site: dict, catalog: dict, *, force: bool) -> dict:
     feats = data.get("features") or []
     segs = catalog.setdefault("segments", {})
     n_new = n_skip = n_applied = 0
+    from authorities import gip_source_oid, stamp_gip_props  # noqa: WPS433
+
     for f in feats:
-        props = f.get("properties") or {}
-        oid = props.get("OBJECTID")
-        if oid is None:
+        props = stamp_gip_props(site, f.get("properties") or {})
+        src = gip_source_oid(props)
+        if src is None:
             continue
-        key = str(int(oid))
+        oid = int(src)
+        key = str(oid)
         if not force and key in segs:
             n_skip += 1
             continue

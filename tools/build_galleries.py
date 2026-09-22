@@ -814,14 +814,14 @@ def merge_abutting_gallery_features(
 def gallery_features(site: dict, sc: SiteCoords) -> list[dict]:
     path = bb.find_gip_geojson(site)
     data = json.loads(path.read_text(encoding="utf-8"))
-    from pyproj import Transformer
     from gip_road_segments import not_tunnel_objectids
+    from authorities import gip_source_oid, stamp_gip_props, transformer_gip_into_working
 
     skip_oids = not_tunnel_objectids(site)
-    to_site = Transformer.from_crs("EPSG:4326", sc.crs, always_xy=True)
+    to_site = transformer_gip_into_working(site)
     out = []
     for f in data.get("features") or []:
-        props = f.get("properties") or {}
+        props = stamp_gip_props(site, f.get("properties") or {})
         kind = bb._structure_kind(props)
         objekt = str(props.get("OBJEKT") or "").upper().strip()
         blob = " ".join(
@@ -840,12 +840,14 @@ def gallery_features(site: dict, sc: SiteCoords) -> list[dict]:
             else:
                 continue
         oid_raw = props.get("OBJECTID")
-        if oid_raw is not None:
-            try:
-                if int(oid_raw) in skip_oids:
-                    continue
-            except (TypeError, ValueError):
-                pass
+        src_raw = gip_source_oid(props)
+        try:
+            if (oid_raw is not None and int(oid_raw) in skip_oids) or (
+                src_raw is not None and int(src_raw) in skip_oids
+            ):
+                continue
+        except (TypeError, ValueError):
+            pass
         raw_pts: list = []
         bb._walk_coords((f.get("geometry") or {}).get("coordinates"), raw_pts)
         xy = []
@@ -1360,15 +1362,22 @@ def _gip_oid_xy(oid: int, site: dict | None = None) -> tuple[float, float] | Non
     except Exception:
         return None
     sc = SiteCoords(site or load_site())
-    from pyproj import Transformer
+    from authorities import gip_ids_from_props, gip_source_oid, stamp_gip_props, transformer_gip_into_working
 
-    to_site = Transformer.from_crs("EPSG:4326", sc.crs, always_xy=True)
+    site = site or load_site()
+    to_site = transformer_gip_into_working(site)
+    want = int(oid)
     for f in data.get("features") or []:
-        pr = f.get("properties") or {}
+        pr = stamp_gip_props(site, f.get("properties") or {})
+        ids = gip_ids_from_props(site, pr)
+        src = gip_source_oid(pr)
         try:
-            if int(pr.get("OBJECTID")) != int(oid):
-                continue
+            hit = (ids is not None and int(ids[0]) == want) or (
+                src is not None and int(src) == want
+            )
         except (TypeError, ValueError):
+            hit = False
+        if not hit:
             continue
         raw: list = []
         bb._walk_coords((f.get("geometry") or {}).get("coordinates"), raw)

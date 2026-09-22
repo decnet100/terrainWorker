@@ -367,11 +367,13 @@ def _load_feature_props_by_oid(site: dict) -> dict[int, dict]:
         import build_bridges as bb  # noqa: WPS433
     except ImportError:
         return {}
+    from authorities import stamp_gip_props  # noqa: WPS433
+
     path = bb.find_gip_geojson(site)
     data = json.loads(path.read_text(encoding="utf-8"))
     out: dict[int, dict] = {}
     for f in data.get("features") or []:
-        props = f.get("properties") or {}
+        props = stamp_gip_props(site, f.get("properties") or {})
         oid = props.get("OBJECTID")
         if oid is None:
             continue

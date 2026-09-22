@@ -2069,15 +2069,17 @@ def _stamp_disk_accum(
 
 def _gip_beamng_polyline(site: dict, objectid: int) -> list[tuple[float, float]]:
     """BeamNG XY polyline for a GIP OBJECTID (empty if missing)."""
-    from pyproj import Transformer
+    from authorities import gip_ids_from_props, stamp_gip_props, transformer_gip_into_working
 
     sc = __import__("site_coords", fromlist=["SiteCoords"]).SiteCoords(site)
     path = bb.find_gip_geojson(site)
     data = json.loads(path.read_text(encoding="utf-8"))
-    to_site = Transformer.from_crs("EPSG:4326", sc.crs, always_xy=True)
+    to_site = transformer_gip_into_working(site)
+    want = int(objectid)
     for f in data.get("features") or []:
-        props = f.get("properties") or {}
-        if int(props.get("OBJECTID") or -1) != int(objectid):
+        props = stamp_gip_props(site, f.get("properties") or {})
+        ids = gip_ids_from_props(site, props)
+        if ids is None or int(ids[0]) != want:
             continue
         raw: list = []
         bb._walk_coords((f.get("geometry") or {}).get("coordinates"), raw)
