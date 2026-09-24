@@ -21,7 +21,7 @@ C:\Users\<user>\AppData\Local\BeamNG\BeamNG.drive\current\levels\
 
 Always take `max_height_m` from `data/processed/<site>/heightmap_meta.json`. Heightmaps are **square**, **power of two**, **16-bit PNG**.
 
-Portal session between Hahntennjoch and Fernpass Mega: [ALPINE_ROADTRIP.md](ALPINE_ROADTRIP.md). Horizon meshes around the playable map: [BACKDROP.md](BACKDROP.md) (`build_backdrop.py` after the heightmap exists).
+Portal session between the finished levels: [alpine-roadtrip](https://github.com/decnet100/alpine-roadtrip). Horizon meshes around the playable map: [BACKDROP.md](BACKDROP.md) (`build_backdrop.py` after the heightmap exists).
 
 ---
 

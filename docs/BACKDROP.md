@@ -4,7 +4,7 @@ Far scenery around the **playable** heightmap: Collada TSStatics with `collision
 
 Fernpass Mega and Reschen are wired (`beamng.backdrop` + `sources.backdrop_ortho` in those site YAMLs). Other sites pick up the same YAML keys (or code defaults).
 
-Related: [BEAMNG_IMPORT.md](BEAMNG_IMPORT.md) (playable terrain), [HEIGHTMAP_COMPOSE.md](HEIGHTMAP_COMPOSE.md) (Z datum), [ALPINE_ROADTRIP.md](ALPINE_ROADTRIP.md) (portal sky-arc later sits in front of this).
+Related: [BEAMNG_IMPORT.md](BEAMNG_IMPORT.md) (playable terrain), [HEIGHTMAP_COMPOSE.md](HEIGHTMAP_COMPOSE.md) (Z datum). The portal sky-arc from [alpine-roadtrip](https://github.com/decnet100/alpine-roadtrip) later sits in front of this.
 
 Status: **POC that already injects**. Not a replacement for Forest / terrain paint on the playable map.
 

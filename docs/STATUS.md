@@ -2,7 +2,7 @@
 
 Snapshot after the Hahntennjoch smoke test and Fernpass Mega work (BeamNG 0.39).  
 Details: [BEAMNG_IMPORT.md](BEAMNG_IMPORT.md), [ROADS.md](ROADS.md), [ANNOTATIONS.md](ANNOTATIONS.md), [CONCEPT.md](CONCEPT.md), [GIP.md](GIP.md), [STRUCTURES.md](STRUCTURES.md), [HEIGHTMAP_COMPOSE.md](HEIGHTMAP_COMPOSE.md), [BACKDROP.md](BACKDROP.md).  
-Multi-map session (first portal switch): [ALPINE_ROADTRIP.md](ALPINE_ROADTRIP.md).
+Multi-map session: [alpine-roadtrip](https://github.com/decnet100/alpine-roadtrip).
 
 ## Done
 
@@ -38,10 +38,6 @@ Multi-map session (first portal switch): [ALPINE_ROADTRIP.md](ALPINE_ROADTRIP.md
 
 - Schema + seed + GPKG consume for guardrails — [ANNOTATIONS.md](ANNOTATIONS.md)
 
-### Alpine Roadtrip
-
-- First hard switch Hahntennjoch ↔ Fernpass Mega — [ALPINE_ROADTRIP.md](ALPINE_ROADTRIP.md)
-
 ### Backdrop (horizon)
 
 - Three-ring Collada TSStatics (near Tirol DGM + canopy, mid/far Copernicus GLO-30 + viewshed). Fernpass Mega and Reschen are wired.
@@ -61,7 +57,7 @@ Multi-map session (first portal switch): [ALPINE_ROADTRIP.md](ALPINE_ROADTRIP.md
 | 3 | Span principle bridge/gallery/tunnel | Heightmap at abutments, not under the slab — [HEIGHTMAP_COMPOSE.md](HEIGHTMAP_COMPOSE.md) |
 | 4 | `road_edge` → asphalt / shoulder masks | same two-step workflow |
 | 5 | Terrain look meadow/moss | `t_moss` |
-| — | Alpine Roadtrip product | Segment times, more gates, traffic, damage — [ALPINE_ROADTRIP.md](ALPINE_ROADTRIP.md) |
+| — | Alpine Roadtrip product | Segment times, more gates, traffic, damage — [alpine-roadtrip](https://github.com/decnet100/alpine-roadtrip) |
 
 ## Deliberately not automatic
 

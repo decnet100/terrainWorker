@@ -1,12 +1,12 @@
-# Alpine Roadtrip
+# terrain-worker
 
 Open Tyrolean geodata → playable mountain-pass roads in **BeamNG.drive**.
 
-This repo is the pipeline (`beamng_autoroad`). **Alpine Roadtrip** is the multi-map session: you drive one pass, linger in a portal, and hard-switch to the next map with weather and vehicle config kept.
+This repo is the map pipeline (`beamng_autoroad`). The multi-map session (portals, weather and vehicle persist across a hard level switch) lives in [alpine-roadtrip](https://github.com/decnet100/alpine-roadtrip).
 
 ## Status
 
-BeamNG **0.39**. Details: [docs/STATUS.md](docs/STATUS.md). First portal switch: [docs/ALPINE_ROADTRIP.md](docs/ALPINE_ROADTRIP.md).
+BeamNG **0.39**. Details: [docs/STATUS.md](docs/STATUS.md).
 
 | Site | Level | Size | Role |
 |------|--------|------|------|
@@ -44,7 +44,7 @@ Shared step list: `tools/pipeline_catalog.py`. CLI flags on a card (`--force`, `
 
 Fernpass Mega uses **GIP** for the road axis (not OSM). After Core steps, use **From here** on Fetch GIP (or the cards for decals / bridges / galleries / rails).
 
-Level import: [docs/BEAMNG_IMPORT.md](docs/BEAMNG_IMPORT.md). Horizon meshes: [docs/BACKDROP.md](docs/BACKDROP.md). Structures: [docs/STRUCTURES.md](docs/STRUCTURES.md). Portal mod: [docs/ALPINE_ROADTRIP.md](docs/ALPINE_ROADTRIP.md). Site profiles: [config/sites/README.md](config/sites/README.md).
+Level import: [docs/BEAMNG_IMPORT.md](docs/BEAMNG_IMPORT.md). Horizon meshes: [docs/BACKDROP.md](docs/BACKDROP.md). Structures: [docs/STRUCTURES.md](docs/STRUCTURES.md). Site profiles: [config/sites/README.md](config/sites/README.md). Portals: [alpine-roadtrip](https://github.com/decnet100/alpine-roadtrip).
 
 ### CLI (same steps, no window)
 
@@ -76,7 +76,6 @@ cd C:\temp\beamng_autoroad; python tools\seed_annotations.py
 
 - [docs/CONCEPT.md](docs/CONCEPT.md) — geodata → playable pass
 - [docs/STATUS.md](docs/STATUS.md) — current state, roadmap, commands
-- [docs/ALPINE_ROADTRIP.md](docs/ALPINE_ROADTRIP.md) — multi-map session (Hahntennjoch ↔ Fernpass)
 - [docs/SITE_DATA.md](docs/SITE_DATA.md) — WCS/WFS links, bbox, local tiles
 - [docs/ANNOTATIONS.md](docs/ANNOTATIONS.md) — GIS: road edge / guardrails / gaps
 - [docs/GIP.md](docs/GIP.md) — Tyrol road WFS / structures (cache)
@@ -87,4 +86,4 @@ cd C:\temp\beamng_autoroad; python tools\seed_annotations.py
 - [docs/BACKDROP.md](docs/BACKDROP.md) — far/mid/near horizon meshes (Copernicus + viewshed)
 - [config/site.example.yaml](config/site.example.yaml) — template (`site.yaml` is local, gitignored)
 
-Internal id is `alpine_rt`. The name you see in the game and in this documentation is **Alpine Roadtrip**.
+`center_z_m` on a site is the sky-arc target read by alpine-roadtrip when it places portals.

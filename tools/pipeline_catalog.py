@@ -573,30 +573,6 @@ STEPS: tuple[Step, ...] = (
         ),
         needs="testarena",
     ),
-    Step(
-        id="build_portals",
-        title="Place portals",
-        summary="Switch volumes and arrival spawns for Alpine Alpine Roadtrip (all maps).",
-        script="tools/build_portals.py",
-        group="7  Alpine Roadtrip (all maps)",
-        docs="docs/ALPINE_ROADTRIP.md",
-        flags=(
-            Flag("no_inject", "--no-inject", "bool", "Do not write into the level"),
-            Flag("force_basemap", "--force-basemap", "bool", "Re-download the overview map"),
-            Flag("skip_basemap", "--skip-basemap", "bool", "Skip basemap.at fetch"),
-        ),
-        needs="roadtrip",
-    ),
-    Step(
-        id="deploy_alpine_rt_mod",
-        title="Deploy Alpine Roadtrip mod",
-        summary="Copy the mod into BeamNG unpacked, or create a directory junction.",
-        script="tools/deploy_alpine_rt_mod.py",
-        group="7  Alpine Roadtrip (all maps)",
-        docs="docs/ALPINE_ROADTRIP.md",
-        flags=(Flag("link", "--link", "bool", "Directory junction instead of a copy"),),
-        needs="roadtrip",
-    ),
 )
 
 STEPS_BY_ID: dict[str, Step] = {s.id: s for s in STEPS}
@@ -614,7 +590,7 @@ def nested_get(data: Any, path: str) -> Any:
 
 def is_applicable(step: Step, site: dict) -> bool:
     need = step.needs
-    if need in ("always", "roadtrip", ""):
+    if need in ("always", ""):
         return True
     if need == "testarena":
         level = str((site.get("beamng") or {}).get("level_name") or "")
@@ -644,7 +620,7 @@ def is_applicable(step: Step, site: dict) -> bool:
 
 
 def in_site_sequence(step: Step) -> bool:
-    return step.needs != "roadtrip"
+    return True
 
 
 def format_value(value: Any) -> str:

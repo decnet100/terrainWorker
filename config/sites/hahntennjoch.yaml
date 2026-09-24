@@ -279,5 +279,6 @@ notes: |
   Hahntennjoch ~500x510 m (M28 / L266). Full pipeline + backdrop.
   python tools/build_level.py --site config/sites/hahntennjoch.yaml
   Then: fetch_gip, bridges/galleries (if any), decals, guardrails, water,
-  buildings, fetch_backdrop / build_backdrop, build_portals.
+  buildings, fetch_backdrop / build_backdrop.
+  Portals: alpine-roadtrip tools/build_portals.py (reads this YAML).
   WGS84 approx: 47.2804,10.6258 – 47.2850,10.6324
