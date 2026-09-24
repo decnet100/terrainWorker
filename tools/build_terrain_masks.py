@@ -29,9 +29,13 @@ RAW = ROOT / "data" / "raw"
 PROC = processed_dir(SITE)
 SLUG = site_slug(SITE)
 
-BBOX = SITE["bbox"]
+BBOX = list(map(float, SITE["bbox"]))
+CRS = str(SITE.get("crs", "EPSG:31254"))
+if SITE.get("authorities"):
+    from authorities import apply_working_frame
+
+    CRS, BBOX = apply_working_frame(SITE)
 XMIN, YMIN, XMAX, YMAX = map(float, BBOX)
-CRS = SITE.get("crs", "EPSG:31254")
 OUT_SIZE = int(SITE.get("beamng", {}).get("mask_size", 512))
 MPP = float(SITE.get("beamng", {}).get("meters_per_pixel", 1.0))
 SLOPE_ROCK_DEG = float(SITE.get("beamng", {}).get("slope_rock_deg", 38.0))
@@ -418,6 +422,48 @@ def rasterize_bev_landcover(
     return landuse, extras, note
 
 
+def _has_foreign_landcover() -> bool:
+    if not SITE.get("authorities"):
+        return False
+    from authorities import load_authorities
+
+    return any(
+        auth.key != "tirol" and auth.landcover_path is not None
+        for auth in load_authorities(SITE)
+    )
+
+
+def _foreign_landcover_fingerprint() -> list:
+    from authorities import load_authorities
+
+    rows: list = []
+    auths = load_authorities(SITE)
+    for auth in auths:
+        if auth.key == "tirol":
+            if auth.validity is not None:
+                rows.append({"authority": "tirol", "validity": _file_sig(auth.validity)})
+            continue
+        if auth.landcover_path is None:
+            continue
+        rows.append(
+            {
+                "authority": auth.key,
+                "path": _file_sig(auth.landcover_path),
+                "validity": _file_sig(auth.validity),
+                "classes": auth.landcover,
+                "grid": str(auth.grid) if auth.grid else None,
+            }
+        )
+    return rows
+
+
+def _crs_ring_to_px(ring: list[tuple[float, float]], size: int) -> list[tuple[float, float]] | None:
+    pts = [_to_px_geo(x - XMIN, y - YMIN, size) for x, y in ring]
+    if len(pts) < 3:
+        return None
+    return pts
+
+
 def rasterize_tirol_landcover(
     size: int, *, force: bool = False
 ) -> tuple[np.ndarray, dict[str, np.ndarray], str]:
@@ -428,7 +474,8 @@ def rasterize_tirol_landcover(
     Cached when landcover GeoJSON / bbox / size are unchanged.
     """
     index_path = PROC / "landcover_index.json"
-    if not index_path.is_file():
+    foreign_on = _has_foreign_landcover()
+    if not index_path.is_file() and not foreign_on:
         return np.full((size, size), -1, dtype=np.int8), {}, "none"
 
     fingerprint = {
@@ -443,6 +490,9 @@ def rasterize_tirol_landcover(
             "concrete": CLASS_CONCRETE,
         },
     }
+    if foreign_on:
+        fingerprint["schema"] = "tirol_landcover_v2"
+        fingerprint["foreign"] = _foreign_landcover_fingerprint()
     cached = _load_cached_npz("tirol_landcover", fingerprint, force=force)
     if cached is not None:
         landuse = cached["landuse"].astype(np.int8, copy=False)
@@ -465,13 +515,20 @@ def rasterize_tirol_landcover(
         )
         return landuse, extras, note
 
-    index = json.loads(index_path.read_text(encoding="utf-8"))
-    ln = _load_landcover_geojson(index.get("landnutzung"))
-    wf = _load_landcover_geojson(index.get("waldflaeche"))
-    if not ln and not wf:
+    ln = wf = None
+    if index_path.is_file():
+        index = json.loads(index_path.read_text(encoding="utf-8"))
+        ln = _load_landcover_geojson(index.get("landnutzung"))
+        wf = _load_landcover_geojson(index.get("waldflaeche"))
+    if not ln and not wf and not foreign_on:
         return np.full((size, size), -1, dtype=np.int8), {}, "none"
 
-    to_local = Transformer.from_crs("EPSG:4326", CRS, always_xy=True)
+    if SITE.get("authorities"):
+        from authorities import transformer_into_working
+
+        to_local = transformer_into_working(SITE, "tirol", "EPSG:4326")
+    else:
+        to_local = Transformer.from_crs("EPSG:4326", CRS, always_xy=True)
     landuse = np.full((size, size), -1, dtype=np.int8)
     forest_high = np.zeros((size, size), dtype=bool)
     forest_scrub = np.zeros((size, size), dtype=bool)
@@ -519,12 +576,25 @@ def rasterize_tirol_landcover(
                 apply_kind(kind, rings)
                 n_wf += 1
 
+    n_foreign = 0
+    if foreign_on:
+        from authorities import foreign_landcover_rings
+
+        for kind, ring in foreign_landcover_rings(SITE):
+            px = _crs_ring_to_px(ring, size)
+            if not px:
+                continue
+            apply_kind(kind, [px])
+            n_foreign += 1
+
     extras = {
         "forest_high": forest_high,
         "forest_scrub": forest_scrub,
         "water": water,
     }
     note = f"tirol_landnutzung({n_ln})+waldflaeche({n_wf})"
+    if n_foreign:
+        note += f"+foreign({n_foreign})"
     print(
         f"Tirol landcover: painted_ln={n_ln} painted_wald={n_wf} "
         f"grass={(landuse == CLASS_GRASS).mean()*100:.2f}% "

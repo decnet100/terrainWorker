@@ -28,6 +28,10 @@ RAW.mkdir(parents=True, exist_ok=True)
 
 CRS = str(SITE.get("crs", "EPSG:31254"))
 BBOX = list(map(float, SITE["bbox"]))
+if SITE.get("authorities"):
+    from authorities import apply_working_frame
+
+    CRS, BBOX = apply_working_frame(SITE)
 XMIN, YMIN, XMAX, YMAX = BBOX
 NAME = site_slug(SITE)
 
@@ -53,6 +57,25 @@ FS_QUERY = str(
 
 def _gip_cfg(site: dict | None = None) -> dict:
     return ((site or SITE).get("sources") or {}).get("gip") or {}
+
+
+def _authority_cache_sig(site: dict | None = None) -> dict | None:
+    site = site or SITE
+    raw = site.get("authorities")
+    if not isinstance(raw, dict) or not raw:
+        return None
+    out: dict = {}
+    for key, spec in raw.items():
+        if not isinstance(spec, dict):
+            continue
+        out[str(key)] = {
+            "crs": spec.get("crs"),
+            "road_id_offset": spec.get("road_id_offset"),
+        }
+    rules = site.get("level") or {}
+    if isinstance(rules, dict) and rules.get("road_id_stride") is not None:
+        out["_stride"] = rules.get("road_id_stride")
+    return out or None
 
 
 def gip_include_mode(site: dict | None = None) -> str:
@@ -92,6 +115,7 @@ def gip_cache_key(site: dict | None = None) -> str:
         "str_codes": gip_str_codes(site),
         # include:bbox downloads the full layer (local/forest/path), not STR_CODE-only.
         "netz": "all" if gip_include_mode(site) == "bbox" else "str_code",
+        "authorities": _authority_cache_sig(site),
     }
     return hashlib.sha1(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()[:12]
 
@@ -281,7 +305,12 @@ def _coords_walk(obj, out: list) -> None:
 
 def _clip_to_bbox(features: list[dict]) -> list[dict]:
     """GeoJSON from this WFS is EPSG:4326; clip using site CRS bbox."""
-    to_site = Transformer.from_crs("EPSG:4326", CRS, always_xy=True)
+    if SITE.get("authorities"):
+        from authorities import transformer_gip_into_working
+
+        to_site = transformer_gip_into_working(SITE)
+    else:
+        to_site = Transformer.from_crs("EPSG:4326", CRS, always_xy=True)
     kept = []
     for f in features:
         geom = f.get("geometry") or {}
@@ -369,36 +398,46 @@ def _fetch_features_by_objectids(oids: list[int]) -> list[dict]:
 
 
 def _apply_gip_extra(features: list[dict], site: dict | None = None) -> list[dict]:
-    """Merge YAML gip_extra OBJECTIDs; label Brücke/Tunnel/{oid} when unnamed."""
+    """Merge YAML gip_extra OBJECTIDs; label Brücke/Tunnel/{oid} when unnamed.
+
+    YAML ``objectid`` is the **level** id. FeatureServer queries use the
+    unshifted source id (Tirol GIP does not know about offsets).
+    """
+    from authorities import (  # noqa: WPS433
+        gip_ids_from_props,
+        split_level_objectid,
+        stamp_gip_features,
+    )
+
+    site = site or SITE
     extras = _gip_extra_entries(site)
     if not extras:
-        return features
+        return stamp_gip_features(site, features)
 
-    by_oid: dict[int, dict] = {}
+    def _level_oid(feat: dict) -> int | None:
+        ids = gip_ids_from_props(site, feat.get("properties") or {})
+        return None if ids is None else int(ids[0])
+
+    by_level: dict[int, dict] = {}
     for f in features:
-        p = f.get("properties") or {}
-        oid = p.get("OBJECTID")
+        oid = _level_oid(f)
         if oid is not None:
-            by_oid[int(oid)] = f
+            by_level[oid] = f
 
-    missing = [e["objectid"] for e in extras if e["objectid"] not in by_oid]
+    missing = [e for e in extras if int(e["objectid"]) not in by_level]
     if missing:
-        for f in _fetch_features_by_objectids(missing):
-            p = f.get("properties") or {}
-            oid = p.get("OBJECTID")
+        fs_oids = [split_level_objectid(site, e["objectid"])[0] for e in missing]
+        for f in _fetch_features_by_objectids(fs_oids):
+            oid = _level_oid(f)
             if oid is not None:
-                by_oid[int(oid)] = f
+                by_level[oid] = f
 
     merged = list(features)
-    present = {
-        int((f.get("properties") or {}).get("OBJECTID"))
-        for f in merged
-        if (f.get("properties") or {}).get("OBJECTID") is not None
-    }
+    present = {oid for oid in (_level_oid(f) for f in merged) if oid is not None}
 
     for e in extras:
-        oid = e["objectid"]
-        f = by_oid.get(oid)
+        oid = int(e["objectid"])
+        f = by_level.get(oid)
         if f is None:
             print(f"  WARNING: gip_extra OBJECTID={oid} not found on FeatureServer")
             continue
@@ -421,7 +460,7 @@ def _apply_gip_extra(features: list[dict], site: dict | None = None) -> list[dic
         f["properties"] = p
         if oid in present:
             merged = [
-                f if int((x.get("properties") or {}).get("OBJECTID") or -1) == oid else x
+                f if _level_oid(x) == oid else x
                 for x in merged
             ]
         else:
@@ -429,7 +468,7 @@ def _apply_gip_extra(features: list[dict], site: dict | None = None) -> list[dic
             present.add(oid)
         print(f"  gip_extra: OBJECTID={oid} -> {label} ({kind})")
 
-    return merged
+    return stamp_gip_features(site, merged)
 
 
 def _summarize(features: list[dict]) -> dict:
