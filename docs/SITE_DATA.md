@@ -49,6 +49,13 @@ sources:
     # bbox from site.bbox
 ```
 
+After `crs` and `bbox` are set, fill the authority list (required before any
+road fetch). Details: [AUTHORITIES.md](AUTHORITIES.md).
+
+```powershell
+cd C:\temp\beamng_autoroad; python tools\fill_site_authorities.py --site config\sites\NEU.yaml --write
+```
+
 A chat message can be minimal:
 
 > Test crop: EPSG:31254, BBOX=[…].  
@@ -64,7 +71,9 @@ C:\temp\beamng_autoroad\
   config\site.yaml          # your manifest (do not commit if private)
   config\site.example.yaml
   config\sites\             # named profiles
+  config\authorities.yaml   # country/province catalog (NUTS, CRS, id band)
   data\raw\                 # original downloads (large, gitignore)
+  data\boundaries\          # GISCO NUTS cache (gitignored full file)
   data\processed\           # heightmap, road JSON, masks
   data\roads\               # central GIP catalog (widths, not-tunnel)
   data\annotations\         # GPX/GeoJSON/GPKG: tunnels, edges, …

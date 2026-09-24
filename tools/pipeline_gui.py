@@ -235,10 +235,13 @@ class PipelineApp:
         self.site_combo.grid(row=0, column=1, sticky="we", padx=(8, 8))
         self.site_combo.bind("<<ComboboxSelected>>", lambda _e: self._on_site_change())
         ttk.Button(header, text="Open YAML", command=self._open_yaml).grid(row=0, column=2, padx=(0, 4))
-        ttk.Button(header, text="Open processed", command=self._open_processed).grid(row=0, column=3)
+        ttk.Button(header, text="Authorities", command=self._fill_authorities).grid(
+            row=0, column=3, padx=(0, 4)
+        )
+        ttk.Button(header, text="Open processed", command=self._open_processed).grid(row=0, column=4)
 
         self.meta = ttk.Label(header, text="", style="Meta.TLabel")
-        self.meta.grid(row=1, column=0, columnspan=4, sticky="w", pady=(6, 0))
+        self.meta.grid(row=1, column=0, columnspan=5, sticky="w", pady=(6, 0))
 
         actions = ttk.Frame(header)
         actions.grid(row=2, column=0, columnspan=4, sticky="w", pady=(8, 0))
@@ -333,6 +336,14 @@ class PipelineApp:
 
     def _open_yaml(self) -> None:
         open_path(self._site().path)
+
+    def _fill_authorities(self) -> None:
+        from fill_site_authorities import show_fill_dialog
+
+        if show_fill_dialog(self.root, self._site().path):
+            self.sites = list_sites()
+            self.site_by_rel = {s.rel: s for s in self.sites}
+            self._reload_site()
 
     def _open_processed(self) -> None:
         path = ROOT / "data" / "processed" / self._site().slug

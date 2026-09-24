@@ -815,10 +815,10 @@ def gallery_features(site: dict, sc: SiteCoords) -> list[dict]:
     path = bb.find_gip_geojson(site)
     data = json.loads(path.read_text(encoding="utf-8"))
     from gip_road_segments import not_tunnel_objectids
-    from authorities import gip_source_oid, stamp_gip_props, transformer_gip_into_working
+    from authorities import gip_source_oid, stamp_gip_props, transformer_gip_fc_into_working
 
     skip_oids = not_tunnel_objectids(site)
-    to_site = transformer_gip_into_working(site)
+    to_site = transformer_gip_fc_into_working(site, data)
     out = []
     for f in data.get("features") or []:
         props = stamp_gip_props(site, f.get("properties") or {})
@@ -1362,10 +1362,10 @@ def _gip_oid_xy(oid: int, site: dict | None = None) -> tuple[float, float] | Non
     except Exception:
         return None
     sc = SiteCoords(site or load_site())
-    from authorities import gip_ids_from_props, gip_source_oid, stamp_gip_props, transformer_gip_into_working
+    from authorities import gip_ids_from_props, gip_source_oid, stamp_gip_props, transformer_gip_fc_into_working
 
     site = site or load_site()
-    to_site = transformer_gip_into_working(site)
+    to_site = transformer_gip_fc_into_working(site, data)
     want = int(oid)
     for f in data.get("features") or []:
         pr = stamp_gip_props(site, f.get("properties") or {})

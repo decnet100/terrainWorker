@@ -1,6 +1,7 @@
 """Download Tirol Verkehrswege / GIP-like WFS for the site BBOX (cached).
 
-Default: reuse cache if present and bbox/str_code match.
+Geometry is requested in the GIP native CRS (default EPSG:31254), not 4326.
+Default: reuse cache if present and bbox/str_code/geom_crs match.
 Re-download only with --force (service is large/slow).
 
 Layers come from Landesstraßen WFS (Kunstbauten = Brücke, Galerie, …).
@@ -15,7 +16,6 @@ from collections import Counter
 from pathlib import Path
 
 import requests
-from pyproj import Transformer
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
@@ -26,13 +26,23 @@ RAW = ROOT / "data" / "raw"
 PROC = processed_dir(SITE)
 RAW.mkdir(parents=True, exist_ok=True)
 
+from authorities import (  # noqa: E402
+    apply_working_frame,
+    crs_wkid,
+    gip_native_crs,
+    load_authorities,
+    require_road_authorities,
+    same_crs,
+    transformer_gip_into_working,
+)
+
 CRS = str(SITE.get("crs", "EPSG:31254"))
 BBOX = list(map(float, SITE["bbox"]))
-if SITE.get("authorities"):
-    from authorities import apply_working_frame
-
+if load_authorities(SITE):
     CRS, BBOX = apply_working_frame(SITE)
 XMIN, YMIN, XMAX, YMAX = BBOX
+GIP_CRS = gip_native_crs(SITE)
+GIP_WKID = crs_wkid(GIP_CRS)
 NAME = site_slug(SITE)
 
 GIP = (SITE.get("sources") or {}).get("gip") or {}
@@ -116,6 +126,7 @@ def gip_cache_key(site: dict | None = None) -> str:
         # include:bbox downloads the full layer (local/forest/path), not STR_CODE-only.
         "netz": "all" if gip_include_mode(site) == "bbox" else "str_code",
         "authorities": _authority_cache_sig(site),
+        "geom_crs": gip_native_crs(site),
     }
     return hashlib.sha1(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()[:12]
 
@@ -175,6 +186,7 @@ def _get_page(start: int, count: int, filter_xml: str | None) -> list[dict]:
         "outputFormat": "GEOJSON",
         "count": count,
         "startIndex": start,
+        "srsName": GIP_CRS,
     }
     if filter_xml:
         params["FILTER"] = filter_xml
@@ -261,7 +273,7 @@ def _fetch_by_bbox() -> list[dict]:
             "spatialRel": "esriSpatialRelIntersects",
             "outFields": "*",
             "returnGeometry": "true",
-            "outSR": 4326,
+            "outSR": GIP_WKID,
             "f": "geojson",
             "resultOffset": offset,
             "resultRecordCount": page,
@@ -304,21 +316,22 @@ def _coords_walk(obj, out: list) -> None:
 
 
 def _clip_to_bbox(features: list[dict]) -> list[dict]:
-    """GeoJSON from this WFS is EPSG:4326; clip using site CRS bbox."""
-    if SITE.get("authorities"):
-        from authorities import transformer_gip_into_working
-
-        to_site = transformer_gip_into_working(SITE)
+    """Clip service geometry (GIP native CRS) against the working-CRS bbox."""
+    if same_crs(GIP_CRS, CRS):
+        to_site = None
     else:
-        to_site = Transformer.from_crs("EPSG:4326", CRS, always_xy=True)
+        to_site = transformer_gip_into_working(SITE, GIP_CRS)
     kept = []
     for f in features:
         geom = f.get("geometry") or {}
         pts: list = []
         _coords_walk(geom.get("coordinates"), pts)
         hit = False
-        for lon, lat, *rest in pts:
-            x, y = to_site.transform(float(lon), float(lat))
+        for gx, gy, *rest in pts:
+            if to_site is None:
+                x, y = float(gx), float(gy)
+            else:
+                x, y = to_site.transform(float(gx), float(gy))
             if XMIN <= x <= XMAX and YMIN <= y <= YMAX:
                 hit = True
                 break
@@ -386,7 +399,7 @@ def _fetch_features_by_objectids(oids: list[int]) -> list[dict]:
         "where": where,
         "outFields": "*",
         "returnGeometry": "true",
-        "outSR": "4326",
+        "outSR": str(GIP_WKID),
         "f": "geojson",
     }
     r = requests.get(FS_QUERY, params=params, headers=_fs_headers(), timeout=TIMEOUT)
@@ -525,6 +538,29 @@ def _print_inventory(summary: dict) -> None:
         print(f"  {s['kind']:8s} {s['name']} ({s.get('length_m')} m) {code}{mark}")
 
 
+def _assert_native_metres(features: list[dict]) -> None:
+    """Abort if a projected request came back as lon/lat degrees."""
+    from pyproj import CRS
+
+    crs = CRS.from_user_input(GIP_CRS)
+    if crs.is_geographic:
+        return
+    sample: list[tuple[float, float]] = []
+    for f in features:
+        pts: list = []
+        _coords_walk((f.get("geometry") or {}).get("coordinates"), pts)
+        for p in pts[:8]:
+            if len(p) >= 2:
+                sample.append((float(p[0]), float(p[1])))
+        if len(sample) >= 24:
+            break
+    if sample and all(abs(x) <= 180.0 and abs(y) <= 90.0 for x, y in sample):
+        raise SystemExit(
+            f"GIP-Antwort sieht nach geografischen Grad aus, angefordert war {GIP_CRS}. "
+            "WFS srsName / FeatureServer outSR prüfen."
+        )
+
+
 def _download_features() -> tuple[list[dict], int]:
     """Return (clipped features before gip_extra, unclipped count)."""
     include = gip_include_mode()
@@ -555,6 +591,7 @@ def _download_features() -> tuple[list[dict], int]:
         all_feats = _fetch_by_str_code(str(STR_CODE))
 
     print(f"Road features total: {len(all_feats)}")
+    _assert_native_metres(all_feats)
     clipped = _clip_to_bbox(all_feats)
     print(f"After site BBOX clip: {len(clipped)}")
     return clipped, len(all_feats)
@@ -568,6 +605,7 @@ def main() -> None:
         help="Re-download even if a matching cache exists",
     )
     args = ap.parse_args()
+    require_road_authorities(SITE)
 
     RAW.mkdir(parents=True, exist_ok=True)
     PROC.mkdir(parents=True, exist_ok=True)
@@ -578,8 +616,17 @@ def main() -> None:
         print(f"Using cached GIP extract: {cache_path}")
         print(f"  features={meta.get('feature_count')} key={meta.get('cache_key')}")
         data = json.loads(cache_path.read_text(encoding="utf-8"))
+        cached_crs = str(
+            ((data.get("crs") or {}).get("properties") or {}).get("name") or ""
+        ).strip()
+        if cached_crs.upper() in {"EPSG:4326", "CRS84", "OGC:CRS84"}:
+            raise SystemExit(
+                "Alter GIP-Cache liegt in EPSG:4326. "
+                "Neu laden: python tools\\fetch_gip.py --force"
+            )
         feats = _apply_gip_extra(data.get("features") or [])
         data["features"] = feats
+        data["crs"] = {"type": "name", "properties": {"name": GIP_CRS}}
         # Persist merge so build_bridges sees extras without re-fetch logic
         cache_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
         summary = _summarize(feats)
@@ -599,7 +646,7 @@ def main() -> None:
 
     fc = {
         "type": "FeatureCollection",
-        "crs": {"type": "name", "properties": {"name": "EPSG:4326"}},
+        "crs": {"type": "name", "properties": {"name": GIP_CRS}},
         "features": clipped,
     }
     cache_path.write_text(json.dumps(fc, ensure_ascii=False), encoding="utf-8")
@@ -612,6 +659,7 @@ def main() -> None:
         "include": gip_include_mode(),
         "str_codes": gip_str_codes(),
         "crs_site": CRS,
+        "geom_crs": GIP_CRS,
         "bbox": BBOX,
         "feature_count": len(clipped),
         "road_feature_count": n_raw,
@@ -623,6 +671,7 @@ def main() -> None:
     print(f"Wrote {cache_path}")
     print(f"Wrote {meta_path}")
     print(f"Wrote {summary_path}")
+    print(f"  geom_crs={GIP_CRS} site_crs={CRS}")
     _print_inventory(summary)
 
 

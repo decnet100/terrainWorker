@@ -3,6 +3,7 @@
 # Center ~38400 / 246100 (EPSG:31254)
 name: tirol-fernpass-4096
 crs: EPSG:31254
+authorities: tirol
 bbox:
   - 36352.0
   - 244052.0

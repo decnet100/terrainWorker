@@ -3,6 +3,7 @@
 # User bbox EPSG:31254 x22700–30700, y213300–221300. WGS84 ~47.058,10.632 – 47.130,10.738.
 name: tirol-reschen-8192
 crs: EPSG:31254
+authorities: tirol
 bbox:
   - 22700.0
   - 213300.0

@@ -2,6 +2,7 @@
 # Level: autoroad_testarena  size: 512x512 m @ 1 m/px
 name: tirol-testarena
 crs: EPSG:31254
+authorities: tirol
 bbox:
 - 36623.974
 - 242963.482

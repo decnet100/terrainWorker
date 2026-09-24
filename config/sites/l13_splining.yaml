@@ -9,6 +9,7 @@
 # Galleries: python tools/build_galleries.py
 name: tirol-l13-kuehtai-2048
 crs: EPSG:31254
+authorities: tirol
 bbox:
   - 53878.0
   - 230758.0

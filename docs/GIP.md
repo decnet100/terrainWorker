@@ -4,7 +4,29 @@ Provincial roads L+B via ArcGIS WFS (CC BY 3.0 AT):
 
 `https://dservices3.arcgis.com/hG7UfxX49PQ8XkXh/arcgis/services/Verkehrswege/WFSServer`
 
-FeatureType: `Verkehrswege:Verkehrswege` · default CRS: **EPSG:31254**
+FeatureType: `Verkehrswege:Verkehrswege` · native CRS: **EPSG:31254** (MGI / Austria GK West)
+
+GIP is requested and cached in that local CRS (`WFS srsName`, FeatureServer `outSR`).
+It is **not** fetched as EPSG:4326. Reprojection into the working CRS uses the
+official correction grid: for MGI↔ETRS89 (GK↔UTM) the BEV
+`at_bev_AT_GIS_GRID_2021_09_28.tif` from the [PROJ CDN](https://cdn.proj.org/at_bev_AT_GIS_GRID_2021_09_28.tif),
+stored under `data/grids/` (gitignored, downloaded on first need). An explicit
+`authorities.*.grid` (NTv2 `.gsb` or GeoTIFF) overrides that. A missing grid
+for a datum change aborts — there is no silent Helmert / WGS84 hop.
+
+Override the request CRS with `sources.gip.crs` when the service is not Tirol
+GK West. Cache key includes `geom_crs`; old 4326 extracts are not reused
+(`python tools\fetch_gip.py --force`).
+
+The site must list the catalog authorities that CRS + bbox cover. Fill them
+from the crop ([AUTHORITIES.md](AUTHORITIES.md)):
+
+```powershell
+cd C:\temp\beamng_autoroad; python tools\fill_site_authorities.py --write
+```
+
+Missing or `leave_empty` aborts before the WFS runs. Südtirol IDs are stored
+as level ids (+10 000 000).
 
 ## Download rule
 

@@ -2,6 +2,7 @@
 # Aktivieren:  $env:AUTOROAD_SITE="config/sites/hahntennjoch.yaml"
 name: tirol-m28-test-500m
 crs: EPSG:31254
+authorities: tirol
 bbox:
   - 22150.0
   - 237990.0

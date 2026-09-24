@@ -7,6 +7,7 @@ name: tirol-test-ausschnitt
 #   EPSG:31254 = MGI / Austria GK West
 #   EPSG:31255 = MGI / Austria GK Central
 crs: EPSG:31254
+authorities: tirol
 
 # xmin, ymin, xmax, ymax in the CRS above (metres)
 # Placeholder — replace with a real pass crop

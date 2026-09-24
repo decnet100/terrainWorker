@@ -2069,12 +2069,12 @@ def _stamp_disk_accum(
 
 def _gip_beamng_polyline(site: dict, objectid: int) -> list[tuple[float, float]]:
     """BeamNG XY polyline for a GIP OBJECTID (empty if missing)."""
-    from authorities import gip_ids_from_props, stamp_gip_props, transformer_gip_into_working
+    from authorities import gip_ids_from_props, stamp_gip_props, transformer_gip_fc_into_working
 
     sc = __import__("site_coords", fromlist=["SiteCoords"]).SiteCoords(site)
     path = bb.find_gip_geojson(site)
     data = json.loads(path.read_text(encoding="utf-8"))
-    to_site = transformer_gip_into_working(site)
+    to_site = transformer_gip_fc_into_working(site, data)
     want = int(objectid)
     for f in data.get("features") or []:
         props = stamp_gip_props(site, f.get("properties") or {})

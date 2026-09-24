@@ -1,0 +1,51 @@
+# Catalog of map authorities (not a site).
+# Site YAML names the ones that apply: `authorities: tirol` or a block per key.
+# Detection uses the site CRS + bbox against the WGS84 rings below.
+# Overlap at a border is intentional — both keys must then be listed.
+
+stride: 10000000
+
+authorities:
+  tirol:
+    crs: EPSG:31254
+    road_id_offset: 0
+    landcover: tirol_landnutzung
+    nuts_ids: [AT33]
+    # Austrian Tyrol, north of the main alpine border (Reschen / Brenner).
+    wgs84_ring:
+      - [10.09, 46.84]
+      - [10.09, 47.75]
+      - [12.96, 47.75]
+      - [12.96, 46.64]
+      - [12.00, 46.64]
+      - [11.50, 46.84]
+      - [10.50, 46.84]
+      - [10.09, 46.84]
+
+  suedtirol:
+    crs: EPSG:25832
+    road_id_offset: 10000000
+    nuts_ids: [ITH1]
+    # South of the Reschen / Brenner line.
+    wgs84_ring:
+      - [10.38, 46.22]
+      - [10.38, 46.84]
+      - [10.55, 46.84]
+      - [11.00, 46.92]
+      - [11.50, 47.01]
+      - [12.28, 47.10]
+      - [12.48, 46.70]
+      - [12.20, 46.38]
+      - [11.35, 46.22]
+      - [10.38, 46.22]
+
+  schweiz:
+    crs: EPSG:2056
+    road_id_offset: 20000000
+    nuts_ids: [CH01, CH02, CH03, CH04, CH05, CH06, CH07]
+    wgs84_ring:
+      - [5.96, 45.82]
+      - [5.96, 47.81]
+      - [10.49, 47.81]
+      - [10.49, 45.82]
+      - [5.96, 45.82]

@@ -3,6 +3,7 @@
 # oder Datei nach config/site.yaml kopieren.
 name: tirol-l13-kuehtai-2048
 crs: EPSG:31254
+authorities: tirol
 # 2048×2048 m — covers Rauheneck + Mugkögele/Marcheck (needs >1109 m east–west).
 # (1536 is not a BeamNG-friendly power-of-two heightmap size.)
 # Center ~54646/231782

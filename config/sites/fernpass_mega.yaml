@@ -3,6 +3,7 @@
 # Center ~38400 / 246100 (EPSG:31254) — gleich wie fernpass.yaml
 name: tirol-fernpass-8192
 crs: EPSG:31254
+authorities: tirol
 bbox:
   - 34304.0
   - 242004.0

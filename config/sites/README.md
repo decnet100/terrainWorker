@@ -12,6 +12,15 @@
 | [`imst.yaml`](imst.yaml) | B189 Imst / Tarrenz (defaults check) | `autoroad_imst_8192` | 8000×8000 → 8192² |
 | [`oetz.yaml`](oetz.yaml) | Draft copy of the site template | `autoroad_test` | — |
 
+A new profile needs `crs` + `bbox`, then `authorities` from that crop
+([AUTHORITIES.md](../../docs/AUTHORITIES.md)):
+
+```powershell
+cd C:\temp\beamng_autoroad; python tools\fill_site_authorities.py --site config\sites\NEU.yaml --write
+```
+
+Or pick the map in the step window and use **Authorities**.
+
 ## Choose the active site
 
 Usual path: pick the map in the step window. Core steps = `build_level.py`; extras (GIP, decals, structures, rails) are the later cards.

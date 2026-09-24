@@ -3,6 +3,7 @@
 # User bbox (0.5 m corners snapped to integer metres). WGS84 ~47.231,10.681 – 47.302,10.787.
 name: tirol-imst-8192
 crs: EPSG:31254
+authorities: tirol
 bbox:
   - 26316.0
   - 232503.0

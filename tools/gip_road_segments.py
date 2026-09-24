@@ -913,13 +913,15 @@ def load_gip_road_segments(site: dict, *, width_m: float | None = None) -> dict:
     from authorities import (  # noqa: WPS433
         gip_authority_key,
         gip_ids_from_props,
+        require_road_authorities,
         stamp_gip_props,
-        transformer_gip_into_working,
+        transformer_gip_fc_into_working,
     )
 
+    require_road_authorities(site)
     feats = data.get("features") or []
-    auth_key = gip_authority_key(site) if site.get("authorities") else None
-    to_site = transformer_gip_into_working(site)
+    auth_key = gip_authority_key(site)
+    to_site = transformer_gip_fc_into_working(site, data)
     z_at = _load_z_at(site)
     bng = site.get("beamng") or {}
     if width_m is None:

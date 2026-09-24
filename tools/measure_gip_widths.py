@@ -70,8 +70,19 @@ _LN_PREF = {
 }
 
 
-def _to_31254() -> Transformer:
+def _ln_to_31254() -> Transformer:
+    """Landnutzung cache stays EPSG:4326 for now."""
     return Transformer.from_crs("EPSG:4326", "EPSG:31254", always_xy=True)
+
+
+def _gip_to_31254(site: dict, data: dict) -> Transformer:
+    from authorities import gip_fc_crs, make_grid_transformer, same_crs
+
+    src = gip_fc_crs(data, site)
+    dest = "EPSG:31254"
+    if same_crs(src, dest):
+        return Transformer.from_crs(src, dest, always_xy=True)
+    return make_grid_transformer(src, dest, None)
 
 
 def _walk_xy(geom: dict, tf: Transformer) -> list[tuple[float, float]]:
@@ -323,13 +334,14 @@ def measure_site(site: dict, catalog: dict, *, force: bool) -> dict:
         )
     print(f"GIP        {gip_path.name}")
     print(f"Landnutzung {ln_path.name}")
-    tf = _to_31254()
-    geoms, codes = load_street_polygons(ln_path, tf)
+    data = json.loads(gip_path.read_text(encoding="utf-8"))
+    ln_tf = _ln_to_31254()
+    gip_tf = _gip_to_31254(site, data)
+    geoms, codes = load_street_polygons(ln_path, ln_tf)
     print(f"Street polygons: {len(geoms)}")
     if not geoms:
         raise SystemExit("No LN-V* street polygons in Landnutzung cache")
     tree = STRtree(geoms)
-    data = json.loads(gip_path.read_text(encoding="utf-8"))
     feats = data.get("features") or []
     segs = catalog.setdefault("segments", {})
     n_new = n_skip = n_applied = 0
@@ -345,7 +357,7 @@ def measure_site(site: dict, catalog: dict, *, force: bool) -> dict:
         if not force and key in segs:
             n_skip += 1
             continue
-        xy = _walk_xy(f.get("geometry") or {}, tf)
+        xy = _walk_xy(f.get("geometry") or {}, gip_tf)
         if len(xy) < 2:
             continue
         class_w = _gip_segment_width_m(

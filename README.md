@@ -34,7 +34,7 @@ cd C:\temp\beamng_autoroad; python tools\pipeline_gui.py
 
 In the window:
 
-- **Map** picks a file under `config/sites/`. **Open YAML** / **Open processed** jump to that site.
+- **Map** picks a file under `config/sites/`. **Open YAML** / **Open processed** open that site. **Authorities** writes the catalog keys for the bbox ([docs/AUTHORITIES.md](docs/AUTHORITIES.md)).
 - Each card shows the YAML keys for the step, last run, and a **?** link into `docs/`.
 - **Core steps** runs the one-shot (`fetch_dgm` … `build_forest`). Same as `python tools\build_level.py --site …`.
 - **This step** runs only that card. **From here** runs every matching step from that card onward (skips steps the site does not configure).
@@ -77,6 +77,7 @@ cd C:\temp\beamng_autoroad; python tools\seed_annotations.py
 - [docs/CONCEPT.md](docs/CONCEPT.md) — geodata → playable pass
 - [docs/STATUS.md](docs/STATUS.md) — current state, roadmap, commands
 - [docs/SITE_DATA.md](docs/SITE_DATA.md) — WCS/WFS links, bbox, local tiles
+- [docs/AUTHORITIES.md](docs/AUTHORITIES.md) — catalog, NUTS fill, road-id bands
 - [docs/ANNOTATIONS.md](docs/ANNOTATIONS.md) — GIS: road edge / guardrails / gaps
 - [docs/GIP.md](docs/GIP.md) — Tyrol road WFS / structures (cache)
 - [docs/STRUCTURES.md](docs/STRUCTURES.md) — Brücken, Tunnel, Galerien, Rampen neben der Platte

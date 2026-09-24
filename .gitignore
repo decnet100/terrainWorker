@@ -1,6 +1,8 @@
 # Downloads und Zwischenprodukte — nicht versionieren
 data/raw/
 data/processed/
+data/grids/
+data/boundaries/nuts_rg_*.geojson
 config/site.yaml
 .cdse_credentials
 
