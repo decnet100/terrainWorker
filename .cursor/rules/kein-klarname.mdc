@@ -1,13 +1,13 @@
 ---
-description: Keinen Klarnamen veröffentlichen, stattdessen decnet100
+description: Veröffentlichter Text nutzt das Handle decnet100
 alwaysApply: true
 ---
 
-# Klarname
+# Handle
 
-Der Name Christian Demmler erscheint in diesem Repo nicht. Stattdessen steht das Handle `decnet100`.
+README, Docs, Kommentare und Pfadbeispiele nennen als Person nur das Handle `decnet100`.
 
-Das gilt für README, Docs, Kommentare und Pfadbeispiele, auch in der Form `christian.demmler`.
+Ein anderer Personenname, eine E-Mail-Adresse oder ein Windows-Benutzerordner an diesen Stellen wird durch `decnet100` ersetzt.
 
 ```text
 cd C:\Users\decnet100\Documents\privat\alpine-roadtrip
