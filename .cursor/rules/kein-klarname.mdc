@@ -1,0 +1,14 @@
+---
+description: Keinen Klarnamen veröffentlichen, stattdessen decnet100
+alwaysApply: true
+---
+
+# Klarname
+
+Der Name Christian Demmler erscheint in diesem Repo nicht. Stattdessen steht das Handle `decnet100`.
+
+Das gilt für README, Docs, Kommentare und Pfadbeispiele, auch in der Form `christian.demmler`.
+
+```text
+cd C:\Users\decnet100\Documents\privat\alpine-roadtrip
+```
