@@ -35,9 +35,9 @@ In `master` liegt die Road-Mesh-Pipeline **noch nicht**. Die befahrene Fläche i
 
 Zusätzlich (lokal, noch nicht im Remote): DAE-Fahrbahnstücke mit **gut geglättetem, im Querschnitt detailliertem Profil**. Collision-tauglich, **ohne** eigenes visuelles Mesh. Das ist die Fläche, auf die diese Idee aufsetzt — nicht das 1-m-Terrain und nicht die DecalRoad.
 
-Die Collision-Quelle hat vor dem Vereinfachen etwa **0,5 m mittleren Knotenabstand** (Nachbar zu Nachbar auf der Fläche). Daraus wird das `Colmesh-1` **ausgedünnt**. Risse, Flecken, Bitumen, Gullideckel und Viehgatter kommen **darauf hinzu** — sie ersetzen das 0,5-m-Gitter nicht und ziehen es nicht vollflächig feiner.
+Quelle ist das **vorbearbeitete, geglättete 0,5-m-DGM**. Daraus wird das Road-Mesh abgeleitet (Profil, Oberkante). Diese Fläche — plus eine **passende Lücke unter der Spur**, damit Gelände und Mesh nicht doppelt tragen — geht später auf das Terrain. Das fertige Mesh ist bewusst **superglatt**. Sicht behält diese Geometrie. Collision wird mit **enger Winkeltoleranz** ausgedünnt (lange Gerade sollen zusammenfallen). Erst auf diesem glatten Ausgangspunkt liegen Risse, Flecken, Bitumen, Gullideckel und Viehgatter — sichtbar und, wo fühlbar, physisch.
 
-[CONCEPT.md](CONCEPT.md) hält fest: Makrounruhe aus dem DGM, keine vollflächige Hochpoly-Körnung. Das bleibt die Lastgrenze. Detaillierung heißt hier **Inseln und Stempel auf der ausgedünnten Profil-Collision**, nicht die ganze Spur auf 5 cm zerlegen.
+[CONCEPT.md](CONCEPT.md) hält fest: Makrounruhe aus dem DGM, keine vollflächige Hochpoly-Körnung. Das bleibt die Lastgrenze für die **Einbauten**. Das 0,5-m-Profil selbst ist die Fahrbahn, nicht die Abnutzung.
 
 ---
 
@@ -69,29 +69,72 @@ Heute teilen beide Geometrien die Vertices. Unterschiedliche Dreiecke in denselb
 
 ---
 
-## Collision: 0,5 m, ausdünnen, Einbauten darauf
+## Vorgehen zur Erstellung
 
-Drei Schichten, in dieser Reihenfolge:
+Kein gebauter Schritt. Gemeinte Reihenfolge:
 
 ```text
-1. natives Profil     mittlerer Knotenabstand ≈ 0,5 m
-2. Colmesh-1          dasselbe Profil, ausgedünnt (weniger Dreiecke)
-3. Einbauten          Flecken / Deckel / Gatter sitzen auf (2), nicht in (1) eingeritzt
+vorbearbeitetes, geglättetes 0,5-m-DGM
+    → Road-Mesh ableiten (Profil, Oberkante, bewusst superglatt)
+    → später aufs Terrain: dieselbe Fläche
+         + Lücke unter der Spur (keine Doppel-Collision)
+    → Sicht  = dieses Mesh, unverändert in der Dichte
+    → Collision = dasselbe Mesh, ausgedünnt mit enger Winkeltoleranz
+    → lokale Effekte auf den fertigen glatten Ausgangspunkt
+         sichtbar auf dem Sicht-Mesh
+         physisch auf der Collision, wo der Reifen es merken soll
 ```
 
-Ausdünnen **vor** den Einbauten. Eine Lippe von ein bis zwei Zentimetern oder die Stäbe eines Viehgatteres verschwinden, wenn der Vereinfacher sie als Rauschen der 0,5-m-Fläche behandelt. Entweder die Einbauten erst nach dem Ausdünnen anfügen, oder ihre Dreiecke vor dem Vereinfacher sperren. Dasselbe Profil danach noch einmal auf 5 cm zu legen und wieder auszudünnen, ist der teure Umweg.
+### Ableitung aus dem 0,5-m-DGM
 
-Was 0,5 m tragen — und was nicht:
+Die 0,5 m sind die **DGM-Zellenweite** und damit der mittlere Knotenabstand der abgeleiteten Fläche, nicht eine nachträglich verdichtete Fahrbahn. Vorbearbeitung und Glättung nehmen die Roh-Zacken des Geländemodells weg, bevor das Mesh entsteht. Querschnitt (Kuppe, Querneigung) bleibt erhalten — das ist das „im Profil detailliert“, nicht die Abnutzung.
 
-| Merkmal | Auf dem 0,5-m-Gitter | Nach dem Ausdünnen | Folgerung |
-|---------|----------------------|--------------------|-----------|
-| Längs- und Querprofil, Kuppe, Querneigung | ja | ja, etwas weicher | das ist die Collision-Quelle |
-| Ausbesserungsfleck ≥ etwa 1 m, 1–2 cm Höhe | ein paar verschobene Knoten | oft weg | als **zusätzliche** Insel anfügen |
-| Gullideckel (≈ 0,6 m) | ein Knoten, keine Lippe | weg | Katalogkörper darauf |
-| Viehgatter-Stäbe | nicht abbildbar | — | Katalogkörper darauf |
+### Lücke unter der Spur
+
+Sobald das Fahrzeug auf der DAE steht, darf das Gelände darunter nicht mittragen. Heute macht das Road-Bed das Gegenteil: die Heightmap **ist** die Fahrbahn ([ROADS.md](ROADS.md)). Das neue Modell senkt oder nimmt die Terrain-Collision unter der Spur weg und setzt die Schulter an die Mesh-Kante, damit kein Absatz entsteht.
+
+`theTerrain_holemap.png` ist dafür das falsche Werkzeug auf der freien Strecke. Weiß löscht die ganze XY-Säule — bei Galerien steht das als Himmelsschacht, deshalb wird dort die Heightmap geschnitten statt gelocht (`build_galleries`: LocKarte kann kein Höhenband). Unter der offenen Spur heißt die Lücke: Gelände unter der Platte tiefer als das Mesh (Einsenken, nicht Portal-Loch), Schulter bündig. Zwischen Widerlagern bleibt das Gelände in der Spanne unangetastet ([struktur-spanne-gelaende](../.cursor/rules/struktur-spanne-gelaende.mdc)); die Lücke gilt für die **freie** DAE-Spur, nicht als Auffüllen einer Schlucht.
+
+Dieser Transfer aufs Terrain kommt **später**, nach dem Mesh. Die Abnutzung wartet nicht darauf.
+
+### Sicht bleibt, Collision mit enger Winkeltoleranz
+
+| Zweig | Geometrie | Zweck |
+|-------|-----------|--------|
+| Sicht | abgeleitetes 0,5-m-Mesh, Dichte behalten | Fläche, auf die optische Inseln kommen |
+| Collision | dieselbe Fläche, **ausgedünnt** | worauf das Fahrzeug steht |
+
+Ausdünnen mit **enger Winkeltoleranz**: Knoten fallen weg, wo die Nachbarflächen fast komplanar sind. Auf langen Geraden (Pass, Tal) sollen viele 0,5-m-Knoten zu großen Vierecken werden. Kuppe, Querneigung und Kurve bleiben, wenn ihr Knickwinkel über der Schwelle liegt. Zu weit, und die Kuppe wird eine Ebene. Zu eng, und die Gerade behält unnötige Knoten.
+
+Das ist der erhoffte Gewinn gegenüber einem festen Längsschritt: die Collision wird dort billig, wo die Fläche wirklich flach ist.
+
+### Lokale Effekte auf den glatten Ausgangspunkt
+
+Erst wenn dieses Mesh fertig und glatt ist, kommen die Rezept-Inseln. Gemeinsame Herkunft, zwei Auftragungen:
+
+- **sichtbar** auf dem behaltenen 0,5-m-Mesh (Risse, Schlangen, dichte Fleckränder, aufgesetzte Katalogteile)
+- **physisch** nur was der Reifen merken soll (Fleck-Insel, Deckel-Lippe, Viehgatter)
+
+Sie ersetzen das 0,5-m-Gitter nicht und verdichten die ganze Spur nicht. Der glatte Ausgangspunkt bleibt die Referenz-Oberkante (`z_road`).
+
+Zwei Wege, die physische Auftragung zu halten:
+
+1. **Nach** dem Ausdünnen auf das `Colmesh-1` setzen — Lippe und Stäbe kann der Vereinfacher nicht als Rauschen der Fläche lesen.
+2. **Vorher** in das glatte Mesh legen und die neuen Kanten sperren, oder die Winkelschwelle enger halten als diese Kante. Ein Fleck von 2 cm auf 1 m ist etwa **1°**. Eine Schwelle darüber nimmt ihn mit, wenn er nicht gesperrt ist.
+
+Katalogkörper (Gullideckel, Viehgatter) gehen nicht durch den Flächen-Vereinfacher. Risse und dünne Schlangen bleiben Sicht: schmaler als 0,5 m, nach dem Ausdünnen erst recht.
+
+Was das 0,5-m-Profil selbst trägt — und was nicht:
+
+| Merkmal | Auf dem glatten 0,5-m-Mesh | Nach Winkel-Ausdünnen | Folgerung |
+|---------|----------------------------|------------------------|-----------|
+| Längs- und Querprofil, Kuppe, Querneigung | ja | ja, auf Geraden grober | das ist die Fahrbahn |
+| Ausbesserungsfleck ≥ etwa 1 m, 1–2 cm | ein paar verschobene Knoten | oft weg (≈ 1°) | Insel **auftragen**, nicht nur Knoten schieben |
+| Gullideckel (≈ 0,6 m) | ein Knoten, keine Lippe | weg | Katalogkörper auftragen |
+| Viehgatter-Stäbe | nicht abbildbar | — | Katalogkörper auftragen |
 | Asphaltriss, dünne Bitumenschlange | nicht abbildbar | — | nur Sicht |
 
-Der Reifenlatsch liegt bei etwa 0,2 m, das Gitter bei 0,5 m, nach dem Ausdünnen grober. Sub-halbmeter-Gefühl kommt nur aus den **hinzugefügten** Körpern, nicht aus dichterer Tessellation der ganzen Spur.
+Der Reifenlatsch liegt bei etwa 0,2 m. Sub-halbmeter-Gefühl kommt aus den **aufgetragenen** Körpern.
 
 ---
 
@@ -101,7 +144,7 @@ Nicht jedes Detail gehört ins Collision-Mesh. Der Reifenkontakt liegt in der Gr
 
 | Klasse | Beispiele | Sicht | Collision | Erzeugung |
 |--------|-----------|-------|-----------|-----------|
-| Abnutzung, zufällig | Asphaltrisse, Ausbesserungsflecken, Bitumenschlangen | ja | Flecken: Insel **auf** dem ausgedünnten Profil, wenn Höhe ≥ etwa 1–2 cm und Fläche in Reifengröße. Risse und dünne Schlangen: nie | Dichte aus dem Segment-Rezept, fester Zufallsstart |
+| Abnutzung, zufällig | Asphaltrisse, Ausbesserungsflecken, Bitumenschlangen | ja, auf dem glatten 0,5-m-Mesh | Flecken: physisch auftragen, wenn Höhe ≥ etwa 1–2 cm und Fläche in Reifengröße. Risse und dünne Schlangen: nie | Dichte aus dem Segment-Rezept, fester Zufallsstart |
 | Wiederkehrend | Gullideckel alle 100 m | ja | flache Lippe reicht | Raster auf `s`, Querversatz fest oder leicht streuend |
 | Einmalig / gesetzt | Viehgatter bei 22,8 m | ja | **muss** die Stäbe und Lücken haben | genaue Station, Katalog-DAE |
 
@@ -111,7 +154,7 @@ Als Geometrie auf der ganzen Spur: ungeeignet. Ein Riss ist zentimeterbreit; die
 
 ### Ausbesserungsflecken
 
-Flächig, oft 1–3 cm über oder unter der Nachbarfläche. Das ist die Abnutzung, die man **fühlen** kann, wenn der Fleck größer ist als der Reifenlatsch. Collision: eigene Insel **auf** dem ausgedünnten Profil, nicht ein verschobener 0,5-m-Knoten (der übersteht das Ausdünnen selten). Sicht: dichtere Umrandung, anderes Material.
+Flächig, oft 1–3 cm über oder unter der Nachbarfläche. Das ist die Abnutzung, die man **fühlen** kann, wenn der Fleck größer ist als der Reifenlatsch. Collision: Insel auf den glatten Ausgangspunkt auftragen (nach dem Ausdünnen oder mit gesperrter Kante), nicht nur einen 0,5-m-Knoten schieben. Sicht: dichtere Umrandung, anderes Material.
 
 ### Bitumenschlangen
 
@@ -163,19 +206,15 @@ beamng:
 „Optisch darauf passend“ heißt: dieselbe Oberkante, dieselben fühlbaren Körper an derselben Station. Es heißt **nicht**: dieselbe Dreieckszahl.
 
 ```text
-natives Profil (≈ 0,5 m Knotenabstand, geglättet, Querschnitt detailliert)
+glattes Road-Mesh aus 0,5-m-DGM (Ausgang)
         │
-        ├─ ausdünnen → Colmesh-1 (freie Strecke)
-        │     danach darauf:
-        │   + Viehgatter (Stäbe/Lücken)
-        │   + Gullideckel-Lippe
-        │   + Patch-Inseln (≥ 1–2 cm, großflächig)
-        │   ohne Risse, ohne feine Bitumen-Wülste
+        ├─ Sicht: Dichte behalten
+        │     darauf: Risse, Bitumen, dichte Patch-Ränder, Katalogteile
+        │     LOD nur für die Inseln (fern: glattes Profil, _a999)
         │
-        └─ sichtbare LODs  (eigene Dichte, nicht das ausgedünnte Colmesh)
-              near   Profil + Risse + Bitumen + dichte Patch-Ränder + aufgesetzte Katalogteile
-              mid    Profil + Patch-Albedo, ohne Riss-Geometrie
-              far    nur Profil (_a999), Abnutzung höchstens in der Textur
+        └─ Collision: enge Winkeltoleranz (Gerade fallen zusammen)
+              darauf physisch: Viehgatter, Deckel-Lippe, Patch-Inseln
+              ohne Risse, ohne feine Bitumen-Wülste
 ```
 
 Die Oberkante bleibt `z_road` ([fahrbahn-oberkante](../.cursor/rules/fahrbahn-oberkante.mdc)). Verdrängung liegt relativ dazu, nach oben oder unten. Die Platte hängt nach unten; Details sitzen auf der Fahrfläche.
@@ -190,7 +229,7 @@ Größenordnung, nicht Laborwert. Stammstrecke durch eine 8192-Karte: grob 10–
 
 ### Was die Karte trägt
 
-**Profil-Collision, nativ 0,5 m, dann ausgedünnt.** 15 km × 8 m bei 0,5 m Knotenabstand sind vor dem Vereinfachen grob 5·10⁵ Vertices — über dem Collada-Deckel, also kacheln oder sofort ausdünnen. Nach dem Ausdünnen sinkt die freie Strecke auf eine Größenordnung, die wenige Kacheln tragen. Die Einbauten zählen extra und bleiben lokal. Das ist die richtige Collision für die Stammstrecke.
+**Sicht behält 0,5 m, Collision wird winklig ausgedünnt.** 15 km × 8 m bei 0,5 m sind grob 5·10⁵ Vertices — über dem Collada-Deckel, die Sicht-Spur muss kacheln, nicht ausdünnen. Collision: dieselbe Fläche, enge Winkeltoleranz. Lange Gerade sollen stark schrumpfen; Kuppe und Kurve bleiben. Einbauten zählen extra und bleiben lokal.
 
 **Vollfläche 5 cm.** 15 km × 8 m / 0,05² ≈ 5·10⁷ Quads. Ein Mesh. Unbrauchbar, auch zerlegt: Speicher, Build und Physik.
 
@@ -202,9 +241,9 @@ Größenordnung, nicht Laborwert. Stammstrecke durch eine 8192-Karte: grob 10–
 
 | Distanz (Größenordnung) | Sicht | Collision |
 |-------------------------|-------|-----------|
-| nah (groß auf dem Schirm, `_a80` o. ä.) | Inseln + Katalogteile | unverändert Profil + fühlbare Körper |
-| mittel | Flecken als Farbe / Normale, keine Riss-Geometrie | unverändert |
-| fern (`_a999`) | geglättetes Profil | unverändert |
+| nah (groß auf dem Schirm, `_a80` o. ä.) | 0,5-m-Profil + Inseln + Katalogteile | ausgedünntes Profil + aufgetragene Körper |
+| mittel | 0,5-m-Profil + Flecken als Farbe, keine Riss-Geometrie | unverändert |
+| fern (`_a999`) | 0,5-m-Profil ohne Insel-Geometrie | unverändert |
 
 Collision wechselt **nicht** mit dem LOD. Sonst ändert sich das Fahrgefühl, wenn das Mesh wechselt.
 
@@ -219,7 +258,7 @@ Kacheln: 50–100 m je visuellem Stück, Stem ohne Ziffern (`rd_aa_a80`, nicht `
 | Fernpass Mega, Reschen, Imst 8192 | Stamm plus GIP im Kartenausschnitt | nur mit Kacheln, LOD und Katalog; keine vollflächige Feintessellation |
 | Forst- / Wirtschaftswege (`S-F`, `S-GW`) | Terrain-Kies, kein Road-Bed | außerhalb dieser Idee; bleiben Heightmap |
 
-Seitenäste auf 8192 nicht automatisch mit hohem Near-LOD versehen. Default: Profil-Collision, Fern-LOD, Abnutzung nur auf benannter Stammstrecke (`gip_decals: named` / `STR_CODE`).
+Seitenäste auf 8192 nicht automatisch mit Insel-LOD versehen. Default: glattes 0,5-m-Sichtmesh und winklig ausgedünnte Collision, Abnutzung nur auf benannter Stammstrecke (`gip_decals: named` / `STR_CODE`).
 
 ---
 
@@ -246,7 +285,7 @@ Heute kommt der Grip vom Terrain-Groundmodel unter der DecalRoad. Fährt das Fah
 Das ist ein Schnitt, kein Nebeneffekt:
 
 - Fahrbahn-DAE braucht ein Groundmodel (`ASPHALT` oder eine rauere Variante für starken Flickenteppich).
-- Terrain-Asphalt unter der Spur darf nicht mit der Platte kämpfen (Einsenken wie `force_deck_z_sink_m`, oder Maske ausnehmen).
+- Unter der Spur die **Lücke** (Gelände tiefer als das Mesh). Heutiges Road-Bed wäre das Gegenteil. Schulter an die Mesh-Kante, kein Absatz.
 - MeshRoad-Decks von Brücke und Galerie bleiben vorerst eigene Körper. Dieselbe Rezeptlogik kann später auf die Platte, ist aber nicht der erste Schritt.
 - Zwischen den Widerlagern gilt weiter: Gelände unangetastet ([struktur-spanne-gelaende](../.cursor/rules/struktur-spanne-gelaende.mdc)). Abnutzung sitzt auf der Platte oder der freien DAE-Spur, nicht in der Heightmap.
 
@@ -259,8 +298,8 @@ Das ist ein Schnitt, kein Nebeneffekt:
 - Rezept pro GIP-OBJECTID (Risse / Flecken / Bitumen als Stufe).
 - Fester Zufall für Inseln, Rebuild bleibt gleich.
 - Gullideckel im Raster, Viehgatter auf genauer Station.
-- Collision = ausgedünntes 0,5-m-Profil + nur fühlbare Körper, die **danach** daraufgesetzt werden.
-- Sichtbares Near-LOD mit Inseln, Fern-LOD = heutiges Profil.
+- Sicht = behaltenes 0,5-m-Mesh; Collision = dieselbe Fläche, enge Winkeltoleranz (Gerade fallen zusammen).
+- Lokale Effekte erst auf den fertigen glatten Ausgangspunkt, sichtbar und — wo fühlbar — physisch.
 - Katalog-DAE für wiederholte Körper (Muster Gebäude / Leitplanke).
 - Kacheln vor 65 535 Vertices, LOD-Namen ohne Ziffern im Stem.
 
@@ -275,7 +314,8 @@ Das ist ein Schnitt, kein Nebeneffekt:
 
 - Zweites sichtbares LOD neben `_a999` an einem Fahrbahn-TSStatic (Backdrop und Galerie nutzen bisher ein LOD).
 - Groundmodel am Fahrbahn-Material statt an der Terrain-Maske.
-- Die unveröffentlichte Profil-DAE als verbindliche Unterlage.
+- Die unveröffentlichte Profil-DAE (aus geglättetem 0,5-m-DGM) als verbindliche Unterlage.
+- Lücke unter der freien Spur auf dem Terrain, ohne LocKarte (kein Höhenband).
 
 **Erste sinnvolle Probe** (wenn gebaut werden soll): Testarena, ein Segment, `patches: medium`, ein Viehgatter auf `s`, Gullideckel im Raster. Collision zum Profil vergleichen, Near-LOD von der Seite ansehen, dann erst Fernpass.
 
@@ -286,11 +326,10 @@ Das ist ein Schnitt, kein Nebeneffekt:
 Kein neuer Schritt in `pipeline_catalog.py`. Reihenfolge, sobald die Road-Mesh-Pipeline im Remote liegt:
 
 ```text
-GIP-Achse + natives Profil (≈ 0,5 m Knotenabstand)
-    → Colmesh-1 ausdünnen (freie Strecke)
-    → Rezept (YAML / später GPKG-Punkte)
-    → Einbauten auf das ausgedünnte Colmesh (Flecken, Deckel, Gatter)
-    → visuelle LODs (eigene Dichte, passend zur Oberkante)
+geglättetes 0,5-m-DGM → glattes Road-Mesh
+    → Sicht behalten; Collision winklig ausdünnen
+    → Rezept: Inseln auf den glatten Ausgangspunkt (sichtbar + physisch)
+    → später: Fläche + Lücke unter der Spur aufs Terrain
     → TSStatic in die Level-JSON schreiben
 ```
 

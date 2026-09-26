@@ -100,6 +100,8 @@ cd C:\temp\beamng_autoroad; python tools\build_decal_roads.py
 
 **What:** a smoothed height band under the carriageway in the heightmap — not the decal texture. Goal: damp DGM micro-spikes so decal and terrain share a grade.
 
+A later road Collada would do the opposite under the slab: a gap so terrain does not collide with the mesh — [ROAD_SURFACE_DETAIL.md](ROAD_SURFACE_DETAIL.md).
+
 **When active:** `beamng.decal_roads.road_bed_conform: true` and build **without** `--skip-road-bed`.
 
 **Output:** `data/processed/<site>/heightmap_<size>_road_bed.png` (+ sync to level `import/`).
