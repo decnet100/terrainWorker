@@ -2,7 +2,7 @@
 
 State after Fernpass Mega polish (lanes→width, decal transitions, delineators).
 
-Related: [BEAMNG_IMPORT.md](BEAMNG_IMPORT.md), [GIP.md](GIP.md) (**centerline sources**), `tools/road_width.py`.
+Related: [BEAMNG_IMPORT.md](BEAMNG_IMPORT.md), [GIP.md](GIP.md) (**centerline sources**), `tools/road_width.py`. Local cracks / patches / manholes on a future road Collada: [ROAD_SURFACE_DETAIL.md](ROAD_SURFACE_DETAIL.md) (idea only).
 
 **Axis (Fernpass Mega):** decals / guardrails / bridges / galleries → **GIP**, not OSM. Unnamed GIP (Gassen) get terrain asphalt + road-bed only — [GIP.md](GIP.md).
 
