@@ -1039,6 +1039,11 @@ def load_gip_road_segments(site: dict, *, width_m: float | None = None) -> dict:
         str_counts[code_k] = str_counts.get(code_k, 0) + 1
 
     apply_follow_parent_z(roads, site)
+    from gip_bridge_flags import apply_stored_flags  # noqa: WPS433
+
+    n_flags = apply_stored_flags(site, roads)
+    if n_flags:
+        print(f"GIP bridge flags applied: {n_flags}")
 
     # Cache for debugging / other tools
     proc = processed_dir(site)

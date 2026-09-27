@@ -16,6 +16,69 @@ methods on the carriageway-only window (`_road_only` in
 Raw carriageway, full window, 596 290 pixels: 62 842 at or above 1.5 cm,
 median 0.48 cm, p99 6.8 cm. Carriageway-only p99 was 5.36 cm.
 
+## Rejected: straight grade through the first smooth pixel
+
+Do not continue `dgm_repair_cross_cover` or anything built on the same anchor.
+It does not reconstruct a cross-section. It waits for a pixel that happens to
+sit within 1.5 cm of the mean of its own 3×3 neighbourhood, calls that pixel
+the anchor, and lays one straight line from that pixel back to the edge.
+Curvature is not kept. A flat spot inside a gap passes the test and becomes
+the reference. Pixels inward of the anchor stay raw, so one smooth pixel
+between the edge and a rough band hides that band.
+
+The 1.5 m mean is nine DGM heights in a 3×3 square. At the edge the square
+includes terrain. It is only the pass/fail test. The stored anchor height is
+the pixel's own raw height, not the mean. The slope is the least-squares fit
+of other passing pixels from the anchor inward (smallest residual, not the
+smallest slope). That one slope is then written on the whole outward gap.
+
+Schematic, no measured heights:
+`data/processed/tirol-imst-8192/dgm_repair_cross_cover/schema_gerade.png`.
+
+Measured example, OID 6975. The typed point 283269 / 28279 is outside the
+corridor. With the 3 and the 8 swapped it is easting 28279, northing 238269,
+1.1 m off the centreline. Foot 28280 / 238269, station 631 m. Plot, every 1 m
+from −4 m to +4 m along the road, positive = left of travel:
+`data/processed/tirol-imst-8192/dgm_repair_cross_cover/oid6975_querprofil.png`.
+
+On that stretch the middle of the road is unchanged (median |Δz| = 0 on every
+section). The left anchor jumps from metre to metre, and so does the written
+correction. Right side usually has its first passing pixel within 0.1–0.4 m,
+so almost nothing is written.
+
+| along | left xa | left source | right | max \|Δz\| on the road | pixels ≥ 2 cm |
+|---:|---:|---:|---|---:|---:|
+| −4 m | 1.50 m | local 1.5 m | xa 0.34 m | 33 cm | 4 |
+| −3 m | 1.50 m | local 1.5 m | xa 0.22 m | 20 cm | 2 |
+| −2 m | 0.10 m | wider search | no grade | 0 | 0 |
+| −1 m | 1.45 m | linear gap | xa 0.13 m | 18 cm | 3 |
+| 0 | 1.30 m | local 1.5 m | xa 0.20 m | 20 cm | 2 |
+| +1 m | 1.50 m | local 1.5 m | no grade | 63 cm | 4 |
+| +2 m | 2.15 m | local 1.5 m | no grade | 82 cm | 4 |
+| +3 m | 1.85 m | linear gap | xa 0.41 m | 60 cm | 4 |
+| +4 m | 1.50 m | local 1.5 m | xa 0.21 m | 24 cm | 2 |
+
+Source "local 1.5 m" means the 1.5 m window already had RMSE ≤ 2 cm. "Wider
+search" borrows a slope. "Linear gap" means the station had no fit of its own
+and took edge height and slope from the neighbouring valid stations. The 82 cm
+step at +2 m and the 0 cm step at −2 m are four metres apart. That is the
+visible wave. Two to four pixels per section carry it.
+
+Also rejected, same grade, do not revive:
+
+- `dgm_repair_cross_extend` (`repair_dgm_cross_settle.py` as it stands): the
+  line continued up to 1.5 m inward. Road-only hot pixels 45 266 → 50 083,
+  p99 3.63 → 4.27 cm. It overwrote road that was already under 1 cm.
+- The interior median (class 10 in `dgm_repair_cross_settle`, no longer
+  applied by the script): 582 spikes, p99 of those pixels 21 cm → 89 cm.
+- `dgm_repair_cross_shoulder`: first metre outside the polygon set to the lip
+  height, flat, structures skipped. 170 903 pixels, median move 4 cm, p90
+  40 cm, max 9.9 m where the bank is steep. Not in the game.
+
+The level `autoroad_imst_8192` group `road_grid` currently shows the cover
+fill (raw interior, edge pixels replaced, +4 cm). It is the surface that was
+looked at, not a result to keep.
+
 ## Do not repeat
 
 These runs are kept under `data/processed/tirol-imst-8192/` and are not the method.
@@ -61,7 +124,8 @@ RMSE to 4 cm, at least 3 samples and 0.5 m of span.
 pixel. The next pixel inward stayed raw, and the step made the 1.5 m window
 rougher than the gap it had closed.
 
-`dgm_repair_cross_cover` is the fill to keep. Every carriageway pixel in the
+`dgm_repair_cross_cover` is the run that was inspected and then rejected.
+See the section above. Every carriageway pixel in the
 trapezoid from the edge to the anchor is written, with height interpolated in
 station and offset. A seam pass then writes one step further in, at most
 0.75 m, and only where the carriageway-only deviation is still at least
@@ -117,6 +181,37 @@ stop rule as written. It is not evidence that another roughness iteration
 would help. The interior median replaced 582 spikes, and 504 of those are
 still at or above 1.5 cm against their neighbourhood.
 
+## Transect along the centerline
+
+`tools/repair_dgm_transect.py` writes `dgm_repair_transect`. This is the
+successor. The cross-slope grades above stay rejected.
+
+Each half is sampled on the centerline normal, every 0.5 m along the road and
+every 0.25 m outward, until the carriageway polygon ends. A sample under
+1.5 cm in the carriageway-only 1.5 m window is a support of that half. A rough
+sample is not, including an edge pixel that is already the embankment. The
+stored shape is the height relative to the centerline. Between two supports of
+the same offset and the same half, at most 50 m apart, that shape is blended
+along the arc, so the profile is different at every station. Only a rough
+pixel is replaced, and only with the blended value at its own offset. Nothing
+is fitted across the gap at the broken station. An offset with no support
+within 50 m stays raw. Past the first and last support of that offset, nothing
+is written. Structure spans are neither supports nor targets. Terrain outside
+the carriageway polygon is not written.
+
+On this corridor, carriageway-only: hot pixels 54 544 → 35 520, p99 5.27 cm →
+4.71 cm. 50 811 rough pixels were replaced, 3 733 stayed raw. Median move
+2.3 cm, p90 7.3 cm, max 3.45 m where a slope pixel inside the polygon is
+replaced by the road profile. Full-window p99 rose from 6.2 cm to 7.9 cm
+because the new lip still shares its 1.5 m window with the bank.
+
+OID 6975, foot 28 280 / 238 269, station 630.8 m. The left edge at 2.5 m is
+rough. The longitudinal trace follows the clean supports of that offset, not a
+grade fitted at that station. The cross-section at the same station keeps the
+raw center and replaces the rough left edge with the blended half-profile.
+Plots: `dgm_repair_transect/oid6975_laengs.png` and
+`dgm_repair_transect/oid6975_querprofil.png`.
+
 ## Run
 
 ```powershell
@@ -127,5 +222,10 @@ cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/imst.yaml"; pytho
 cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/imst.yaml"; python tools\repair_dgm_cross_settle.py
 ```
 
-Cover has to exist before settle. Earlier folders stay. QGIS reads the
-GeoTIFFs; `qgis_process` crashes in this environment.
+Cover has to exist before settle. The transect does not read either of them.
+
+```powershell
+cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/imst.yaml"; python tools\repair_dgm_transect.py
+```
+
+Earlier folders stay. QGIS reads the GeoTIFFs; `qgis_process` crashes in this environment.

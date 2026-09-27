@@ -145,6 +145,9 @@ def _cfg(bng: dict) -> dict:
             else None
         ),
         "road_bed_smooth_m": float(defaults.get("road_bed_smooth_m") or 12.0),
+        # Trial: one road owns each carriageway pixel; the shoulder follows the
+        # nearest owned pixel; span samples keep their deck Z through the window.
+        "road_bed_exclusive": bool(defaults.get("road_bed_exclusive", False)),
         # Optional per-corridor overrides: match GIP objectid and/or OSM road id.
         "road_bed_items": list(defaults.get("road_bed_items") or []),
         # BeamNG often drops asphalt geometry on very long DecalRoads; split runs.
@@ -1127,7 +1130,7 @@ def _hold_span_deck_z(nodes: list, meshroads: list[dict]) -> list:
         if z_hold is None:
             out.append(n)
         elif isinstance(n, dict):
-            out.append({**n, "z": float(z_hold)})
+            out.append({**n, "z": float(z_hold), "hold_z": True})
         else:
             held = list(n)
             held[2] = float(z_hold)
@@ -1994,24 +1997,320 @@ def _elev_z_at(elev, size: int, extent: float, max_h: float):
     return z_at
 
 
-def _smooth_polyline_z(nodes: list[dict], window_m: float) -> list[dict]:
+def _smooth_polyline_z(
+    nodes: list[dict], window_m: float, *, freeze_holds: bool = False
+) -> list[dict]:
     if len(nodes) < 2 or window_m <= 0:
         return nodes
     cum = [0.0]
     for a, b in zip(nodes, nodes[1:]):
         cum.append(cum[-1] + math.hypot(b["x"] - a["x"], b["y"] - a["y"]))
     half = 0.5 * window_m
+    src_z = [float(n["z"]) for n in nodes]
     out = []
     for i, n in enumerate(nodes):
+        if freeze_holds and n.get("hold_z"):
+            out.append({**n, "z": src_z[i]})
+            continue
         s0, s1 = cum[i] - half, cum[i] + half
         num = den = 0.0
-        for j, m in enumerate(nodes):
+        for j, z in enumerate(src_z):
             if s0 <= cum[j] <= s1:
-                num += float(m["z"])
+                num += z
                 den += 1.0
-        z = num / den if den else float(n["z"])
+        z = num / den if den else src_z[i]
         out.append({**n, "z": z})
     return out
+
+
+def _bed_class_rank(road: dict) -> int:
+    """Higher keeps the carriageway when two cores cover the same pixel."""
+    code = str(road.get("str_code") or "").strip().upper()
+    hwy = str(road.get("highway") or "").lower()
+    if code.startswith("A") or hwy in ("motorway", "motorway_link"):
+        return 4
+    if len(code) >= 2 and code[0] == "B" and code[1:2].isdigit():
+        return 3
+    if code.startswith("L") or hwy in ("trunk", "primary"):
+        return 2
+    if hwy in ("secondary", "tertiary", "residential", "unclassified"):
+        return 1
+    return 0
+
+
+_CROSSFALL_STEP_M = 50.0
+_CROSSFALL_OFFSET_M = 1.5
+_CROSSFALL_BLEND_M = 8.0
+_CROSSFALL_MAX = 0.08
+_CROSSFALL_ALONG_M = (-4.0, 0.0, 4.0)
+
+
+def _crossfall_lookup(pieces: list[tuple[float, float, float]], s: float) -> float:
+    """Crossfall of the 50 m piece. The last metres blend into the next piece."""
+    if not pieces:
+        return 0.0
+    last = len(pieces) - 1
+    for i, (_s0, s1, cf) in enumerate(pieces):
+        if s < s1 or i == last:
+            if i < last and s > s1 - _CROSSFALL_BLEND_M:
+                u = (s - (s1 - _CROSSFALL_BLEND_M)) / _CROSSFALL_BLEND_M
+                if u < 0.0:
+                    u = 0.0
+                elif u > 1.0:
+                    u = 1.0
+                return (1.0 - u) * cf + u * pieces[i + 1][2]
+            return cf
+    return pieces[-1][2]
+
+
+def _crossfall_station(nodes, cum, s: float, z_at) -> float | None:
+    """Bilinear pair ±1.5 m. None on a deck hold or when the slope is past 8 %."""
+    j = 0
+    while j + 1 < len(cum) and cum[j + 1] < s:
+        j += 1
+    j = min(j, len(nodes) - 2)
+    a, b = nodes[j], nodes[j + 1]
+    if a.get("hold_z") or b.get("hold_z"):
+        return None
+    seg = max(cum[j + 1] - cum[j], 1e-9)
+    t = min(1.0, max(0.0, (s - cum[j]) / seg))
+    x = float(a["x"]) + t * (float(b["x"]) - float(a["x"]))
+    y = float(a["y"]) + t * (float(b["y"]) - float(a["y"]))
+    left, right = bb.left_right_unit(
+        float(b["x"]) - float(a["x"]), float(b["y"]) - float(a["y"])
+    )
+    off = _CROSSFALL_OFFSET_M
+    zl = float(z_at(x + off * left[0], y + off * left[1]))
+    zr = float(z_at(x + off * right[0], y + off * right[1]))
+    cf = (zr - zl) / (2.0 * off)
+    if not math.isfinite(cf) or abs(cf) > _CROSSFALL_MAX:
+        return None
+    return cf
+
+
+def _crossfall_pieces(nodes, z_at) -> list[tuple[float, float, float]]:
+    """One crossfall per 50 m along the polyline. Median of three pairs around the middle."""
+    import numpy as np
+
+    if len(nodes) < 2:
+        return []
+    cum = [0.0]
+    for a, b in zip(nodes, nodes[1:]):
+        cum.append(
+            cum[-1]
+            + math.hypot(float(b["x"]) - float(a["x"]), float(b["y"]) - float(a["y"]))
+        )
+    total = cum[-1]
+    if total < 1.0:
+        return []
+    pieces: list[tuple[float, float, float]] = []
+    s0 = 0.0
+    while s0 < total - 0.25:
+        s1 = min(total, s0 + _CROSSFALL_STEP_M)
+        mid = 0.5 * (s0 + s1)
+        vals = []
+        for ds in _CROSSFALL_ALONG_M:
+            ss = mid + ds
+            if ss < 0.0 or ss > total:
+                continue
+            cf = _crossfall_station(nodes, cum, ss, z_at)
+            if cf is not None:
+                vals.append(cf)
+        med = float(np.median(vals)) if vals else 0.0
+        pieces.append((s0, s1, med))
+        if s1 >= total - 0.01:
+            break
+        s0 = s1
+    return pieces
+
+
+def _stamp_exclusive_beds(
+    prepared: list[dict],
+    *,
+    value_acc,
+    weight_acc,
+    opacity_acc,
+    raise_lim,
+    cut_lim,
+    size: int,
+    extent: float,
+    mpp: float,
+):
+    """Own the carriageway outright; height follows the segment, shoulder the nearest pixel.
+
+    Returns a tilt grid (metres) for the crossfall of each 50 m piece. It is
+    applied after the grade blur so that blur does not average the left and
+    right edges back together. Empty when nothing was claimed.
+    """
+    import numpy as np
+    from scipy.ndimage import distance_transform_edt
+
+    if not prepared:
+        return None
+    order = sorted(
+        prepared,
+        key=lambda item: (-item["width"], -item["rank"], -item["length"]),
+    )
+    claimed = np.zeros((size, size), dtype=bool)
+    core_z = np.zeros((size, size), dtype=np.float32)
+    core_fall = np.zeros((size, size), dtype=np.float32)
+    core_raise = np.zeros((size, size), dtype=np.float32)
+    core_cut = np.zeros((size, size), dtype=np.float32)
+    core_tilt = np.zeros((size, size), dtype=np.float32)
+    scratch_d = np.zeros((size, size), dtype=np.float32)
+    scratch_z = np.zeros((size, size), dtype=np.float32)
+    scratch_tilt = np.zeros((size, size), dtype=np.float32)
+    gen = np.zeros((size, size), dtype=np.int32)
+    sid = 0
+    n_order = len(order)
+    print(f"road bed (exclusive): claiming {n_order} carriageways", flush=True)
+
+    for item in order:
+        sid += 1
+        if sid % 50 == 0 or sid == n_order:
+            print(
+                f"road bed (exclusive): claimed {sid}/{n_order}",
+                flush=True,
+            )
+        pad = float(item["pad"])
+        sink = float(item["sink"])
+        pts: list[tuple[float, float, float, float]] = []
+        cum_m = [0.0]
+        prev_n = None
+        for n in item["nodes"]:
+            if prev_n is not None:
+                cum_m.append(
+                    cum_m[-1]
+                    + math.hypot(
+                        float(n["x"]) - float(prev_n["x"]),
+                        float(n["y"]) - float(prev_n["y"]),
+                    )
+                )
+            prev_n = n
+            px, py = bb._to_px_beamng(float(n["x"]), float(n["y"]), size, extent)
+            rad = (0.5 * float(n["width"]) + pad) / mpp
+            pts.append((float(px), float(py), float(n["z"]) - sink, float(rad)))
+        cf_pieces = item.get("crossfall") or []
+        for i in range(len(pts) - 1):
+            ax, ay, az, ar = pts[i]
+            bx, by, bz, br = pts[i + 1]
+            dx = bx - ax
+            dy = by - ay
+            len2 = dx * dx + dy * dy
+            if len2 < 1e-8:
+                continue
+            rad_max = max(ar, br, 0.0)
+            if rad_max < 0.5:
+                continue
+            c0 = max(0, int(math.floor(min(ax, bx) - rad_max)))
+            c1 = min(size - 1, int(math.ceil(max(ax, bx) + rad_max)))
+            r0 = max(0, int(math.floor(min(ay, by) - rad_max)))
+            r1 = min(size - 1, int(math.ceil(max(ay, by) + rad_max)))
+            if c1 < c0 or r1 < r0:
+                continue
+            yy, xx = np.ogrid[r0 : r1 + 1, c0 : c1 + 1]
+            t = ((xx - ax) * dx + (yy - ay) * dy) / len2
+            np.clip(t, 0.0, 1.0, out=t)
+            dist = np.hypot(xx - (ax + t * dx), yy - (ay + t * dy)).astype(
+                np.float32, copy=False
+            )
+            rad = np.asarray(ar + t * (br - ar), dtype=np.float32)
+            roi_d = scratch_d[r0 : r1 + 1, c0 : c1 + 1]
+            roi_z = scratch_z[r0 : r1 + 1, c0 : c1 + 1]
+            roi_g = gen[r0 : r1 + 1, c0 : c1 + 1]
+            take = (dist <= rad) & ((roi_g != sid) | (dist < roi_d))
+            if not np.any(take):
+                continue
+            seg_px = math.hypot(dx, dy)
+            s0_m = cum_m[i]
+            s1_m = cum_m[i + 1]
+            cf_a = _crossfall_lookup(cf_pieces, s0_m)
+            cf_b = _crossfall_lookup(cf_pieces, s1_m)
+            cf = np.float32(cf_a) + t * np.float32(cf_b - cf_a)
+            # Pixel y grows south. This sign is world-right, same as sample_crossfall.
+            signed = (np.float32(mpp) / np.float32(seg_px)) * (
+                (yy - (ay + t * dy)) * dx - (xx - (ax + t * dx)) * dy
+            )
+            roi_tilt = scratch_tilt[r0 : r1 + 1, c0 : c1 + 1]
+            roi_g[take] = sid
+            roi_d[take] = dist[take]
+            roi_z[take] = np.asarray(az + (bz - az) * t, dtype=np.float32)[take]
+            roi_tilt[take] = np.asarray(cf * signed, dtype=np.float32)[take]
+        sel = (gen == sid) & ~claimed
+        if not np.any(sel):
+            continue
+        core_z[sel] = scratch_z[sel]
+        core_tilt[sel] = scratch_tilt[sel]
+        core_fall[sel] = np.float32(item["falloff"])
+        core_raise[sel] = np.float32(item["max_raise"])
+        core_cut[sel] = np.float32(item["max_cut"])
+        claimed[sel] = True
+
+    if not np.any(claimed):
+        print("road bed (exclusive): no carriageway pixels", flush=True)
+        return None
+
+    print("road bed (exclusive): distance field", flush=True)
+    _dist_px, (iy, ix) = distance_transform_edt(~claimed, return_indices=True)
+    print("road bed (exclusive): feather", flush=True)
+    d_m = _dist_px.astype(np.float32) * np.float32(mpp)
+    src_z = core_z[iy, ix]
+    src_fall = core_fall[iy, ix]
+    src_raise = core_raise[iy, ix]
+    src_cut = core_cut[iy, ix]
+    w = np.zeros((size, size), dtype=np.float32)
+    w[claimed] = 1.0
+    feather = (~claimed) & (src_fall > 1.0e-6) & (d_m < src_fall)
+    w[feather] = 1.0 - d_m[feather] / src_fall[feather]
+    hit = w > 1.0e-6
+    value_acc[hit] = src_z[hit].astype(np.float64) * w[hit]
+    weight_acc[hit] = w[hit]
+    # Feather keeps the tilted edge, scaled by the same falloff weight, so the
+    # outer end of the shoulder stays on the raw ground.
+    tilt = np.zeros((size, size), dtype=np.float32)
+    src_tilt = core_tilt[iy, ix]
+    tilt[hit] = src_tilt[hit] * w[hit]
+    opacity_acc[hit] = w[hit]
+    raise_lim[hit] = np.maximum(raise_lim[hit], src_raise[hit])
+    cut_lim[hit] = np.maximum(cut_lim[hit], src_cut[hit])
+    return tilt
+
+
+def _smooth_exclusive_grade(
+    out,
+    value,
+    opacity,
+    *,
+    mpp: float,
+    protected,
+) -> None:
+    """Blur only the flat shelf, in three passes (1.5 m, 2.5 m, 4 m).
+
+    Pixels outside the shelf are filled with the nearest shelf height before
+    each pass, so the slope never enters the average. The result is written
+    back only on the shelf. Span pixels and clamp rejects stay as they are.
+    """
+    import numpy as np
+    from scipy.ndimage import distance_transform_edt, gaussian_filter
+
+    core = opacity >= 0.999
+    if not np.any(core):
+        return
+    _dist_px, (iy, ix) = distance_transform_edt(~core, return_indices=True)
+    write = core & ~protected
+    if not np.any(write):
+        return
+    outside = ~core
+    scale = max(float(mpp), 1e-6)
+    for sigma_m in (1.5, 2.5, 4.0):
+        src = np.array(out, copy=True)
+        if np.any(outside):
+            src[outside] = out[iy[outside], ix[outside]]
+        blurred = gaussian_filter(src, sigma=sigma_m / scale, truncate=2.0)
+        out[write] = blurred[write]
+        print(f"road bed (exclusive): grade blur sigma={sigma_m:.1f} m", flush=True)
+    value[write] = out[write]
+    opacity[write] = 1.0
 
 
 def _stamp_disk_accum(
@@ -2308,6 +2607,15 @@ def conform_road_bed_heightmap(
     n_stamps = 0
     n_over = 0
     max_falloff_used = falloff0
+    exclusive = bool(cfg.get("road_bed_exclusive"))
+    prepared_exclusive: list[dict] = []
+    n_cf_pieces = 0
+    n_cf_used = 0
+    bed_label = "exclusive" if exclusive else "weighted"
+    print(
+        f"road bed ({bed_label}): {len(roads)} polylines, grid {size}",
+        flush=True,
+    )
     for road in roads:
         hwy = str(road.get("highway") or "").lower()
         if hwy_ok and hwy not in hwy_ok:
@@ -2345,8 +2653,34 @@ def conform_road_bed_heightmap(
         ]
         if meshroads:
             nodes = _hold_span_deck_z(nodes, meshroads)
-        nodes = _smooth_polyline_z(nodes, smooth_m)
+        nodes = _smooth_polyline_z(nodes, smooth_m, freeze_holds=exclusive)
         n_roads += 1
+        if n_roads % 50 == 0:
+            print(
+                f"road bed ({bed_label}): {n_roads} roads, {n_stamps + len(nodes)} stamps, "
+                f"{time.perf_counter() - t0:.0f}s",
+                flush=True,
+            )
+        if exclusive:
+            cf_pieces = _crossfall_pieces(nodes, z_at)
+            n_cf_pieces += len(cf_pieces)
+            n_cf_used += sum(1 for _s0, _s1, cf in cf_pieces if abs(cf) > 1.0e-4)
+            prepared_exclusive.append(
+                {
+                    "nodes": nodes,
+                    "pad": pad,
+                    "falloff": falloff,
+                    "sink": sink,
+                    "max_raise": max_raise,
+                    "max_cut": max_cut,
+                    "width": max(float(n["width"]) for n in nodes),
+                    "rank": _bed_class_rank(road),
+                    "length": _polyline_length(raw),
+                    "crossfall": cf_pieces,
+                }
+            )
+            n_stamps += len(nodes)
+            continue
 
         half_ref = 0.5 * max(float(n["width"]) for n in nodes) + pad
         core_px = max(2, int(round((2.0 * half_ref) / mpp)))
@@ -2379,6 +2713,30 @@ def conform_road_bed_heightmap(
             )
             n_stamps += 1
 
+    print(
+        f"road bed ({bed_label}): profiles done, {n_roads} roads, {n_stamps} stamps, "
+        f"{time.perf_counter() - t0:.0f}s",
+        flush=True,
+    )
+    tilt = None
+    if exclusive:
+        print(
+            f"road bed (exclusive): crossfall {n_cf_used}/{n_cf_pieces} pieces "
+            f"(step={_CROSSFALL_STEP_M:.0f} m)",
+            flush=True,
+        )
+        tilt = _stamp_exclusive_beds(
+            prepared_exclusive,
+            value_acc=value_acc,
+            weight_acc=weight_acc,
+            opacity_acc=opacity_acc,
+            raise_lim=raise_lim,
+            cut_lim=cut_lim,
+            size=size,
+            extent=extent,
+            mpp=mpp,
+        )
+
     blur_r = max(1, int(round(max_falloff_used / mpp)))
     soft_blur = soft_img.filter(ImageFilter.GaussianBlur(radius=blur_r))
     hard = np.asarray(hard_img, dtype=np.float64) / 255.0
@@ -2393,6 +2751,7 @@ def conform_road_bed_heightmap(
     from site_coords import processed_dir as _processed_dir
 
     bed_proc = proc if proc is not None else (_processed_dir(site) if site else None)
+    protected = np.zeros((size, size), dtype=bool)
     n_bridge_skip = 0
     if bed_proc is not None:
         bpad = float(
@@ -2418,6 +2777,7 @@ def conform_road_bed_heightmap(
             n_bridge_skip = int(emask.sum())
             opacity = opacity.copy()
             opacity[emask] = 0.0
+            protected[emask] = True
             print(
                 f"Road-bed: skipped {len(under)} bridge decks "
                 f"({n_bridge_skip} px, pad={bpad:.1f}m)"
@@ -2441,6 +2801,7 @@ def conform_road_bed_heightmap(
             n_gallery_skip = int(gmask.sum())
             opacity = opacity.copy()
             opacity[gmask] = 0.0
+            protected[gmask] = True
             print(
                 f"Road-bed: skipped {len(gal_corr)} gallery/tunnel spans "
                 f"({n_gallery_skip} px)"
@@ -2460,8 +2821,21 @@ def conform_road_bed_heightmap(
     bad_raise = (d_raise > 1e-6) & (d_raise > lim_raise)
     bad_cut = (d_cut > 1e-6) & (d_cut > lim_cut)
     opacity[bad_raise | bad_cut] = 0.0
+    protected[bad_raise | bad_cut] = True
 
     out = base * (1.0 - opacity) + value * opacity
+    if tilt is not None:
+        tilt[opacity <= 1.0e-6] = 0.0
+    if exclusive:
+        print("road bed (exclusive): grade blur", flush=True)
+        _smooth_exclusive_grade(
+            out, value, opacity, mpp=mpp, protected=protected
+        )
+    if tilt is not None:
+        out += tilt
+        value += tilt
+        n_tilt = int(np.count_nonzero(np.abs(tilt) > 1.0e-4))
+        print(f"road bed (exclusive): crossfall applied px={n_tilt}", flush=True)
     changed = int(np.count_nonzero(np.abs(out - base) > 1e-4))
     max_abs = float(np.max(np.abs(out - base))) if changed else 0.0
     elapsed = time.perf_counter() - t0
@@ -2476,12 +2850,15 @@ def conform_road_bed_heightmap(
         "changed": changed,
         "max_delta_m": round(max_abs, 3),
         "elapsed_s": round(elapsed, 2),
-        "method": "road_bed_value_opacity_raster",
+        "method": (
+            "road_bed_exclusive" if exclusive else "road_bed_value_opacity_raster"
+        ),
     }
     print(
-        f"Road-bed conform (raster): roads={n_roads} overrides={n_over} "
+        f"Road-bed conform ({stats['method']}): roads={n_roads} overrides={n_over} "
         f"stamps={n_stamps} changed={changed} max_delta={max_abs:.3f}m "
-        f"elapsed={elapsed:.2f}s"
+        f"elapsed={elapsed:.2f}s",
+        flush=True,
     )
     return out, stats, value, opacity
 

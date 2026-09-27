@@ -14,6 +14,7 @@ when the pipeline order is decided; do not bake order into the tools.
 Provisional defaults (one span replace for bridge/gallery/tunnel; water additive):
   water    add      10
   road_bed replace  40
+  corridor_dgm replace 45   # 0.5 m ground in the corridor; the road itself is the mesh
   span     replace  55   # MeshRoad structures: parts bridge + gallery
 """
 from __future__ import annotations
@@ -41,6 +42,7 @@ USER_LEVELS = (
 LAYER_SPECS: dict[str, dict] = {
     "water": {"mode": "add", "priority": 10},
     "road_bed": {"mode": "replace", "priority": 40},
+    "corridor_dgm": {"mode": "replace", "priority": 45},
     "span": {"mode": "replace", "priority": 55},
 }
 SPAN_PARTS = ("bridge", "gallery")

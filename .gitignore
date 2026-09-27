@@ -16,3 +16,6 @@ Thumbs.db
 .DS_Store
 .idea/
 .vscode/
+
+# Lokale Fremdcode-Notizen
+/notes/

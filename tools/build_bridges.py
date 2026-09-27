@@ -874,6 +874,13 @@ def build_span_on_road(
 
 
 def bridge_features(site: dict, sc: SiteCoords) -> list[dict]:
+    from gip_bridge_flags import bridge_xy_from_cache  # noqa: WPS433
+
+    flagged = bridge_xy_from_cache(site)
+    if flagged is not None:
+        print(f"Bridges from flag: {len(flagged)}")
+        return flagged
+
     from authorities import stamp_gip_props, transformer_gip_fc_into_working  # noqa: WPS433
 
     path = find_gip_geojson(site)

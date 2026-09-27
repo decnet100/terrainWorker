@@ -372,6 +372,7 @@ beamng:
     z_lift_m: 0.03
     snap_max_raise_m: 2.0
     road_bed_conform: true
+    road_bed_exclusive: true
     road_bed_pad_m: 1.0
     road_bed_falloff_m: 3.0
     road_bed_sink_m: 0.08
