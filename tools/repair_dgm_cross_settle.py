@@ -1,14 +1,11 @@
-"""Close the inner step of the cross-section fill, then isolated interior spikes.
+"""Continue the cross-section inward from the cover fill. No interior median.
 
 Starts from ``dgm_repair_cross_cover``. Pixels that cover already wrote stay.
 Inward of that strip the same line continues only while the raw height disagrees
 with it, and at most 1.5 m. The walk stops at the first unwritten pixel whose
 raw height is already within 1.5 cm of the line. It does not remeasure roughness
-and it does not search for a new profile.
-
-After that, carriageway pixels of at least 5 cm that do not touch the written
-surface are set to the median of nearby carriageway pixels already under 1.5 cm.
-Terrain is not part of that median. Single pixels under 5 cm stay.
+and it does not search for a new profile. The median pass on interior spikes is
+not applied. The earlier run that included it stays in ``dgm_repair_cross_settle``.
 
     cd C:\\temp\\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/imst.yaml"; python tools\\repair_dgm_cross_settle.py
 """
@@ -201,7 +198,7 @@ def main() -> None:
     for path in (raw_path, gpkg_in, cover_dir / "02_repaired.tif", cover_dir / "01_class.tif"):
         if not path.is_file():
             raise SystemExit(f"missing {path}")
-    out_dir = proc / "dgm_repair_cross_settle"
+    out_dir = proc / "dgm_repair_cross_extend"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     raw, spec = _load_geotiff(raw_path)
@@ -248,22 +245,19 @@ def main() -> None:
     working[written0] = base[written0]
     extended &= ~written0
 
-    written = written0 | extended
     print(f"  extended {int(extended.sum())}", flush=True)
-    settled, spiked = _median_spikes(working, on_road, written)
-    print(f"  spikes {int(spiked.sum())}", flush=True)
+    settled = working
 
     after_full = _stats(_deviation(settled), on_road)
     after_road = _stats(_road_only(settled, on_road), on_road)
     klass = cover_k.astype(np.uint8).copy()
     klass[extended] = 9
-    klass[spiked] = 10
     repaired = np.where(on_road, settled, np.nan).astype(np.float32)
     shown = np.where(on_road, _deviation(settled), np.nan).astype(np.float32)
     write_referenced_tif(out_dir / "02_repaired.tif", repaired, xmin=spec["xmin"], ymax=spec["ymax"], res=RES_M)
     write_referenced_tif(out_dir / "01_class.tif", klass, xmin=spec["xmin"], ymax=spec["ymax"], res=RES_M)
     write_referenced_tif(out_dir / "03_roughness.tif", shown, xmin=spec["xmin"], ymax=spec["ymax"], res=RES_M)
-    changed = extended | spiked
+    changed = extended
     delta = np.abs(settled[changed].astype(np.float64) - raw[changed].astype(np.float64))
     report = {
         "heights": str(raw_path),
@@ -277,14 +271,13 @@ def main() -> None:
         "after_road_only": after_road,
         "extended_px": int(extended.sum()),
         "blended_px": int((both & extended).sum()),
-        "spike_px": int(spiked.sum()),
+        "median": "not applied",
         "max_delta_m": round(float(delta.max()) if len(delta) else 0.0, 4),
         "delta_p50_m": round(float(np.percentile(delta, 50)) if len(delta) else 0.0, 4),
         "delta_p99_m": round(float(np.percentile(delta, 99)) if len(delta) else 0.0, 4),
         "class": {
             "1-8": "unchanged from dgm_repair_cross_cover",
             "9": "same cross-section continued inward until the raw height agrees, at most 1.5 m",
-            "10": "interior spike at least 5 cm, not touching the fill, median of smooth carriageway pixels",
         },
     }
     (out_dir / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
@@ -292,7 +285,6 @@ def main() -> None:
         json.dumps(
             {
                 "extended_px": report["extended_px"],
-                "spike_px": report["spike_px"],
                 "before_road_p99": before_road["p99_m"],
                 "after_road_p99": after_road["p99_m"],
                 "before_full_p99": before_full["p99_m"],
