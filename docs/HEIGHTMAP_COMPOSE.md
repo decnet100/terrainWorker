@@ -23,9 +23,10 @@ Related: [BEAMNG_IMPORT.md](BEAMNG_IMPORT.md), [ROADS.md](ROADS.md), [GIP.md](GI
 Layer order lives **only** in `LAYER_SPECS` (`heightmap_layers.py`), not in the builders:
 
 ```text
-water     add      priority 10
-road_bed  replace  priority 40
-span      replace  priority 55   # parts: bridge + gallery (tunnel = gallery)
+water        add      priority 10
+road_bed     replace  priority 40
+corridor_dgm replace  priority 45   # raw 0.5 m ground; the road itself is the mesh
+span         replace  priority 55   # parts: bridge + gallery (tunnel = gallery)
 ```
 
 Mixer, pixel by pixel. **Opacity** (0..1) is the mix — soft edges belong here, not as extra falloff in every builder:
@@ -78,6 +79,7 @@ cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/fernpass_mega.yam
 |------|--------|-----------------|
 | `build_water.py` | `water` (add vs DGM) | DGM |
 | `build_decal_roads.py` | `road_bed` (replace vs DGM; skip bridge decks) | snap: **composed** |
+| `apply_corridor_dgm.py` | `corridor_dgm` (replace, raw 0.5 m DGM) | DGM frame of `corridor50_raw.tif` |
 | `build_bridges.py` | `span/bridge` | conform vs DGM |
 | `build_galleries.py` | `span/gallery` or `drop_span_part("gallery")` | bake vs DGM |
 | `build_guardrails.py` | — | composed (Z on deck/DGM) |

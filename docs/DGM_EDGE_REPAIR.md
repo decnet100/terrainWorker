@@ -3,8 +3,9 @@
 Carriageway-edge fill for the Imst corridor. Heights come from
 `data/processed/tirol-imst-8192/corridor50_raw/corridor50_raw.tif`.
 The carriageway polygon and centerline come from
-`centerline_shift_taper/centerline_shift.gpkg`. Nothing in this pipeline is
-injected into BeamNG. Terrain outside the carriageway polygon is never written.
+`centerline_shift_taper/centerline_shift.gpkg`. The transect rasters themselves
+are not copied into the level. What the level shows is the mesh section below.
+Terrain outside the carriageway polygon is never written by the transect.
 
 Roughness is the absolute deviation from the mean in a 1.5 m window (3×3
 pixels at 0.5 m). The drop threshold is 1.5 cm. A uniform cross-slope lies on
@@ -75,9 +76,8 @@ Also rejected, same grade, do not revive:
   height, flat, structures skipped. 170 903 pixels, median move 4 cm, p90
   40 cm, max 9.9 m where the bank is steep. Not in the game.
 
-The level `autoroad_imst_8192` group `road_grid` currently shows the cover
-fill (raw interior, edge pixels replaced, +4 cm). It is the surface that was
-looked at, not a result to keep.
+The level no longer shows this fill. The group `road_grid` in
+`autoroad_imst_8192` is the transect mesh described below.
 
 ## Do not repeat
 
@@ -212,6 +212,66 @@ raw center and replaces the rough left edge with the blended half-profile.
 Plots: `dgm_repair_transect/oid6975_laengs.png` and
 `dgm_repair_transect/oid6975_querprofil.png`.
 
+## In the level
+
+The surface the wheel drives is a COLLADA mesh, not the heightmap.
+`tools/build_road_grid.py` reads `dgm_repair_transect/02_repaired.tif` and
+clips to the `carriageway` layer of `centerline_shift.gpkg`. A 0.5 m cell
+whose centre lies in that polygon becomes a quad. A quad that crosses the
+outline is cut on the polygon. Every vertex sits 4 cm above the raster
+(`CLEARANCE_M` in `tools/build_corridor_mesh.py`).
+
+Before the mesh is built, the raster within 1 m of the outline is set to the
+nearest interior road height. The donor lies more than 1 m inside, or on the
+centre of a road narrower than 2 m, and at most 4 m away, so a parallel road
+is not copied. A 3 m median and a Gaussian of 4 m then run along the outer
+two erosion rings only. Left and right stay separate, and a chain stops at a
+junction. The same height is copied into the 1 m strip just outside the
+polygon, so a cut vertex samples the road and not the slope. Parts are split
+only after that raster is finished, when one geometry would pass 65 535
+vertices. That limit is the BeamNG import, not the COLLADA file. There is no
+height edit per part. The build fails when a shared cut differs by more than
+1 cm, or an open edge sits more than 0.75 m inside the polygon.
+
+Each DAE holds both surfaces. `part_XXX_a999` is drawn (UVs, asphalt).
+`collision-1/Colmesh-1` is not drawn. The level object uses
+`collisionType: Collision Mesh`, so the wheel rests on the Colmesh. Both
+surfaces share the same height, including the 4 cm. The collision mesh is the
+visual mesh with interior vertices clustered on a 2 m plan grid. Boundary
+vertices stay, so the outline and the cuts between parts do not open. This is
+not an angle threshold. A collapse at 2° has not been run. Moving the whole
+Colmesh down would drop the car through the visible asphalt by the same
+amount, because the wheel follows the Colmesh. A downward thickness with the
+top face left on the visible surface is not built.
+
+Last mesh of this corridor: 18 parts, 732 113 visual vertices and
+1 327 043 triangles, 186 953 collision vertices and 236 801 triangles.
+`part_000` in the level has 49 904 visual vertices and 12 542 collision
+vertices.
+
+The ground beside and under that mesh is the raw 0.5 m DGM.
+`tools/apply_corridor_dgm.py` resamples `corridor50_raw.tif` onto the
+heightmap as the replace layer `corridor_dgm`, priority 45. It covers
+`road_bed` inside the corridor. The span layer stays at 55, so a bridge or
+gallery opening is not filled with the road. The repaired road raster is not
+written into the heightmap. The playable grid is 8 192 nodes over 8 192 m.
+After a compose, re-import `terrainPreset.json`. Do not save the World Editor
+when the objects come from the inject.
+
+Nine cross-sections of that mesh against the raw DGM and the repaired raster
+are in `dgm_repair_transect/querprofile_stichprobe.png` (five Bundesstraßen
+and five Landesstraßen, seed 20260927, stations at least 30 m from the ends
+and 8 m from a structure). One draw, B189 OID 4461, lies outside the corridor
+raster and has no samples. On the other nine, the repaired interior stays
+within 2.8 cm of the raw DGM (median 0). The mesh interior stays within
+2.3 cm (median 0.9 cm). The outer metre, which received the road height,
+moves by a median of 2.9 cm and at most 10 cm.
+
+A further sink of the terrain under the mesh, 6 cm times the fraction of the
+1 m square around a heightmap node that the mesh covers, is not built. Fully
+covered, that would put the terrain about 10 cm under the mesh, because the
+mesh is already 4 cm above the raster.
+
 ## Run
 
 ```powershell
@@ -227,5 +287,18 @@ Cover has to exist before settle. The transect does not read either of them.
 ```powershell
 cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/imst.yaml"; python tools\repair_dgm_transect.py
 ```
+
+```powershell
+cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/imst.yaml"; python tools\build_road_grid.py --heights "data\processed\tirol-imst-8192\dgm_repair_transect\02_repaired.tif" --clip "data\processed\tirol-imst-8192\centerline_shift_taper\centerline_shift.gpkg" --clip-layer carriageway
+```
+
+```powershell
+cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/imst.yaml"; python tools\apply_corridor_dgm.py
+```
+
+The mesh command copies the DAE files into the level and drops DAE names that
+are no longer in the set. Quit BeamNG and start it again after that. A map
+reload keeps the old shape. The corridor command only updates the heightmap
+import. Re-import the terrain preset, and do not save the World Editor.
 
 Earlier folders stay. QGIS reads the GeoTIFFs; `qgis_process` crashes in this environment.
