@@ -131,7 +131,6 @@ FACE_Y_OUTWARD = bool(GR.get("face_y_outward", True))
 YAW_FLIP_RIGHT = bool(GR.get("yaw_flip_right", True))
 ROAD_WIDTH_SCALE = float(BNG.get("road_width_scale", 1.0))
 ENABLED = bool(GR.get("enabled", True))
-TERRAIN_EXTENT = COORDS.terrain_extent
 CURVATURE_WINDOW_M = float(GR.get("curvature_window_m", 8.0))
 # Stop rails before gallery/tunnel portals (no rails through the structure)
 CLIP_GALLERIES = bool(GR.get("clip_galleries", True))
@@ -485,8 +484,8 @@ def _load_heightmap_z() -> tuple[np.ndarray, float] | None:
 
 def _heightmap_z(hm: np.ndarray, max_h: float, bx: float, by: float) -> float:
     size = hm.shape[0]
-    px = bx / TERRAIN_EXTENT * (size - 1)
-    py = (1.0 - by / TERRAIN_EXTENT) * (size - 1)
+    px = bx / COORDS.square_m
+    py = (size - 1) - by / COORDS.square_m
     x0 = int(math.floor(px))
     y0 = int(math.floor(py))
     x1 = min(x0 + 1, size - 1)
@@ -573,7 +572,7 @@ def _nodes_from_line_crs(
 ) -> list[list[float]]:
     nodes: list[list[float]] = []
     for x, y in line.coords:
-        bx, by = COORDS.crs_to_beamng(float(x), float(y))
+        bx, by = COORDS.crs_to_terrain(float(x), float(y))
         if hm_pack is not None:
             hm, max_h = hm_pack
             pz = _heightmap_z(hm, max_h, bx, by) + Z_LIFT + PIVOT_GROUND_OFFSET

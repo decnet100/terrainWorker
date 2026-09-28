@@ -290,10 +290,9 @@ def _outside_bbox_m(x: float, y: float, site: dict) -> float:
 
 def _hm_abs_at(hm_rel: np.ndarray, sc: SiteCoords, x: float, y: float, z0: float) -> float:
     n = hm_rel.shape[0]
-    bx = (x - sc.xmin) / sc.bw * sc.terrain_extent
-    by = (y - sc.ymin) / sc.bh * sc.terrain_extent
-    col = float(np.clip(bx, 0.0, n - 1.0))
-    row = float(np.clip((n - 1.0) - by, 0.0, n - 1.0))
+    bx, by = sc.crs_to_terrain(x, y)
+    col = float(np.clip(bx / sc.square_m, 0.0, n - 1.0))
+    row = float(np.clip((n - 1.0) - by / sc.square_m, 0.0, n - 1.0))
     rel = map_coordinates(
         hm_rel, [[row], [col]], order=1, mode="nearest", prefilter=False
     )[0]
@@ -1021,7 +1020,7 @@ def bake_texture(
 
 
 def _crs_to_beamng(sc: SiteCoords, x: float, y: float) -> tuple[float, float]:
-    return sc.crs_to_beamng(x, y)
+    return sc.crs_to_terrain(x, y)
 
 
 def build_meshes(

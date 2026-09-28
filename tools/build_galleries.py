@@ -853,8 +853,8 @@ def gallery_features(site: dict, sc: SiteCoords) -> list[dict]:
         xy = []
         for lon, lat, *_ in raw_pts:
             x, y = to_site.transform(float(lon), float(lat))
-            bx, by = sc.crs_to_beamng(x, y)
-            if -50 <= bx <= sc.terrain_extent + 50 and -50 <= by <= sc.terrain_extent + 50:
+            bx, by = sc.crs_to_terrain(x, y)
+            if -50 <= bx <= sc.terrain_span + 50 and -50 <= by <= sc.terrain_span + 50:
                 xy.append((bx, by))
         if len(xy) < 2:
             continue
@@ -1384,7 +1384,7 @@ def _gip_oid_xy(oid: int, site: dict | None = None) -> tuple[float, float] | Non
         xs, ys = [], []
         for lon, lat, *_ in raw:
             x, y = to_site.transform(float(lon), float(lat))
-            bx, by = sc.crs_to_beamng(x, y)
+            bx, by = sc.crs_to_terrain(x, y)
             xs.append(bx)
             ys.append(by)
         if xs:
@@ -4074,14 +4074,17 @@ def build_tunnel_fitout_entries(
 # --- Hole map -----------------------------------------------------------------
 
 def _to_px_beamng(bx: float, by: float, size: int, extent: float) -> tuple[float, float]:
-    px = bx / extent * (size - 1)
-    py = (1.0 - by / extent) * (size - 1)
+    # squareSize is 1 m. extent/size is that pitch when extent is mask_size metres.
+    pitch = extent / size
+    px = bx / pitch
+    py = (size - 1) - by / pitch
     return px, py
 
 
 def _from_px_beamng(px: float, py: float, size: int, extent: float) -> tuple[float, float]:
-    bx = px / max(size - 1, 1) * extent
-    by = (1.0 - py / max(size - 1, 1)) * extent
+    pitch = extent / size
+    bx = px * pitch
+    by = ((size - 1) - py) * pitch
     return bx, by
 
 

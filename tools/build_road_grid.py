@@ -253,7 +253,7 @@ def _build_part(
     if r0 >= height or r1 <= 0 or not mask[max(0, r0) : min(height, r1 + 1)].any():
         return None
     present = mask.any(axis=1)
-    extent = sc.terrain_extent
+    extent = sc.terrain_span
     index: dict[tuple[int, int], int] = {}
     pos_l: list[tuple[float, float, float]] = []
     uv_l: list[tuple[float, float]] = []
@@ -897,7 +897,7 @@ def _assert_sealed(grid: dict, sc: SiteCoords) -> None:
             continue
         mx = 0.5 * (ku[0] + kv[0])
         my = 0.5 * (ku[1] + kv[1])
-        x, y = sc.beamng_to_crs(mx, my)
+        x, y = sc.terrain_to_crs(mx, my)
         if min(
             x - float(grid["xmin"]),
             float(grid["xmax"]) - x,

@@ -87,8 +87,8 @@ def _mesh_window(
     row = r0 + rr
     crs_x = xmin + (col.astype(np.float64) + 0.5) * res
     crs_y = ymax - (row.astype(np.float64) + 0.5) * res
-    bx = (crs_x - sc.xmin) / sc.bw * sc.terrain_extent
-    by = (crs_y - sc.ymin) / sc.bh * sc.terrain_extent
+    bx = (crs_x - sc.xmin) / sc.bw * sc.terrain_span
+    by = (crs_y - sc.ymin) / sc.bh * sc.terrain_span
     zz = z_abs[r0:r1, c0:c1][rr, cc].astype(np.float64) - z_min + CLEARANCE_M
     pos = np.column_stack((bx, by, zz))
     uv = np.column_stack((bx / UV_M, by / UV_M))

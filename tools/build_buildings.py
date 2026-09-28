@@ -1344,11 +1344,11 @@ def buildings_from_osm(data: dict, site: dict, cfg: dict) -> list[dict]:
         if area < cfg["min_area_m2"] or area > cfg["max_area_m2"]:
             continue
         cx, cy = float(poly.centroid.x), float(poly.centroid.y)
-        bx, by = sc.crs_to_beamng(cx, cy)
-        if bx < 0 or by < 0 or bx > sc.terrain_extent or by > sc.terrain_extent:
+        bx, by = sc.crs_to_terrain(cx, cy)
+        if bx < 0 or by < 0 or bx > sc.terrain_span or by > sc.terrain_span:
             continue
         height = _parse_height_m(tags, cfg)
-        ring_b = [sc.crs_to_beamng(x, y) for x, y in ring[:-1]]
+        ring_b = [sc.crs_to_terrain(x, y) for x, y in ring[:-1]]
         z_min, z_max = _footprint_z_span(ring_b, (bx, by), z_at)
         out.append({
             "osm_id": el.get("id"),
@@ -1425,7 +1425,7 @@ def _tiris_height_m(props: dict, cfg: dict) -> float:
 
 
 def _ring_beamng(poly: Polygon, sc: SiteCoords) -> list[tuple[float, float]]:
-    return [sc.crs_to_beamng(float(x), float(y)) for x, y in poly.exterior.coords[:-1]]
+    return [sc.crs_to_terrain(float(x), float(y)) for x, y in poly.exterior.coords[:-1]]
 
 
 def buildings_from_tiris(data: dict, site: dict, cfg: dict) -> list[dict]:
@@ -1456,15 +1456,15 @@ def buildings_from_tiris(data: dict, site: dict, cfg: dict) -> list[dict]:
             continue
         wall_poly = _inset_roofprint(orient(poly, sign=1.0), inset_m)
         cx, cy = float(poly.centroid.x), float(poly.centroid.y)
-        bx, by = sc.crs_to_beamng(cx, cy)
-        if bx < 0 or by < 0 or bx > sc.terrain_extent or by > sc.terrain_extent:
+        bx, by = sc.crs_to_terrain(cx, cy)
+        if bx < 0 or by < 0 or bx > sc.terrain_span or by > sc.terrain_span:
             continue
         height = _tiris_height_m(props, cfg)
         roof_ring = _ring_beamng(poly, sc)
         wall_ring = _ring_beamng(wall_poly, sc)
         if len(roof_ring) < 3 or len(wall_ring) < 3:
             continue
-        wcx, wcy = sc.crs_to_beamng(float(wall_poly.centroid.x), float(wall_poly.centroid.y))
+        wcx, wcy = sc.crs_to_terrain(float(wall_poly.centroid.x), float(wall_poly.centroid.y))
         z_min, z_max = _footprint_z_span(wall_ring, (wcx, wcy), z_at)
         btype = "shed" if height < 3.8 or area < 40.0 else "yes"
         out.append({

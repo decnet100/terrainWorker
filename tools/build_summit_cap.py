@@ -352,8 +352,7 @@ def main() -> None:
     old_max = float(src_meta["max_height_m"])
     z0 = float(src_meta["z_min_m"])
     size = int(src_meta.get("heightmap_size_px") or bng.get("mask_size") or 8192)
-    extent = float(src_meta.get("terrain_extent_m") or size)
-    scale = extent / (size - 1)
+    scale = float(src_meta.get("meters_per_pixel") or bng.get("meters_per_pixel") or 1.0)
     print(f"decoding backup heightmap, clip {clip_abs:.1f} m absolute", flush=True)
     elev = _decode_u16(backup / "heightmap_8192.png", old_max)
     if elev.shape != (size, size):
