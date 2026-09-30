@@ -1,11 +1,20 @@
 """Put each bridge deck into the same raster and clip as the road mesh.
 
 The axis is the bridge piece in the shifted-centerline package (EPSG:31254).
-The surface model is filtered along the road so a vehicle drops out, then each
-cross-section is read for the edge: a narrow rise is a railing, a taller one a
-wall, and both end the driving surface. The gorge ends it as well. What remains
-is smoothed along the road and, over the last metres before the abutment,
-mixed into the repaired road surface. One raster, one carriageway clip.
+Each cross-section of the surface model is read for the edge: a narrow rise is
+a railing, a taller one a wall, and both end the driving surface. The gorge
+ends it as well. A vehicle (a step above SPIKE_M) is a hole in the deck, not
+an edge of it.
+
+The width is one value per side over the whole piece: the median kerb offset
+(a step of 8 to 35 cm across the road, read on at least KERB_MIN_RUN_M of
+stations), else the GIP carriageway width; the railing limit (RAIL_PCT of the
+per-station reach) can only narrow it. The deck is the axis height plus a
+profile per offset; holes in either are closed by linear interpolation along
+the road, then median- and Gaussian-filtered along the road. Over the last
+metres before the abutment the deck is mixed into the repaired road surface.
+One raster, one carriageway clip; the decks alone are the ``bridge_deck``
+layer of the same file.
 
 This is not tools/apply_bridge_deck.py. That experiment is rejected.
 
@@ -26,7 +35,7 @@ from pathlib import Path
 import geopandas as gpd
 import numpy as np
 import tifffile as tiff
-from scipy.ndimage import gaussian_filter1d
+from scipy.ndimage import binary_dilation, gaussian_filter1d
 from shapely.geometry import LineString, Polygon
 from shapely.ops import unary_union
 
@@ -61,6 +70,19 @@ GORGE_M = 1.20
 SMOOTH_M = 4.0
 PREFILTER_MAX_M = 15.0
 PREFILTER_MIN_M = 5.0
+# A kerb is a step across the road of this height, read over KERB_STEP_M and
+# holding for KERB_HOLD_M behind it. Higher steps are a vehicle or a wall.
+KERB_MIN_M = 0.08
+KERB_MAX_M = 0.35
+KERB_STEP_M = 0.75
+KERB_HOLD_M = 0.75
+# Stations with a kerb needed on the opening before the kerb sets the width.
+# Otherwise the width is the GIP carriageway width.
+KERB_MIN_RUN_M = 10.0
+# The railing limit per side is this percentile of the per-station deck reach
+# on the opening. A railing stands at every station, a parked row does not,
+# so a high percentile is the free reach.
+RAIL_PCT = 95.0
 
 
 def _odd(length_m: float, step: float) -> int:
@@ -123,17 +145,6 @@ def _runs(mask: np.ndarray, station: np.ndarray, min_len: float) -> list[tuple[i
             found.append((i, j))
         i = j
     return found
-
-
-def _rolling_percentile(values: np.ndarray, win: int, q: float) -> np.ndarray:
-    out = np.full(len(values), np.nan, dtype=np.float64)
-    pad = win // 2
-    for i in range(len(values)):
-        sl = values[max(0, i - pad) : i + pad + 1]
-        sl = sl[np.isfinite(sl)]
-        if sl.size:
-            out[i] = float(np.percentile(sl, q))
-    return out
 
 
 def _chain_segments(group) -> list[np.ndarray]:
@@ -262,28 +273,69 @@ def _recovers(spike, gorge, trend, floor, j, direction, off) -> bool:
     return False
 
 
+def _kerb(z: np.ndarray, off: np.ndarray, center: int, limit: int, direction: int) -> float:
+    """Offset of the innermost kerb step on one side, NaN if none.
+
+    Read on a short across-road median so the 0.5 m surface model still shows
+    the step. The step must lie between KERB_MIN_M and KERB_MAX_M and the
+    level behind it must stay in that band for KERB_HOLD_M; a vehicle or a
+    wall behind the step fails the second test.
+    """
+    fine = _median_1d(z, 3)
+    step_n = max(1, int(round(KERB_STEP_M / RAY_M)))
+    hold_n = max(1, int(round(KERB_HOLD_M / RAY_M)))
+    n = len(z)
+    j = center + direction * step_n
+    while 0 <= j < n and (j - limit) * direction <= 0:
+        if abs(float(off[j])) >= 1.0:
+            base = fine[j - direction * step_n]
+            rise = fine[j] - base
+            if np.isfinite(rise) and KERB_MIN_M <= rise <= KERB_MAX_M:
+                ks = [j + direction * k for k in range(1, hold_n + 1)]
+                ks = [k for k in ks if 0 <= k < n]
+                after = fine[ks] - base if ks else np.array([])
+                if (
+                    after.size >= max(1, hold_n // 2)
+                    and np.all(np.isfinite(after))
+                    and np.all(after >= 0.75 * KERB_MIN_M)
+                    and np.all(after <= KERB_MAX_M + 0.10)
+                ):
+                    return abs(float(off[j])) - 0.5 * KERB_STEP_M
+        j += direction
+    return np.nan
+
+
 def _deck_section(
     z: np.ndarray, off: np.ndarray, half_cap: float, detect_m: float
-) -> tuple[np.ndarray, list[dict]]:
+) -> tuple[np.ndarray, list[dict], tuple[float, float], tuple[float, float]]:
     """Driving surface of one cross-section. Edge objects end it; a gorge ends it.
 
     The search runs out to ``detect_m`` so a railing just outside the catalogue
-    width is still recorded. The deck itself stays inside ``half_cap``.
+    width is still recorded. The deck itself stays inside ``half_cap``. Returns
+    the surface (NaN where it is not deck, including vehicle pixels and their
+    flank), the edge objects found, the kerb offset per side and the reach up
+    to the edge object per side (positive offsets first; NaN if none).
     """
     deck = np.full(len(z), np.nan, dtype=np.float64)
     labels: list[dict] = []
+    none = (np.nan, np.nan)
     finite = np.isfinite(z)
     if int(finite.sum()) < 5:
-        return deck, labels
+        return deck, labels, none, none
     trend = _median_1d(z, _odd(1.75, RAY_M))
     band = (np.abs(off) <= min(2.0, half_cap)) & np.isfinite(trend)
     if int(band.sum()) < 3:
-        return deck, labels
+        return deck, labels, none, none
     floor = float(np.median(trend[band]))
     center = int(np.argmin(np.where(band, np.abs(off), np.inf)))
     residual = z - trend
     spike = np.isfinite(residual) & (residual > SPIKE_M)
     gorge = (~np.isfinite(z)) | (z < floor - GORGE_M)
+    # A vehicle wider than the across-road median window lifts the trend
+    # itself, so it is no spike. Anything that high above the inner deck,
+    # with a 0.5 m rim for the smeared flank, is not deck.
+    high = finite & (z > floor + SPIKE_M)
+    high_rim = binary_dilation(high, iterations=2)
 
     def walk(direction: int) -> int:
         last = center
@@ -323,14 +375,27 @@ def _deck_section(
     while right > center and abs(float(off[right])) > half_cap:
         right -= 1
     if right <= left:
-        return deck, labels
+        return deck, labels, none, none
+    kerbs = (_kerb(z, off, center, right, 1), _kerb(z, off, center, left, -1))
+    # The reach is the deck up to the edge object, without the flank rim, so
+    # a railing does not cost half a metre of width.
+    idx = np.arange(len(z))
+    solid = (idx >= left) & (idx <= right) & np.isfinite(trend) & ~gorge & ~high
+    pos = idx[solid & (off >= 0.0)]
+    neg = idx[solid & (off <= 0.0)]
+    reach = (
+        float(off[pos.max()]) if pos.size else np.nan,
+        float(-off[neg.min()]) if neg.size else np.nan,
+    )
     sl = slice(left, right + 1)
-    use = np.isfinite(trend[sl]) & ~gorge[sl]
+    # A narrow spike the walk stepped over (a vehicle that recovers within
+    # 2 m) is not deck either; the along-road interpolation fills it.
+    use = np.isfinite(trend[sl]) & ~gorge[sl] & ~spike[sl] & ~high_rim[sl]
     piece = np.where(use, trend[sl], np.nan)
     if int(np.isfinite(piece).sum()) < 3:
-        return deck, labels
+        return deck, labels, kerbs, reach
     deck[sl] = piece
-    return deck, labels
+    return deck, labels, kerbs, reach
 
 
 def _smoothstep(t: np.ndarray) -> np.ndarray:
@@ -338,22 +403,77 @@ def _smoothstep(t: np.ndarray) -> np.ndarray:
     return t * t * (3.0 - 2.0 * t)
 
 
-def _fill_short_gaps(values: np.ndarray, max_gap: int) -> np.ndarray:
-    """Copy the previous finite sample across a hole of a few stations."""
-    out = values.copy()
-    n = len(out)
-    i = 0
-    while i < n:
-        if np.isfinite(out[i]):
-            i += 1
-            continue
-        j = i
-        while j < n and not np.isfinite(out[j]):
-            j += 1
-        if i > 0 and j < n and (j - i) <= max_gap:
-            out[i:j] = out[i - 1]
-        i = max(j, i + 1)
+def _interp_along(values: np.ndarray, where: np.ndarray) -> np.ndarray:
+    """Close holes along the station by linear interpolation between finite
+    neighbours, inside ``where`` only and never beyond the outermost finite
+    sample."""
+    out = values.astype(np.float64, copy=True)
+    idx = np.flatnonzero(where)
+    if idx.size < 2:
+        return out
+    seg = out[idx]
+    fin = np.isfinite(seg)
+    if int(fin.sum()) < 2:
+        return out
+    lo, hi = idx[fin][0], idx[fin][-1]
+    holes = idx[(~fin) & (idx >= lo) & (idx <= hi)]
+    if holes.size:
+        out[holes] = np.interp(holes, idx[fin], seg[fin])
     return out
+
+
+def _hold_across(grid: np.ndarray, in_width: np.ndarray) -> np.ndarray:
+    """Per station, fill empty offsets inside the width with the nearest
+    finite value towards the axis (rows are offsets, columns stations)."""
+    out = grid.copy()
+    rows = np.flatnonzero(in_width)
+    if rows.size == 0:
+        return out
+    mid = rows[np.argmin(np.abs(rows - (rows[0] + rows[-1]) / 2.0))]
+    for k in range(mid + 1, rows[-1] + 1):
+        hole = ~np.isfinite(out[k]) & np.isfinite(out[k - 1])
+        out[k, hole] = out[k - 1, hole]
+    for k in range(mid - 1, rows[0] - 1, -1):
+        hole = ~np.isfinite(out[k]) & np.isfinite(out[k + 1])
+        out[k, hole] = out[k + 1, hole]
+    return out
+
+
+def _side_half(kerb: np.ndarray, reach: np.ndarray, opening: np.ndarray,
+               gip_half: float, half_cap: float) -> tuple[float, str, int, float]:
+    """Constant half width of one side over the opening.
+
+    The kerb median sets it when kerbs were read on at least KERB_MIN_RUN_M of
+    stations, else the GIP half width. The railing limit (RAIL_PCT of the
+    per-station reach) and half_cap can only make it narrower. Returns the
+    half width, its source, the kerb station count and the railing limit.
+    """
+    k = kerb[opening]
+    k = k[np.isfinite(k)]
+    d = reach[opening]
+    d = d[np.isfinite(d)]
+    rail = min(half_cap, float(np.percentile(d, RAIL_PCT)) if d.size else half_cap)
+    if k.size * STATION_M >= KERB_MIN_RUN_M:
+        half, source = float(np.median(k)), "kerb"
+    else:
+        half, source = gip_half, "gip"
+    if rail < half:
+        half, source = rail, "rail"
+    return max(half, 0.5 * MIN_DECK_M), source, int(k.size), rail
+
+
+def _pair_halves(left: tuple, right: tuple, gip_half: float) -> tuple[float, float, str, str]:
+    """When the railing cuts one GIP half short, the axis is off centre; give
+    the deficit to the other side as far as its railing allows."""
+    half_l, src_l, _, rail_l = left
+    half_r, src_r, _, rail_r = right
+    if src_l == "rail" and src_r == "gip":
+        half_r = min(rail_r, gip_half + (gip_half - half_l))
+        src_r = "gip+shift" if half_r > gip_half else src_r
+    elif src_r == "rail" and src_l == "gip":
+        half_l = min(rail_l, gip_half + (gip_half - half_r))
+        src_l = "gip+shift" if half_l > gip_half else src_l
+    return half_l, half_r, src_l, src_r
 
 
 def _ribbon(xy, normal, station, half_l, half_r, keep) -> Polygon | None:
@@ -433,6 +553,7 @@ def _one_chain(
     *,
     oid: int,
     half_cap: float,
+    gip_half: float,
     dom,
     dom_frame,
     road,
@@ -495,42 +616,54 @@ def _one_chain(
     # and a vehicle, which does not, falls out of the deck that remains.
     deck = np.full_like(dom_g, np.nan)
     labels: list[dict] = []
-    half_l = np.full(n_st, np.nan)
-    half_r = np.full(n_st, np.nan)
+    reach_l = np.full(n_st, np.nan)
+    reach_r = np.full(n_st, np.nan)
+    kerb_l = np.full(n_st, np.nan)
+    kerb_r = np.full(n_st, np.nan)
     for i in range(n_st):
-        section, found = _deck_section(dom_g[:, i], offs, half_cap, SAMPLE_HALF_M)
+        section, found, kerbs, reach = _deck_section(dom_g[:, i], offs, half_cap, SAMPLE_HALF_M)
         deck[:, i] = section
+        kerb_l[i], kerb_r[i] = kerbs
+        reach_l[i], reach_r[i] = reach
         if write[i]:
             labels.extend(found)
-        finite = np.isfinite(section)
-        if not np.any(finite):
-            continue
-        left = offs[finite & (offs >= 0.0)]
-        right = offs[finite & (offs <= 0.0)]
-        if left.size:
-            half_l[i] = float(np.max(left))
-        if right.size:
-            half_r[i] = float(-np.min(right))
-    deck = _median_along(deck, _odd(win_m, STATION_M))
-    deck = _smooth_along(deck, SMOOTH_M / STATION_M)
 
-    detected_l = half_l.copy()
-    detected_r = half_r.copy()
-    detected_l[~write] = np.nan
-    detected_r[~write] = np.nan
-    roll_n = _odd(10.0, STATION_M)
-    roll_l = _rolling_percentile(detected_l, roll_n, 40.0)
-    roll_r = _rolling_percentile(detected_r, roll_n, 40.0)
-    cap_l = np.where(np.isfinite(detected_l), detected_l + 0.5, np.inf)
-    cap_r = np.where(np.isfinite(detected_r), detected_r + 0.5, np.inf)
-    use_l = np.fmin(roll_l, cap_l)
-    use_r = np.fmin(roll_r, cap_r)
-    bare_l = ~np.isfinite(use_l) & np.isfinite(detected_l)
-    bare_r = ~np.isfinite(use_r) & np.isfinite(detected_r)
-    use_l[bare_l] = detected_l[bare_l]
-    use_r[bare_r] = detected_r[bare_r]
-    use_l = _fill_short_gaps(use_l, 4)
-    use_r = _fill_short_gaps(use_r, 4)
+    # One width per side over the whole piece. A bridge does not change width
+    # where a vehicle stands; the kerb or the catalogue width decides, the
+    # railing can only narrow it.
+    side_l = _side_half(kerb_l, reach_l, opening, gip_half, half_cap)
+    side_r = _side_half(kerb_r, reach_r, opening, gip_half, half_cap)
+    kerb_n_l, kerb_n_r = side_l[2], side_r[2]
+    const_l, const_r, source_l, source_r = _pair_halves(side_l, side_r, gip_half)
+    use_l = np.where(write, const_l, np.nan)
+    use_r = np.where(write, const_r, np.nan)
+    # Heights are built and stamped one sample past the edge, so every raster
+    # cell whose centre lies inside the polygon gets a deck height.
+    in_width = (offs >= -const_r - RAY_M - 1e-6) & (offs <= const_l + RAY_M + 1e-6)
+
+    # Heights as axis line plus profile. A vehicle leaves a hole in the
+    # profile that the neighbouring stations close along the road; the
+    # crossfall of the deck is kept, not replaced by the axis height.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        axis_z = np.nanmedian(deck[inner], axis=0)
+    axis_z = _interp_along(axis_z, write)
+    rel = deck - axis_z[None, :]
+    rel[~in_width, :] = np.nan
+    filled_px = 0
+    for k in np.flatnonzero(in_width):
+        before = np.isfinite(rel[k])
+        rel[k] = _interp_along(rel[k], write)
+        filled_px += int(np.count_nonzero(np.isfinite(rel[k]) & ~before & write))
+    # The flank rim beside a railing is empty at every station, so nothing
+    # along the road can fill it. Hold the last profile value across.
+    rel = _hold_across(rel, in_width)
+    win_n = _odd(win_m, STATION_M)
+    axis_z = _median_1d(axis_z, win_n)
+    axis_z = _smooth_along(axis_z[None, :], SMOOTH_M / STATION_M)[0]
+    rel = _median_along(rel, win_n)
+    rel = _smooth_along(rel, SMOOTH_M / STATION_M)
+    deck = axis_z[None, :] + rel
 
     weight = np.zeros(n_st, dtype=np.float64)
     outside = (~opening) & write
@@ -551,22 +684,46 @@ def _one_chain(
     ys = []
     zs = []
     center_z = blended[center]
-    for i in np.flatnonzero(write):
-        lo = -float(use_r[i]) if np.isfinite(use_r[i]) else 0.0
-        hi = float(use_l[i]) if np.isfinite(use_l[i]) else 0.0
-        if hi - lo < MIN_DECK_M:
-            continue
-        take = (offs >= lo - 1e-6) & (offs <= hi + 1e-6)
-        zz = blended[:, i].copy()
-        missing = take & ~np.isfinite(zz) & np.isfinite(center_z[i])
-        zz[missing] = center_z[i]
-        take = take & np.isfinite(zz)
-        if not np.any(take):
-            continue
-        pts = line[i] + offs[take, None] * normal[i]
-        xs.append(pts[:, 0])
-        ys.append(pts[:, 1])
-        zs.append(zz[take])
+    axis_fill_px = 0
+    # Stations 0.5 m apart on a skewed axis miss some 0.5 m raster cells.
+    # The half stations in between close those gaps.
+    mid_line = 0.5 * (line[:-1] + line[1:])
+    mid_normal = normal[:-1] + normal[1:]
+    mid_normal /= np.maximum(np.hypot(mid_normal[:, 0], mid_normal[:, 1]), 1e-9)[:, None]
+    mid_grid = 0.5 * (blended[:, :-1] + blended[:, 1:])
+    mid_write = write[:-1] & write[1:]
+    passes = (
+        (line, normal, blended, write, center_z, use_l, use_r),
+        (
+            mid_line,
+            mid_normal,
+            mid_grid,
+            mid_write,
+            0.5 * (center_z[:-1] + center_z[1:]),
+            use_l[:-1],
+            use_r[:-1],
+        ),
+    )
+    for p_line, p_normal, p_grid, p_write, p_center, p_l, p_r in passes:
+        for i in np.flatnonzero(p_write):
+            lo = -float(p_r[i]) if np.isfinite(p_r[i]) else 0.0
+            hi = float(p_l[i]) if np.isfinite(p_l[i]) else 0.0
+            if hi - lo < MIN_DECK_M:
+                continue
+            take = (offs >= lo - RAY_M - 1e-6) & (offs <= hi + RAY_M + 1e-6)
+            zz = p_grid[:, i].copy()
+            # Last resort at the piece ends, where no neighbour exists to
+            # interpolate from. Counted in the report.
+            missing = take & ~np.isfinite(zz) & np.isfinite(p_center[i])
+            axis_fill_px += int(np.count_nonzero(missing))
+            zz[missing] = p_center[i]
+            take = take & np.isfinite(zz)
+            if not np.any(take):
+                continue
+            pts = p_line[i] + offs[take, None] * p_normal[i]
+            xs.append(pts[:, 0])
+            ys.append(pts[:, 1])
+            zs.append(zz[take])
     if not xs:
         return {"oid": oid, "skipped": "empty_deck", "span_m": round(span, 2)}
     ribbon = _ribbon(line, normal, station, use_l, use_r, write)
@@ -582,6 +739,15 @@ def _one_chain(
         "span_m": round(span, 2),
         "opening_m": round(float(station[opening][-1] - station[opening][0]) if np.any(opening) else 0.0, 2),
         "deck_width_m": None if width_open.size == 0 else round(float(np.median(width_open)), 2),
+        "gip_width_m": round(2.0 * gip_half, 2),
+        "half_left_m": round(const_l, 2),
+        "half_right_m": round(const_r, 2),
+        "width_source_left": source_l,
+        "width_source_right": source_r,
+        "kerb_stations_left": kerb_n_l,
+        "kerb_stations_right": kerb_n_r,
+        "interpolated_px": filled_px,
+        "axis_fill_px": axis_fill_px,
         "mid_deck_m": None if not np.isfinite(center_z[mid]) else round(float(center_z[mid]), 3),
         "mid_ground_m": None if not np.isfinite(center_dgm[mid]) else round(float(center_dgm[mid]), 3),
         "samples": int(sum(len(v) for v in xs)),
@@ -694,6 +860,7 @@ def main() -> None:
                 chain,
                 oid=oid,
                 half_cap=half_cap,
+                gip_half=width * 0.5,
                 dom=dom,
                 dom_frame=dom_frame,
                 road=road,
@@ -733,6 +900,10 @@ def main() -> None:
             print(
                 f"oid {oid} opening {built['report'].get('opening_m')} m "
                 f"width {built['report'].get('deck_width_m')} m "
+                f"(gip {built['report'].get('gip_width_m')}, "
+                f"L {built['report'].get('width_source_left')} "
+                f"R {built['report'].get('width_source_right')}, "
+                f"interpolated {built['report'].get('interpolated_px')} px) "
                 f"rail {built['report'].get('rail_samples')} "
                 f"wall {built['report'].get('wall_samples')} "
                 f"gap {built['report'].get('approach_gap_m')}",
@@ -759,6 +930,14 @@ def main() -> None:
         geometry=geoms,
         crs="EPSG:31254",
     ).to_file(clip_path, layer="carriageway", driver="GPKG")
+    # The decks alone, for steps that must leave the bridge surface untouched
+    # (smooth_road_surface.py protects these polygons, not only the GIP zone).
+    if ribbons:
+        gpd.GeoDataFrame(
+            {"objectid": [oid for oid, _ in ribbons]},
+            geometry=[ribbon for _, ribbon in ribbons],
+            crs="EPSG:31254",
+        ).to_file(clip_path, layer="bridge_deck", driver="GPKG")
     report_path = out_dir / "bridge_deck_report.json"
     report_path.write_text(json.dumps({"bridges": reports}, indent=2) + "\n", encoding="utf-8")
     print(f"Wrote {height_path}", flush=True)

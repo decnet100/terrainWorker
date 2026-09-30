@@ -426,6 +426,20 @@ def _ribbon(xy_d, s_d, half_l, half_r, polys):
     return [g for g in _iter_polys(cut) if g.area >= 1.0]
 
 
+def _bridge_decks(carriage: Path) -> list:
+    """Deck polygons written by blend_bridge_deck.py, empty if the file has
+    no such layer."""
+    try:
+        import pyogrio
+
+        if "bridge_deck" not in {str(row[0]) for row in pyogrio.list_layers(carriage)}:
+            return []
+        gdf = gpd.read_file(carriage, layer="bridge_deck")
+    except Exception:
+        return []
+    return [g for g in gdf.geometry if g is not None and not g.is_empty]
+
+
 def _gip_classes(site) -> dict[int, str]:
     """OBJECTID -> OBJEKT from the site's GIP cache."""
     from build_bridges import find_gip_geojson
@@ -853,8 +867,22 @@ def main() -> None:
     except Exception:
         segments = None
     zones = _zones(segments)
+    # The bridge deck polygon reaches past the GIP zone (railing wider than
+    # the carriageway). Protect that rim too, but only beside the span: the
+    # deck's approach overlap stays open to the road model.
+    decks = _bridge_decks(carriage)
+    if decks and zones:
+        near_zone = shapely.union_all(zones).buffer(1.0)
+        for deck in decks:
+            rim = deck.intersection(near_zone)
+            if not rim.is_empty:
+                zones.append(rim)
     struct = _structure_mask(zones, z_in.shape, spec) if zones else np.zeros(z_in.shape, dtype=bool)
-    print(f"input {heights.name} {z_in.shape}, structure spans {len(zones)}", flush=True)
+    print(
+        f"input {heights.name} {z_in.shape}, structure spans {len(zones)} "
+        f"(bridge decks {len(decks)})",
+        flush=True,
+    )
 
     if args.replot:
         z_out, _ = _load_geotiff(out_dir / "04_smooth.tif")

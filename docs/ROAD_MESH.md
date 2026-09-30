@@ -140,13 +140,50 @@ Namen. BeamNG danach ganz beenden und neu starten.
 ## Brücke im selben Mesh
 
 `tools/blend_bridge_deck.py` hängt die Brücke an dieses Raster. Die Achse ist
-das Brückenstück in `centerline_shift.gpkg` (EPSG:31254). Das DOM wird längs
-der Straße vorgefiltert, damit ein Fahrzeug herausfällt. Im Querschnitt endet
-die Fahrbahn an Geländer (unter 1,5 m über der Platte), Mauer (darüber) und
-Schlucht. Danach Glättung längs der Straße, und auf 12 m an den Widerlagern
-eine Mischung mit dem reparierten Straßen-DGM. Ausgabe
-`03_with_bridges.tif` und `carriageway_bridged.gpkg`. Das Mesh baut
-`build_road_grid.py` daraus, mit denselben Regeln wie die Straße.
+das Brückenstück in `centerline_shift.gpkg` (EPSG:31254). Im Querschnitt des
+DOM endet die Fahrbahn an Geländer (unter 1,5 m über der Platte), Mauer
+(darüber) und Schlucht. Ein Fahrzeug (mehr als 30 cm über der inneren Platte,
+mit 0,5 m Saum für die verschmierte Flanke) ist ein Loch in der Platte, keine
+Kante.
+
+Die Breite ist ein Wert je Seite über die ganze Öffnung, nicht je Station:
+
+1. Randstein: eine Stufe von 8 bis 35 cm quer zur Straße, über 0,75 m
+   gelesen, die dahinter 0,75 m in diesem Band bleibt. Wird sie auf
+   mindestens 10 m Stationen gefunden, setzt ihr Median die Halbbreite.
+2. Sonst die halbe GIP-Fahrbahnbreite.
+3. Das Geländer kann nur schmaler machen: 95-%-Quantil der Reichweite je
+   Station bis zum Randobjekt (eine Fahrzeugreihe steht nicht an jeder
+   Station, ein Geländer schon). Schneidet es eine GIP-Hälfte, liegt die
+   Achse außermittig, und die andere Seite bekommt das Defizit, soweit ihr
+   Geländer es erlaubt.
+
+Die Höhen sind Achslinie plus Profil je Versatz. Löcher (Fahrzeuge) schließt
+eine lineare Interpolation längs der Straße aus den Nachbarstationen, also
+mit der Querneigung der Platte; den Saum neben dem Geländer, der an jeder
+Station leer ist, füllt der letzte Profilwert quer. Danach Median (5 bis
+15 m) und Gauß (4 m) längs, und auf 12 m an den Widerlagern eine Mischung mit
+dem reparierten Straßen-DGM. Gestempelt wird an Stationen und
+Zwischenstationen (0,25 m) und einen Versatz über die Kante hinaus, damit
+jede Rasterzelle im Polygon eine Deckhöhe hat.
+
+Ausgabe `03_with_bridges.tif`, `carriageway_bridged.gpkg` (Layer
+`carriageway` für das Mesh, Layer `bridge_deck` mit den Platten allein) und
+`bridge_deck_report.json` mit `half_left_m`, `half_right_m`,
+`width_source_*` (`kerb`, `gip`, `gip+shift`, `rail`), `kerb_stations_*`,
+`interpolated_px` und `axis_fill_px` (Notfüllung mit der Achshöhe, nur an
+den Stückenden). Imst 30.09.: 2428 Randstein beidseitig 4,12 + 3,88 m,
+4616 Randstein links 3,88 m, alle anderen GIP-Breite; vorher lagen alle
+Platten bei 8,5 bis 9,0 m, weil das Geländer mit `GIP/2 + 1 m` die Grenze
+war und Gehweg und Randstein zur Fahrbahn zählten.
+
+`smooth_road_surface.py` schützt zusätzlich zur GIP-Zone den Rand der
+Deckpolygone (`bridge_deck` geschnitten mit Zone + 1 m), weil die Platte
+breiter sein kann als die Zone und sonst die Straße unter der Brücke dort
+hineinschreibt (auf 2428 vorher 48 Pixel um bis zu 9 m).
+
+Das Mesh baut `build_road_grid.py` daraus, mit denselben Regeln wie die
+Straße.
 
 Das Gelände begrenzt `apply_corridor_dgm.py` an der Fläche, aus der das Mesh
 geschnitten ist: `road_grid/road_grid_z.tif`, das `build_road_grid.py` nach
