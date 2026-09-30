@@ -18,9 +18,14 @@ cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/imst.yaml"; pytho
 | Lateral search, then narrowing up to 2 m | `data/processed/tirol-imst-8192/centerline_shift_narrow_2m/` |
 | Same, roughness clipped at 1.9 cm | `data/processed/tirol-imst-8192/centerline_shift_clip/` |
 | Clipped run, width tapered into each pinch | `data/processed/tirol-imst-8192/centerline_shift_taper/` |
-| Same, no capped pixel allowed in a kept placement | `data/processed/tirol-imst-8192/centerline_shift_strict/` |
+| Same, no capped pixel allowed in a kept placement (trial, rejected 27.09) | `data/processed/tirol-imst-8192/centerline_shift_strict/` |
 
 Each run writes its own folder. Earlier folders stay as they are.
+
+Since 30.09 the script writes `centerline_shift_taper/` with the mean-only rule
+(`MAX_FRAC_HOT = 1.0`) for Landes-, Bundesstraßen, Autobahnen and `S-G` in one
+run. `repair_dgm_transect.py`, `blend_bridge_deck.py` and `apply_corridor_dgm.py`
+read that folder.
 
 ## Inputs
 
@@ -69,7 +74,7 @@ The carriageway is a ribbon along that centerline. Width is the accepted width o
 
 ## Layers
 
-`centerline_shift_strict/centerline_shift.gpkg` (earlier runs keep the same layers in their own folders):
+`centerline_shift_taper/centerline_shift.gpkg` (earlier runs keep the same layers in their own folders):
 
 | Layer | Contents |
 |-------|----------|
@@ -97,5 +102,5 @@ In `tools/shift_centerline_by_roughness.py`:
 | `MAX_NARROW_M` | 2.0 m | Largest width reduction |
 | `TAPER_M` | 20 m | How early the wider piece starts narrowing into a pinch |
 | `ROUGH_CLIP_M` | 0.019 m | Cap. Median of the quieter side's 95th percentile |
-| `HOT_M` | 0.019 m | Pixel on the cap, not allowed in a kept placement |
-| `MAX_FRAC_HOT` | 0 | Share of capped pixels a kept placement may contain |
+| `HOT_M` | 0.019 m | Pixel on the cap, counted in `frac_hot` |
+| `MAX_FRAC_HOT` | 1.0 | Share of capped pixels a kept placement may contain. 1.0 = mean-only rule (kept); 0 = strict trial (rejected) |

@@ -32,7 +32,9 @@ from pathlib import Path
 
 import numpy as np
 import tifffile as tiff
+import shapely
 from shapely import clip_by_rect, constrained_delaunay_triangles, intersects_xy
+from shapely.errors import GEOSException
 from shapely.geometry import box
 from shapely.ops import unary_union
 from shapely.strtree import STRtree
@@ -120,6 +122,43 @@ def _iter_polygons(geom):
     elif kind == "GeometryCollection":
         for part in geom.geoms:
             yield from _iter_polygons(part)
+
+
+def _triangulate(poly):
+    """Triangles covering ``poly``.
+
+    GEOS refuses a ring it cannot find a convex corner on (collinear or
+    repeated vertices left by clip_by_rect). Clean the ring first; if GEOS
+    still refuses, fall back to an unconstrained Delaunay and keep the
+    triangles whose centre lies inside the polygon.
+    """
+    # An invalid ring (self-touching, bow-tie) reports a cancelled area, so
+    # it must be repaired before the area filter below sees its parts.
+    candidates = [poly, shapely.remove_repeated_points(poly, SNAP_M)] if poly.is_valid else []
+    candidates += [shapely.make_valid(poly), poly.buffer(0)]
+    for cand in candidates:
+        if cand is None or cand.is_empty:
+            continue
+        out = []
+        failed = False
+        for part in _iter_polygons(cand):
+            if part.area < MIN_AREA_M2:
+                continue
+            try:
+                tris = constrained_delaunay_triangles(part)
+            except GEOSException:
+                failed = True
+                break
+            out.extend(tris.geoms if hasattr(tris, "geoms") else (tris,))
+        if not failed:
+            return out
+    tris = shapely.delaunay_triangles(poly)
+    keep = []
+    for tri in tris.geoms if hasattr(tris, "geoms") else (tris,):
+        c = tri.centroid
+        if poly.contains(c):
+            keep.append(tri)
+    return keep
 
 
 COLLISION_CELL_M = 2.0
@@ -222,6 +261,37 @@ def _check_geometry(pos: np.ndarray, faces: np.ndarray, *, stem: str, z_min: flo
         raise SystemExit(f"{stem}: face normal points down")
 
 
+def _z_nearest(grid: dict, x: float, y: float, reach: int = 3) -> float:
+    """Height of the nearest finite road cell around a plan position.
+
+    Depends on the position and the raster only, not on the quad that asked.
+    A cut vertex on a part boundary therefore gets the same height from both
+    parts, which ``_z_from_inside`` cannot promise (each part sees another
+    quad).
+    """
+    z = grid["z"]
+    mask = grid["mask"]
+    height, width = z.shape
+    fc = (x - float(grid["xmin"])) / RES_M - 0.5
+    fr = (float(grid["ymax"]) - y) / RES_M - 0.5
+    c0 = int(round(fc))
+    r0 = int(round(fr))
+    best = float("nan")
+    best_d = float("inf")
+    for rr in range(max(0, r0 - reach), min(height, r0 + reach + 1)):
+        for cc in range(max(0, c0 - reach), min(width, c0 + reach + 1)):
+            if not mask[rr, cc]:
+                continue
+            sample = float(z[rr, cc])
+            if not math.isfinite(sample):
+                continue
+            d = math.hypot(fc - cc, fr - rr)
+            if d < best_d or (d == best_d and (rr, cc) < (r0, c0)):
+                best_d = d
+                best = sample
+    return best
+
+
 def _z_from_inside(x: float, y: float, packed: list) -> float:
     """Height at a cut point from the inside cell centres of this quad only."""
     acc = 0.0
@@ -278,7 +348,11 @@ def _build_part(
         pa, pb, pc = pos_l[a], pos_l[b], pos_l[c]
         abx, aby = pb[0] - pa[0], pb[1] - pa[1]
         acx, acy = pc[0] - pa[0], pc[1] - pa[1]
-        if abx * acy - aby * acx < 0.0:
+        cross = abx * acy - aby * acx
+        # A clip corner can snap onto a grid line. The triangle then has no area.
+        if abs(cross) < MIN_AREA_M2 * 2.0:
+            return
+        if cross < 0.0:
             b, c = c, b
         faces.append((a, b, c))
 
@@ -296,6 +370,8 @@ def _build_part(
         if hit is not None:
             return hit
         z_abs = _sample_z(grid, x, y)
+        if not math.isfinite(z_abs):
+            z_abs = _z_nearest(grid, x, y)
         if not math.isfinite(z_abs):
             z_abs = _z_from_inside(x, y, packed)
         if not math.isfinite(z_abs):
@@ -326,9 +402,7 @@ def _build_part(
         for poly in _iter_polygons(geom):
             if poly.area < MIN_AREA_M2:
                 continue
-            tris = constrained_delaunay_triangles(poly)
-            geoms = tris.geoms if hasattr(tris, "geoms") else (tris,)
-            for tri in geoms:
+            for tri in _triangulate(poly):
                 coords = list(tri.exterior.coords)
                 if len(coords) < 4:
                     continue
@@ -847,6 +921,27 @@ def _smooth_edge_heights(grid: dict) -> tuple[int, int, int]:
     return assigned, smoothed, outside
 
 
+def _write_surface(out_dir: Path, grid: dict) -> Path:
+    """The heights the mesh is actually cut from, after edge fill and smoothing.
+
+    Road cells plus the 1 m strip outside the outline that ``_paint_outside_band``
+    filled; everything else NaN. ``apply_corridor_dgm.py`` clamps the terrain
+    against this raster, so the ceiling follows the mesh top and not the
+    repaired DGM, which differs from the mesh in the outer metre.
+    """
+    from scipy.ndimage import binary_dilation
+
+    z = np.asarray(grid["z"], dtype=np.float32)
+    mask = grid["mask"]
+    reach = int(math.ceil(EDGE_BAND_M / RES_M))
+    keep = binary_dilation(mask, structure=np.ones((3, 3), dtype=bool), iterations=reach)
+    out = np.where(keep & np.isfinite(z), z, np.float32(np.nan))
+    dest = out_dir / "road_grid_z.tif"
+    write_referenced_tif(dest, out, xmin=float(grid["xmin"]), ymax=float(grid["ymax"]), res=RES_M)
+    print(f"Wrote {dest} cells={int(np.count_nonzero(np.isfinite(out)))}", flush=True)
+    return dest
+
+
 def _note_seams(grid: dict, pos: np.ndarray, faces: np.ndarray) -> None:
     """Count boundary edges. A shared part cut that matches in height counts twice."""
     bag: dict[tuple, int] = grid.setdefault("seams", {})
@@ -884,6 +979,7 @@ def _assert_sealed(grid: dict, sc: SiteCoords) -> None:
     cracks = 0
     holes = 0
     hole_at = None
+    crack_at = None
     polys = grid.get("polys") or []
     tree = grid.get("tree")
     for (ku, kv), heights in groups.items():
@@ -892,6 +988,11 @@ def _assert_sealed(grid: dict, sc: SiteCoords) -> None:
             z1 = 0.5 * (heights[1][0] + heights[1][1])
             if abs(z0 - z1) > 0.01:
                 cracks += 1
+                if crack_at is None:
+                    mx = 0.5 * (ku[0] + kv[0])
+                    my = 0.5 * (ku[1] + kv[1])
+                    cx, cy = sc.terrain_to_crs(mx, my)
+                    crack_at = (round(cx, 1), round(cy, 1), round(abs(z0 - z1), 3))
             continue
         if tree is None or not polys:
             continue
@@ -917,7 +1018,8 @@ def _assert_sealed(grid: dict, sc: SiteCoords) -> None:
                 hole_at = (round(x, 1), round(y, 1))
     if cracks or holes:
         raise SystemExit(
-            f"mesh gaps: {cracks} part cuts with different height, "
+            f"mesh gaps: {cracks} part cuts with different height "
+            f"(first at CRS {crack_at}, (x, y, dz_m)), "
             f"{holes} open edges inside the road, first {hole_at}"
         )
     rim = sum(1 for heights in groups.values() if len(heights) == 1)
@@ -969,18 +1071,31 @@ def _write_mask(proc: Path, grid: dict, stats: dict) -> Path:
     return dest
 
 
+def _mosaic_matches(index: dict, frame: dict, n_tiles: int) -> bool:
+    if int(index.get("tiles") or -1) != n_tiles:
+        return False
+    return all(index.get(key) == frame[key] for key in ("xmin", "ymin", "xmax", "ymax", "width", "height"))
+
+
 def _ensure_raw_mosaic(site: dict, proc: Path) -> tuple[Path, dict]:
-    """One GeoTIFF of the downloaded 0.5 m squares, no grade filter."""
+    """One GeoTIFF of the downloaded 0.5 m squares, no grade filter.
+
+    Rebuilds when the tile set or its frame changed, so a newly fetched
+    Gemeindestraße square is not left out of an older mosaic.
+    """
     out_dir = proc / "corridor50_raw"
     out_dir.mkdir(parents=True, exist_ok=True)
     index_path = out_dir / "corridor50_raw_index.json"
     raster = out_dir / "corridor50_raw.tif"
-    if raster.is_file() and index_path.is_file():
-        return out_dir, json.loads(index_path.read_text(encoding="utf-8"))
     raw_dir = ROOT / "data" / "raw" / f"dgm_{site_slug(site)}_corridor50"
     src = json.loads((raw_dir / "corridor_index.json").read_text(encoding="utf-8"))
     specs = list(src["tiles"])
     frame = raster_frame(specs)
+    if raster.is_file() and index_path.is_file():
+        index = json.loads(index_path.read_text(encoding="utf-8"))
+        if _mosaic_matches(index, frame, len(specs)):
+            return out_dir, index
+        print("corridor mosaic is behind the downloaded tiles, rebuilding", flush=True)
     dat = out_dir / "_mosaic.dat"
     if dat.exists():
         dat.unlink()
@@ -1069,13 +1184,25 @@ def _load_geotiff(path: Path) -> tuple[np.ndarray, dict]:
     }
 
 
+def _row_code_objekt(row) -> tuple[str, str]:
+    code = str(row.get("STR_CODE") or row.get("str_code") or "").strip()
+    obj = str(row.get("OBJEKT") or row.get("objekt") or "").upper().strip()
+    return code, obj
+
+
 def _main_route_row(row) -> bool:
     """Landesstraße, Bundesstraße, Autobahn, including their ramps."""
-    code = str(row.get("STR_CODE") or "").strip()
-    obj = str(row.get("OBJEKT") or "").upper().strip()
+    code, obj = _row_code_objekt(row)
     if _MAIN_ROAD_CODE.match(code):
         return True
     return obj == "S-A"
+
+
+def _road_mesh_row(row) -> bool:
+    """Main routes plus Gemeindestraße S-G. S-GW is a track and stays out."""
+    from gip_road_segments import road_mesh_piece
+
+    return road_mesh_piece(row)
 
 
 def _load_clip_polygons(path: Path, layer: str, *, main_only: bool = False) -> tuple[list, dict]:
@@ -1125,9 +1252,10 @@ def main() -> None:
         if not heights_path.is_file():
             raise SystemExit(f"heights raster missing: {heights_path}")
         z, index = _load_geotiff(heights_path)
-        ref = json.loads(
-            (proc / "corridor50_road" / "corridor50_road_index.json").read_text(encoding="utf-8")
-        )
+        raw_index = proc / "corridor50_raw" / "corridor50_raw_index.json"
+        road_index = proc / "corridor50_road" / "corridor50_road_index.json"
+        ref_path = raw_index if raw_index.is_file() else road_index
+        ref = json.loads(ref_path.read_text(encoding="utf-8"))
         for key in ("xmin", "ymin", "xmax", "ymax", "width", "height"):
             if index[key] != ref[key]:
                 raise SystemExit(
@@ -1186,6 +1314,7 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     for old in out_dir.glob("*.dae"):
         old.unlink()
+    _write_surface(out_dir, grid)
     written: list[dict] = []
     covered: set = set()
     _emit_rows(

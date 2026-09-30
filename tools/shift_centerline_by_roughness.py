@@ -4,7 +4,8 @@ Does not write into a BeamNG level. Each step is a layer in one GeoPackage
 plus a roughness GeoTIFF, so the choices can be inspected before anything
 is applied.
 
-Pieces are at most 20 m of one GIP OBJECTID, main route only. Each piece is
+Pieces are at most 20 m of one GIP OBJECTID: Landes- and Bundesstraßen,
+Autobahnen, and Gemeindestraße S-G. S-GW is not included. Each piece is
 shifted on its own, from the original axis outward by 10 cm up to 1 m left
 and right. The score is the mean plane-residual of the raw 0.5 m DGM inside
 a flat-ended buffer of the width under test. A piece whose scores barely
@@ -27,6 +28,7 @@ from pathlib import Path
 
 import geopandas as gpd
 import numpy as np
+import pandas as pd
 from scipy.ndimage import uniform_filter
 from shapely import intersects_xy
 from shapely.geometry import LineString, MultiLineString, Point, Polygon
@@ -36,10 +38,11 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 
 from build_bridges import find_gip_geojson  # noqa: E402
-from build_road_grid import RES_M, _load_geotiff, _main_route_row  # noqa: E402
+from build_road_grid import RES_M, _ensure_raw_mosaic, _load_geotiff, _road_mesh_row  # noqa: E402
 from export_gip_width_m import _project, _to_31254  # noqa: E402
 from filter_road_corridor import write_referenced_tif  # noqa: E402
 from gip_catalog import catalog_segment  # noqa: E402
+from gip_road_segments import _gip_segment_width_m  # noqa: E402
 from site_coords import load_site, processed_dir, site_slug  # noqa: E402
 
 SEG_MAX_M = 20.0
@@ -50,13 +53,16 @@ HOT_M = 0.019
 GOOD_MEAN_M = 0.008
 CLEAR_GAP_M = 0.002
 ROUGH_CLIP_M = 0.019
-MAX_FRAC_HOT = 0.0
+# Share of pixels on the roughness cap a kept placement may contain.
+# 1.0 = mean-only rule (kept 27.09, "taper" run); 0.0 = strict trial, rejected.
+MAX_FRAC_HOT = 1.0
 JOIN_M = 3.0
 JOIN_DOT = 0.85
 WIDTH_STEP_M = 0.10
 MAX_NARROW_M = 2.0
 TAPER_M = 20.0
-OUT_DIR_NAME = "centerline_shift_strict"
+# repair_dgm_transect, blend_bridge_deck and apply_corridor_dgm read this folder.
+OUT_DIR_NAME = "centerline_shift_taper"
 
 
 @dataclass
@@ -249,7 +255,7 @@ def _load_segments(site: dict) -> list[Segment]:
     out: list[Segment] = []
     for feat in data.get("features") or []:
         props = feat.get("properties") or {}
-        if not _main_route_row(props):
+        if not _road_mesh_row(props):
             continue
         geom = _project(feat.get("geometry") or {}, tf)
         if isinstance(geom, MultiLineString):
@@ -262,6 +268,10 @@ def _load_segments(site: dict) -> list[Segment]:
             continue
         rec = catalog_segment(oid) or {}
         width = rec.get("width_mean_m")
+        if width is None or float(width) < 1.5:
+            if str(props.get("OBJEKT") or "").upper().strip() != "S-G":
+                continue
+            width = _gip_segment_width_m(props, 5.0)
         if width is None or float(width) < 1.5:
             continue
         coords = [(float(x), float(y)) for x, y in geom.coords]
@@ -638,6 +648,7 @@ def _records(geoms, rows) -> gpd.GeoDataFrame:
 def main() -> None:
     site = load_site()
     proc = processed_dir(site)
+    _ensure_raw_mosaic(site, proc)
     raw = proc / "corridor50_raw" / "corridor50_raw.tif"
     if not raw.is_file():
         raise SystemExit(f"raw DGM missing: {raw}")
@@ -825,9 +836,9 @@ def main() -> None:
             f"Betrag der Abweichung vom Mittel der {ROUGH_WIN * RES_M:.1f} m-Umgebung "
             "im rohen DGM. Eine gleichmäßige Steigung liegt auf diesem Mittel und ist "
             f"kein Fehlerpunkt. Werte über {ROUGH_CLIP_M:.3f} m werden beschnitten, das ist "
-            "das 95-%-Niveau der ruhigeren Seite. Ein Pixel auf dieser Kappung gilt als "
-            f"rau und darf in einer behaltenen Lage nicht vorkommen. Der Mittelwert muss "
-            f"zusätzlich höchstens {GOOD_MEAN_M:.3f} m sein. Liegen alle Lagen weniger als "
+            "das 95-%-Niveau der ruhigeren Seite. Eine Lage ist gut, wenn der Mittelwert "
+            f"im Breitenpuffer höchstens {GOOD_MEAN_M:.3f} m ist und höchstens der Anteil "
+            f"{MAX_FRAC_HOT:.2f} der Pixel auf der Kappung liegt. Liegen alle Lagen weniger als "
             f"{CLEAR_GAP_M:.3f} m auseinander, bleibt das Stück auf der Ausgangslage. "
             "Passiert das bei keiner Breite, wird die "
             f"Fahrbahn in {WIDTH_STEP_M:.2f} m-Schritten bis zu {MAX_NARROW_M:.1f} m schmaler."
@@ -861,6 +872,61 @@ def main() -> None:
     (out_dir / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     print(json.dumps({"kinds": kinds, "narrow_m": narrow_hist, "chosen_offset_m": hist}, indent=2))
     print(f"Wrote {gpkg}")
+    _merge_sg_into_mesh(site, proc, gpkg)
+
+
+def _sg_objectids(site: dict) -> set[int]:
+    path = find_gip_geojson(site)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    out: set[int] = set()
+    for feat in data.get("features") or []:
+        props = feat.get("properties") or {}
+        if str(props.get("OBJEKT") or "").upper().strip() != "S-G":
+            continue
+        try:
+            out.add(int(props.get("OBJECTID")))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _merge_sg_into_mesh(site: dict, proc: Path, src: Path) -> None:
+    """Add S-G pieces to the package the road mesh reads.
+
+    Landes- and Bundesstraßen in that package stay as they are. S-GW is not
+    in ``src`` and is not copied.
+    """
+    dest = proc / "centerline_shift_taper" / "centerline_shift.gpkg"
+    out = proc / "centerline_shift_taper" / "centerline_shift_with_sg.gpkg"
+    if not dest.is_file() or dest.resolve() == src.resolve():
+        return
+    sg = _sg_objectids(site)
+    layers = [str(name) for name in gpd.list_layers(dest)["name"]]
+    frames: list[tuple[str, gpd.GeoDataFrame]] = []
+    added = 0
+    for name in layers:
+        frame = gpd.read_file(dest, layer=name)
+        if name in ("segments", "centerline", "carriageway") and "objectid" in frame.columns:
+            extra = gpd.read_file(src, layer=name)
+            have = {int(v) for v in frame.objectid}
+            keep = extra.objectid.map(lambda v: int(v) in sg and int(v) not in have)
+            extra = extra.loc[keep]
+            if not extra.empty:
+                frame = gpd.GeoDataFrame(
+                    pd.concat([frame, extra], ignore_index=True),
+                    geometry="geometry",
+                    crs=frame.crs,
+                )
+                if name == "carriageway":
+                    added = len(extra)
+        frames.append((name, frame))
+    if out.exists():
+        out.unlink()
+    first = True
+    for name, frame in frames:
+        frame.to_file(out, layer=name, driver="GPKG", mode="w" if first else "a")
+        first = False
+    print(f"S-G carriageways added: {added} -> {out.name}", flush=True)
 
 
 if __name__ == "__main__":
