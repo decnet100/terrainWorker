@@ -178,6 +178,73 @@ cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/imst.yaml"; pytho
 cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/imst.yaml"; python tools\apply_corridor_dgm.py
 ```
 
+## Glatte Fahrbahn: Modell plus Restschicht
+
+Nach der Randreparatur ist das Innere der Fahrbahn noch das rohe DGM. Auf
+Imst waren am 30.09. noch 12 % der Fahrbahnpixel „heiß“ (Abweichung vom
+1,5-m-Fenstermittel ab 1,5 cm), p99 lag bei 12,6 cm: Fahrzeuge, Schachtdeckel,
+Mischpixel, Scanrauschen von etwa 0,5 cm.
+
+`tools/smooth_road_surface.py` glättet nicht lokal, sondern zerlegt. Eine
+Straße ist konstruktiv glatt: Gradiente längs mit großen Ausrundungsradien,
+Querprofil pro Station, das sich längs nur langsam ändert. Pro `objectid`:
+
+1. Jedes Fahrbahnpixel bekommt Station `s` und vorzeichenbehafteten Abstand `t`
+   zur Achse (links positiv).
+2. Modell `z = a(s) + b_L(s)·max(t,0) + b_R(s)·min(t,0)`, für alle Stationen
+   gemeinsam gelöst, mit Strafe auf der zweiten Differenz längs
+   (Whittaker-Glätter, Grenzwellenlänge 10 m für `a`, 30 m für die
+   Querneigungen). Anders als ein Gauß reproduziert das Parabeln: Kuppe und
+   Wanne behalten ihre Höhe, nur kürzere Wellen werden gedämpft.
+3. Robuste Gewichte (Tukey, 4 Durchläufe): Fahrzeuge und Mauern fallen aus der
+   Anpassung heraus, ohne vorher per Rauheitsschwelle maskiert zu werden. Der
+   äußere Meter des Polygons ist keine Stützstelle (Böschungsmischpixel; das
+   Band füllt `build_road_grid.py` ohnehin aus dem Inneren).
+4. Rest `z − Modell` wird in Straßenkoordinaten tiefpassgefiltert (σ 2 m längs,
+   1 m quer), gewichtet mit einem Biweight fester Skala (null ab 8 cm). So
+   bleiben Buchten, Aufweitungen und ein einspuriger Belagsaufbau erhalten;
+   ein Fahrzeug nicht.
+5. Ausgabe `04_smooth.tif = Modell + behaltener Rest`. `04_residual.tif` ist
+   `Eingang − Ausgang`, die entfernte Rauheitsschicht; sie kann später
+   skaliert und maskiert wieder aufgesetzt werden. `04_weight.tif` ist das
+   Behalte-Gewicht (0 = Ausreißer, Pixel nahm das Modell).
+
+Bauwerksspannen behalten den Eingang. Querneigung über 15 % ist Böschung in
+einem zu breiten Polygon und wird begrenzt (129 von 1 492 Objekten auf Imst).
+Behält die robuste Anpassung weniger als 35 % der Stützpixel, liegt im Polygon
+keine Fahrbahn (Felseinschnitt, versetzter Stummel); das Objekt behält den
+Eingang und steht im Report unter `unfit_carriageways` (6 auf Imst). Wo sich
+zwei Fahrbahnpolygone überlappen, mischt der Abstand zur eigenen Polygonkante
+die Modelle stetig; liegen sie mehr als 8 cm auseinander (Terrasse,
+Stützmauer zwischen parallelen Straßen), blendet der Ausgang zum gemessenen
+Eingang zurück (`conflict_px`, 16 000 Pixel auf Imst). Das ist kein Fehler
+dieses Schritts, sondern ein Breitenproblem der Polygone; die größten
+verbliebenen Stöße in der Radspur liegen genau dort (Kreuzung 96004/17963 bei
+31090/233457).
+
+Ergebnis Imst 30.09., 1 492 Objekte in 2 bis 7 Minuten: heiße Pixel 288 897 →
+42 078 (12 % → 1,7 %), p90 1,7 → 0,5 cm, p99 12,6 → 2,0 cm. Radspur-Metrik
+(Betrag der zweiten Differenz längs bei ±1,0 und ±2,5 m, Schritt 0,5 m, 2 m
+Abstand zu Bauwerken): p90 1,9 → 0,2 cm, p99 9,9 → 2,1 cm, Anteil ab 1 cm
+29 % → 2 %. Der Report `road_surface_smooth/report.json` enthält die
+Verteilungen, die 15 Objekte mit den meisten Ausreißern und die unangepassten
+Objekte; die Plots (englisch beschriftet) zeigen Radspur, Querschnitt, die
+abgewickelte Fahrbahn und beide Metriken vorher und nachher.
+
+```powershell
+cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/imst.yaml"; python tools\smooth_road_surface.py
+```
+
+`--oid 6975` beschränkt auf einzelne Objekte und schreibt dann nach
+`road_surface_smooth_trial/`, damit das Site-Ergebnis nicht überschrieben
+wird. `--plot-oid` wählt die Objekte für die Einzelplots (Default 6975).
+
+Das Mesh dann aus dem glatten Raster:
+
+```powershell
+cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/imst.yaml"; python tools\build_road_grid.py --heights "data\processed\tirol-imst-tarrenz-8192\road_surface_smooth\04_smooth.tif" --clip "data\processed\tirol-imst-tarrenz-8192\dgm_repair_transect\carriageway_bridged.gpkg" --clip-layer carriageway
+```
+
 ## Brückenversuch
 
 Verworfen. Nicht fortsetzen und nicht mit dem Abschnitt darüber verwechseln.
