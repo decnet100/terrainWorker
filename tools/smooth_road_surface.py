@@ -582,19 +582,32 @@ def _plot_roughness(before, after, out_dir: Path) -> str:
     return str(path)
 
 
+def _plain(value: float, unit: str) -> str:
+    text = f"{value:.10g}"
+    return f"{text}{unit}"
+
+
 def _plot_wheel(before, after, out_dir: Path) -> str:
+    from matplotlib.ticker import FuncFormatter, LogLocator, NullFormatter
+
     fig, ax = plt.subplots(figsize=(7.0, 4.2))
     _ccdf(ax, before, "before (repaired DGM)", "#8a8f98")
     _ccdf(ax, after, "after (smooth surface)", "#0b3d91")
     for step, ls in zip(BUMP_STEPS_M, ("--", ":")):
-        ax.axvline(step * 100.0, color="#c62828", linewidth=0.8, linestyle=ls, label=f"{step * 100:.1f} cm")
+        ax.axvline(step * 100.0, color="#c62828", linewidth=0.8, linestyle=ls, label=_plain(step * 100.0, "cm"))
     ax.set_xscale("log")
     ax.set_yscale("log")
     ax.set_xlim(0.01, 100.0)
     ax.set_ylim(1e-6, 1.0)
-    ax.set_xlabel(f"|second difference| along the wheel path, {STATION_M} m step [cm]")
-    ax.set_ylabel("share of stations at or above")
-    ax.set_title("Wheel-path ride metric, offsets " + ", ".join(f"{o:+.1f}" for o in WHEEL_OFFSETS_M) + " m")
+    ax.xaxis.set_major_locator(LogLocator(base=10.0))
+    ax.xaxis.set_major_formatter(FuncFormatter(lambda v, _pos: _plain(v, "cm")))
+    ax.xaxis.set_minor_formatter(NullFormatter())
+    ax.yaxis.set_major_locator(LogLocator(base=10.0))
+    ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _pos: _plain(v * 100.0, "%")))
+    ax.yaxis.set_minor_formatter(NullFormatter())
+    ax.set_xlabel(f"height difference along road within {STATION_M:g}m")
+    ax.set_ylabel("share of locations at or above")
+    ax.set_title("wheel ride steps, middle of road")
     ax.grid(True, which="both", linewidth=0.3, alpha=0.5)
     ax.legend(frameon=False, fontsize=8)
     fig.tight_layout()
@@ -609,6 +622,7 @@ def main() -> None:
     ap.add_argument("--heights", type=Path, default=None, help="input raster, default 03_with_bridges.tif")
     ap.add_argument("--oid", type=int, action="append", default=None, help="process only these objectids")
     ap.add_argument("--plot-oid", type=int, action="append", default=None, help="objectids to plot, default 6975")
+    ap.add_argument("--replot", action="store_true", help="redraw the two site-wide plots from the existing 04_smooth.tif, no fit")
     args = ap.parse_args()
 
     site = load_site()
@@ -643,6 +657,27 @@ def main() -> None:
     zones = _zones(segments)
     struct = _structure_mask(zones, z_in.shape, spec) if zones else np.zeros(z_in.shape, dtype=bool)
     print(f"input {heights.name} {z_in.shape}, structure spans {len(zones)}", flush=True)
+
+    if args.replot:
+        z_out, _ = _load_geotiff(out_dir / "04_smooth.tif")
+        road = np.isfinite(z_out)
+        z_out = np.where(road, z_out, z_in).astype(np.float32)
+        on = road & np.isfinite(z_in) & ~struct
+        report = json.loads((out_dir / "report.json").read_text(encoding="utf-8"))
+        skip_oids = {int(d["oid"]) for d in report.get("unfit_carriageways", [])}
+        axes = []
+        for oid, geom in zip(lines.objectid, lines.geometry):
+            if int(oid) in skip_oids:
+                continue
+            line = _line_of(lines, int(oid))
+            if line is not None:
+                axes.append(_axis(line))
+        struct_wide = _structure_mask([zone.buffer(2.0) for zone in zones], z_in.shape, spec) if zones else struct
+        wheel_before, wheel_after = _wheel_paths(axes, z_in, z_out, spec, road & ~struct_wide)
+        _plot_roughness(_road_only(z_in, road)[on], _road_only(z_out, road)[on], out_dir)
+        _plot_wheel(wheel_before, wheel_after, out_dir)
+        print(f"Redrew site plots in {out_dir} in {time.time() - t0:.0f} s", flush=True)
+        return
 
     acc = {
         "num": np.zeros(z_in.shape, dtype=np.float64),
