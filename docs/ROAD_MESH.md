@@ -209,8 +209,42 @@ Querprofil pro Station, das sich längs nur langsam ändert. Pro `objectid`:
    skaliert und maskiert wieder aufgesetzt werden. `04_weight.tif` ist das
    Behalte-Gewicht (0 = Ausreißer, Pixel nahm das Modell).
 
+### Verschmälerung der Gemeindestraßen
+
+Die GIP-Polygone der Gemeindestraßen (`OBJEKT` = `S-G`, Konstante
+`NARROW_OBJEKT`) sind auf Imst oft 7 bis 9 m breit, die Fahrbahn darunter 4
+bis 5 m. Der Rest ist Böschung, Bankett oder Mauerfuß. Das Modell aus
+Schritt 2 legt dort eine Fläche, die Meter unter oder über dem Gelände
+liegt; im Spiel ragt dann das Terrain durch das Mesh (36279, 66314).
+
+Darum bekommen nur diese Objekte einen zusätzlichen Schritt zwischen 3 und 4:
+
+1. Pro 2 m Station und pro Seite wird in 0,5-m-Abstandsbins der Median von
+   `|z − Modell|` gebildet. Von der Achse nach außen ist die Fahrbahnkante
+   der letzte Bin, dessen Median ≤ 12 cm bleibt (ein leerer Bin wird
+   toleriert, wenn der nächste wieder passt).
+2. Die Kantenlinie wird längs median- (10 m) und gaußgefiltert (σ 4 m) und
+   auf mindestens 1,5 m Halbbreite, höchstens die Polygonkante begrenzt.
+3. Die Anpassung wird auf den Pixeln innerhalb der Kante wiederholt
+   (bis zu 3 Runden). Damit verschwindet der Querneigungs-Clamp, der vorher
+   die Böschung ausgleichen musste.
+4. Wurde irgendwo mindestens 0,3 m abgeschnitten, ersetzt ein Band variabler
+   Breite entlang der Achse das Polygon. Pixel außerhalb behalten den
+   Eingang.
+
+Alle Polygone, verschmälert oder nicht, landen in
+`road_surface_smooth/carriageway_smooth.gpkg` (Layer `carriageway`, Felder
+`objectid`, `narrowed`, `narrow_m`). `build_road_grid.py --clip` und
+`apply_corridor_dgm.py` lesen diese Datei anstelle von
+`carriageway_bridged.gpkg`. Landes- und Bundesstraßen (`S-L`, `S-B`) bleiben
+unverändert; ihre Polygonbreite stammt aus den Fahrstreifenregeln. Der Report
+nennt unter `narrowed_carriageways`, `narrowed_max_m` und `most_narrowed`,
+was beschnitten wurde; im Unrolled-Plot markieren schwarze Linien die
+behaltene Kante.
+
 Bauwerksspannen behalten den Eingang. Querneigung über 15 % ist Böschung in
-einem zu breiten Polygon und wird begrenzt (129 von 1 492 Objekten auf Imst).
+einem zu breiten Polygon und wird begrenzt (129 von 1 492 Objekten auf Imst
+vor der Verschmälerung).
 Behält die robuste Anpassung weniger als 35 % der Stützpixel, liegt im Polygon
 keine Fahrbahn (Felseinschnitt, versetzter Stummel); das Objekt behält den
 Eingang und steht im Report unter `unfit_carriageways` (6 auf Imst). Wo sich
@@ -239,11 +273,16 @@ cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/imst.yaml"; pytho
 `road_surface_smooth_trial/`, damit das Site-Ergebnis nicht überschrieben
 wird. `--plot-oid` wählt die Objekte für die Einzelplots (Default 6975).
 
-Das Mesh dann aus dem glatten Raster:
+Das Mesh dann aus dem glatten Raster und den verschmälerten Polygonen:
 
 ```powershell
-cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/imst.yaml"; python tools\build_road_grid.py --heights "data\processed\tirol-imst-tarrenz-8192\road_surface_smooth\04_smooth.tif" --clip "data\processed\tirol-imst-tarrenz-8192\dgm_repair_transect\carriageway_bridged.gpkg" --clip-layer carriageway
+cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/imst.yaml"; python tools\build_road_grid.py --heights "data\processed\tirol-imst-tarrenz-8192\road_surface_smooth\04_smooth.tif" --clip "data\processed\tirol-imst-tarrenz-8192\road_surface_smooth\carriageway_smooth.gpkg" --clip-layer carriageway
 ```
+
+Danach `apply_corridor_dgm.py` für die Heightmap-Klammer, Import von
+`terrainPreset.json`, BeamNG ganz beenden und neu starten. Die Klammer liest
+`road_grid/road_grid_z.tif`; ein älterer Stand der Heightmap passt nicht zu
+einem neu gebauten Mesh.
 
 ## Brückenversuch
 

@@ -33,11 +33,22 @@ polygon edge, so the mix is continuous across that edge. A crossfall steeper
 than ``MAX_CROSSFALL`` is an embankment inside a too-wide polygon and is
 clamped. Nothing is written into a BeamNG level.
 
+Municipal roads (GIP ``OBJEKT`` in ``NARROW_OBJEKT``, i.e. ``S-G``) get their
+polygon narrowed to the surface the model explains: per 2 m of station and
+per side, the outermost 0.5 m offset bin whose median |remainder| stays
+within ``ROAD_TOL_M`` is the road edge; the edge line is median- and
+Gaussian-filtered along the road, the fit is repeated on the pixels inside,
+and a variable-width ribbon replaces the polygon when at least
+``NARROW_MIN_M`` was cut somewhere. Pixels outside the ribbon keep the input
+height. The result is ``carriageway_smooth.gpkg`` (layer ``carriageway``),
+which the mesh and the terrain clamp read instead of
+``carriageway_bridged.gpkg``.
+
     cd C:\\temp\\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/imst.yaml"; python tools\\smooth_road_surface.py
 
-Then the mesh from the smooth raster:
+Then the mesh from the smooth raster and the narrowed polygons:
 
-    cd C:\\temp\\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/imst.yaml"; python tools\\build_road_grid.py --heights "data\\processed\\tirol-imst-tarrenz-8192\\road_surface_smooth\\04_smooth.tif" --clip "data\\processed\\tirol-imst-tarrenz-8192\\dgm_repair_transect\\carriageway_bridged.gpkg" --clip-layer carriageway
+    cd C:\\temp\\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/imst.yaml"; python tools\\build_road_grid.py --heights "data\\processed\\tirol-imst-tarrenz-8192\\road_surface_smooth\\04_smooth.tif" --clip "data\\processed\\tirol-imst-tarrenz-8192\\road_surface_smooth\\carriageway_smooth.gpkg" --clip-layer carriageway
 """
 from __future__ import annotations
 
@@ -108,6 +119,19 @@ MAX_CROSSFALL = 0.15
 # Where carriageways overlap, each model is weighted by the distance to its own
 # polygon edge, so the weight is continuous across that edge.
 BLEND_REACH_M = 2.0
+# Gemeindestraßen: the measured polygon often covers the embankment. The
+# carriageway is cut back to the part of the cross-section that lies on the
+# model. Walking out from the axis in 0.5 m offset bins over EXTENT_BIN_M of
+# station, the edge is the first bin whose median |input - model| exceeds
+# ROAD_TOL_M. The edge is smoothed along the road and never moves outward.
+NARROW_OBJEKT = {"S-G"}
+ROAD_TOL_M = 0.12
+EXTENT_BIN_M = 2.0
+MIN_HALF_M = 1.5
+EDGE_MEDIAN_M = 10.0
+EDGE_SIGMA_M = 4.0
+NARROW_MIN_M = 0.3
+NARROW_ROUNDS = 3
 # Wheel paths for the ride metric, offsets from the axis in metres.
 WHEEL_OFFSETS_M = (-2.5, -1.0, 1.0, 2.5)
 BUMP_STEPS_M = (0.005, 0.010)
@@ -293,7 +317,144 @@ def _kept_remainder(u, t, r, w, n_st):
     return np.asarray(lp, dtype=np.float64), grid
 
 
-def _process(oid, line, polys, z, spec, skip, acc, want_capture):
+def _robust_fit(design, zin, support, n_st, t_plus, t_minus, u, e):
+    """Tukey-reweighted penalised fit on the support pixels. Crossfall clamped."""
+    w_fit = support.astype(np.float64)
+    sigma = SIGMA_FLOOR_M
+    params = None
+    for _ in range(ITERATIONS):
+        params = _fit(design, w_fit, zin, n_st, t_plus, t_minus)
+        zm = _model_at(params, u, t_plus, t_minus, e)
+        r = zin - zm
+        w_fit, sigma = _tukey(np.where(support, r, np.nan))
+    clamped = int(np.count_nonzero(np.abs(params[:, 1:3]) > MAX_CROSSFALL))
+    if clamped:
+        params[:, 1:3] = np.clip(params[:, 1:3], -MAX_CROSSFALL, MAX_CROSSFALL)
+        zm = _model_at(params, u, t_plus, t_minus, e)
+        r = zin - zm
+    return params, zm, r, w_fit, sigma, clamped
+
+
+def _road_extent(s, t, r, n_st):
+    """Per side and station bin: outer edge of the road on the model, and of the polygon.
+
+    Returns (edge_left, edge_right, poly_left, poly_right) per EXTENT_BIN_M bin.
+    NaN where a bin has no pixel on that side.
+    """
+    n_bin = int(math.ceil(n_st * STATION_M / EXTENT_BIN_M)) + 1
+    n_off = int(math.ceil(MAX_HALF_M / OFFSET_BIN_M)) + 1
+    i = np.clip(np.floor(s / EXTENT_BIN_M).astype(np.int64), 0, n_bin - 1)
+    j = np.clip(np.floor(np.abs(t) / OFFSET_BIN_M).astype(np.int64), 0, n_off - 1)
+    out_edges = []
+    out_polys = []
+    for side in (t >= 0.0, t < 0.0):
+        edge = np.full(n_bin, np.nan)
+        poly = np.full(n_bin, -np.inf)
+        flat = i[side] * n_off + j[side]
+        absr = np.abs(r[side])
+        order = np.argsort(flat, kind="stable")
+        flat_sorted = flat[order]
+        absr_sorted = absr[order]
+        starts = np.flatnonzero(np.r_[True, flat_sorted[1:] != flat_sorted[:-1]])
+        ends = np.r_[starts[1:], len(flat_sorted)]
+        med = np.full(n_bin * n_off, np.nan)
+        for a, b in zip(starts, ends):
+            med[flat_sorted[a]] = np.median(absr_sorted[a:b])
+        med = med.reshape(n_bin, n_off)
+        has = np.isfinite(med)
+        t_side = np.abs(t[side])
+        if t_side.size:
+            np.maximum.at(poly, i[side], t_side)
+        poly = np.where(np.isfinite(poly), poly + 0.5 * OFFSET_BIN_M, np.nan)
+        # A bin with no pixel at all is a hole in the raster; the polygon edge
+        # there is interpolated later.
+        for k in range(n_bin):
+            if not np.any(has[k]):
+                continue
+            reach = 0
+            for jj in range(n_off):
+                if not has[k, jj]:
+                    # One empty bin inside the road is a gap in the raster, not the edge.
+                    if jj + 1 < n_off and has[k, jj + 1] and med[k, jj + 1] <= ROAD_TOL_M:
+                        continue
+                    break
+                if med[k, jj] > ROAD_TOL_M:
+                    break
+                reach = jj + 1
+            edge[k] = reach * OFFSET_BIN_M
+        out_edges.append(edge)
+        out_polys.append(poly)
+    return out_edges[0], out_edges[1], out_polys[0], out_polys[1]
+
+
+def _smooth_edge(edge, poly):
+    """Fill, median and Gaussian along the road; clamp to [MIN_HALF_M, polygon]."""
+    from scipy.ndimage import gaussian_filter1d, median_filter
+
+    have = np.isfinite(edge) & np.isfinite(poly)
+    if not np.any(have):
+        return poly.copy()
+    idx = np.arange(len(edge))
+    filled = np.interp(idx, idx[have], edge[have])
+    win = int(round(EDGE_MEDIAN_M / EXTENT_BIN_M)) | 1
+    if len(filled) >= win:
+        filled = median_filter(filled, size=win, mode="nearest")
+    filled = gaussian_filter1d(filled, EDGE_SIGMA_M / EXTENT_BIN_M, mode="nearest")
+    poly_filled = np.where(np.isfinite(poly), poly, np.interp(idx, idx[np.isfinite(poly)], poly[np.isfinite(poly)]))
+    return np.clip(filled, MIN_HALF_M, poly_filled)
+
+
+def _ribbon(xy_d, s_d, half_l, half_r, polys):
+    """Variable-width ribbon along the axis, cut to the original polygon."""
+    n_bin = len(half_l)
+    s_bin = (np.arange(n_bin) + 0.5) * EXTENT_BIN_M
+    hl = np.interp(s_d, s_bin, half_l)
+    hr = np.interp(s_d, s_bin, half_r)
+    d = np.gradient(xy_d, axis=0)
+    norm = np.maximum(np.hypot(d[:, 0], d[:, 1]), 1e-9)
+    nx = -d[:, 1] / norm
+    ny = d[:, 0] / norm
+    left = np.column_stack([xy_d[:, 0] + nx * hl, xy_d[:, 1] + ny * hl])
+    right = np.column_stack([xy_d[:, 0] - nx * hr, xy_d[:, 1] - ny * hr])
+    ring = np.vstack([left, right[::-1]])
+    poly = shapely.make_valid(shapely.Polygon(ring))
+    poly = shapely.union_all([g for g in _iter_polys(poly)])
+    # Slightly beyond the axis ends the ribbon has no support; the original
+    # polygon ends close them. The polygon also caps the width.
+    original = shapely.union_all(polys).buffer(0)
+    cut = poly.intersection(original)
+    return [g for g in _iter_polys(cut) if g.area >= 1.0]
+
+
+def _gip_classes(site) -> dict[int, str]:
+    """OBJECTID -> OBJEKT from the site's GIP cache."""
+    from build_bridges import find_gip_geojson
+
+    data = json.loads(find_gip_geojson(site).read_text(encoding="utf-8"))
+    out: dict[int, str] = {}
+    for feat in data.get("features") or []:
+        props = feat.get("properties") or {}
+        try:
+            out[int(props.get("OBJECTID"))] = str(props.get("OBJEKT") or "").upper().strip()
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _iter_polys(geom):
+    if geom is None or geom.is_empty:
+        return []
+    if geom.geom_type == "Polygon":
+        return [geom]
+    if hasattr(geom, "geoms"):
+        out = []
+        for g in geom.geoms:
+            out.extend(_iter_polys(g))
+        return out
+    return []
+
+
+def _process(oid, line, polys, z, spec, skip, acc, want_capture, narrow=False):
     got = _pixels(polys, z, spec, skip)
     if got is None or line.length < 2.0 * STATION_M:
         return None
@@ -311,14 +472,7 @@ def _process(oid, line, polys, z, spec, skip, acc, want_capture):
     support = to_edge >= EDGE_SUPPORT_M
     if float(np.mean(support)) < MIN_SUPPORT_SHARE:
         support = np.ones(len(zin), dtype=bool)
-    w_fit = support.astype(np.float64)
-    sigma = SIGMA_FLOOR_M
-    params = None
-    for _ in range(ITERATIONS):
-        params = _fit(design, w_fit, zin, n_st, t_plus, t_minus)
-        zm = _model_at(params, u, t_plus, t_minus, e)
-        r = zin - zm
-        w_fit, sigma = _tukey(np.where(support, r, np.nan))
+    params, zm, r, w_fit, sigma, clamped = _robust_fit(design, zin, support, n_st, t_plus, t_minus, u, e)
     fit_share = float(np.mean(w_fit[support] > 0.0)) if np.any(support) else 0.0
     if fit_share < MIN_FIT_SHARE:
         return {
@@ -330,11 +484,40 @@ def _process(oid, line, polys, z, spec, skip, acc, want_capture):
             "z_span_m": round(float(zin.max() - zin.min()), 2),
             "axis": (xy_d, s_d, n_d),
         }
-    clamped = int(np.count_nonzero(np.abs(params[:, 1:3]) > MAX_CROSSFALL))
-    if clamped:
-        params[:, 1:3] = np.clip(params[:, 1:3], -MAX_CROSSFALL, MAX_CROSSFALL)
-        zm = _model_at(params, u, t_plus, t_minus, e)
-        r = zin - zm
+    new_polys = None
+    narrow_m = 0.0
+    half_l = half_r = None
+    full_in = None
+    if narrow:
+        # Find the road inside the polygon, refit on it, repeat. The embankment
+        # pulls the first crossfall; on the second round it is outside the support.
+        for _ in range(NARROW_ROUNDS):
+            edge_l, edge_r, poly_l, poly_r = _road_extent(s, t, r, n_st)
+            half_l = _smooth_edge(edge_l, poly_l)
+            half_r = _smooth_edge(edge_r, poly_r)
+            k = np.clip(np.floor(s / EXTENT_BIN_M).astype(np.int64), 0, len(half_l) - 1)
+            limit = np.where(t >= 0.0, half_l[k], half_r[k])
+            inside = np.abs(t) <= limit + 0.5 * OFFSET_BIN_M
+            sup2 = support & inside
+            if float(np.mean(sup2)) < MIN_SUPPORT_SHARE * 0.5:
+                break
+            params, zm, r, w_fit, sigma, clamped = _robust_fit(design, zin, sup2, n_st, t_plus, t_minus, u, e)
+        narrow_m = float(np.nanmax(np.r_[poly_l - half_l, poly_r - half_r])) if half_l is not None else 0.0
+        if narrow_m >= NARROW_MIN_M:
+            new_polys = _ribbon(xy_d, s_d, half_l, half_r, polys)
+            if new_polys:
+                full_in = (u.copy(), t.copy(), r.copy())
+                keep = shapely.contains_xy(shapely.union_all(new_polys), x, y)
+                rows, cols, x, y, zin, s, t, e, u, t_plus, t_minus, zm, r, to_edge = (
+                    a[keep] for a in (rows, cols, x, y, zin, s, t, e, u, t_plus, t_minus, zm, r, to_edge)
+                )
+                if len(zin) < 12:
+                    return None
+            else:
+                new_polys = None
+                narrow_m = 0.0
+        else:
+            narrow_m = 0.0
     w = _keep_weight(r)
     lp, lp_grid = _kept_remainder(u, t, r, w, n_st)
     zout = zm + lp
@@ -352,8 +535,10 @@ def _process(oid, line, polys, z, spec, skip, acc, want_capture):
         "support_share": round(float(np.mean(support)), 3),
         "fit_share": round(fit_share, 3),
         "clamped_half_stations": clamped,
+        "narrow_m": round(narrow_m, 2),
         "stations": int(n_st),
         "axis": (xy_d, s_d, n_d),
+        "polys": new_polys,
     }
     if want_capture:
         out["capture"] = {
@@ -371,6 +556,9 @@ def _process(oid, line, polys, z, spec, skip, acc, want_capture):
             "params": params,
             "n_st": n_st,
             "lp_grid": lp_grid,
+            "half_l": half_l if new_polys else None,
+            "half_r": half_r if new_polys else None,
+            "full": full_in if new_polys else None,
         }
     return out
 
@@ -521,13 +709,17 @@ def _plot_cross(cap, oid, out_dir: Path) -> str:
 def _plot_unrolled(cap, oid, out_dir: Path) -> str:
     n_st = cap["n_st"]
     ones = np.ones(len(cap["u"]))
-    num_in, den = _bin_grid(cap["u"], cap["t"], cap["z_in"] - cap["model"], ones, n_st)
-    num_out, _ = _bin_grid(cap["u"], cap["t"], cap["z_out"] - cap["model"], ones, n_st)
+    if cap.get("full") is not None:
+        # Whole polygon in the first panel, so the cut-away embankment is visible.
+        fu, ft, fr = cap["full"]
+        num_in, den_in = _bin_grid(fu, ft, fr, np.ones(len(fu)), n_st)
+    else:
+        num_in, den_in = _bin_grid(cap["u"], cap["t"], cap["z_in"] - cap["model"], ones, n_st)
+    num_out, den = _bin_grid(cap["u"], cap["t"], cap["z_out"] - cap["model"], ones, n_st)
     num_rm, _ = _bin_grid(cap["u"], cap["t"], cap["z_in"] - cap["z_out"], ones, n_st)
-    have = den > 0
     panels = []
-    for num in (num_in, num_out, num_rm):
-        g = np.where(have, num / np.maximum(den, 1e-12), np.nan) * 100.0
+    for num, d in ((num_in, den_in), (num_out, den), (num_rm, den)):
+        g = np.where(d > 0, num / np.maximum(d, 1e-12), np.nan) * 100.0
         panels.append(g.T[::-1])  # offset on the vertical axis, left at the top
     extent = (0.0, n_st * STATION_M, -MAX_HALF_M, MAX_HALF_M)
     titles = (
@@ -538,8 +730,14 @@ def _plot_unrolled(cap, oid, out_dir: Path) -> str:
     length_m = n_st * STATION_M
     width_in = min(14.0, max(7.0, length_m / 12.0))
     fig, axes = plt.subplots(3, 1, figsize=(width_in, 6.6), sharex=True)
+    half_l = cap.get("half_l")
+    half_r = cap.get("half_r")
     for ax, g, title in zip(axes, panels, titles):
         im = ax.imshow(g, extent=extent, aspect="auto", cmap="RdBu_r", vmin=-5.0, vmax=5.0, interpolation="nearest")
+        if half_l is not None:
+            s_bin = (np.arange(len(half_l)) + 0.5) * EXTENT_BIN_M
+            ax.plot(s_bin, half_l, color="black", linewidth=0.8)
+            ax.plot(s_bin, -half_r, color="black", linewidth=0.8, label="kept carriageway edge")
         ax.set_ylim(-5.5, 5.5)
         ax.set_ylabel("offset [m]")
         ax.set_title(title, fontsize=10, loc="left")
@@ -686,12 +884,13 @@ def main() -> None:
         "lo": np.full(z_in.shape, np.inf, dtype=np.float64),
         "hi": np.full(z_in.shape, -np.inf, dtype=np.float64),
     }
-    road = np.zeros(z_in.shape, dtype=bool)
+    classes = _gip_classes(site)
     per_oid = []
     unfit = []
     axes = []
     captures = {}
     skipped = 0
+    final_polys: dict[int, tuple[list, float]] = {}
     groups = list(roads.groupby("objectid"))
     for n_done, (oid, group) in enumerate(groups, start=1):
         oid = int(oid)
@@ -700,18 +899,15 @@ def main() -> None:
             if geom is None or geom.is_empty:
                 continue
             polys.extend(list(geom.geoms) if geom.geom_type == "MultiPolygon" else [geom])
-        for poly in polys:
-            got = _crop_inside(poly, spec)
-            if got is not None:
-                inside, r0, c0 = got
-                road[r0 : r0 + inside.shape[0], c0 : c0 + inside.shape[1]] |= inside
+        final_polys[oid] = (polys, 0.0)
         if args.oid and oid not in args.oid:
             continue
         line = _line_of(lines, oid)
         if line is None or not polys:
             skipped += 1
             continue
-        res = _process(oid, line, polys, z_in, spec, struct, acc, oid in plot_oids)
+        narrow = classes.get(oid, "") in NARROW_OBJEKT
+        res = _process(oid, line, polys, z_in, spec, struct, acc, oid in plot_oids, narrow=narrow)
         if res is None:
             skipped += 1
             continue
@@ -720,12 +916,32 @@ def main() -> None:
             unfit.append(res)
             continue
         axes.append(res.pop("axis"))
+        new_polys = res.pop("polys", None)
+        if new_polys:
+            final_polys[oid] = (new_polys, res["narrow_m"])
+        res["objekt"] = classes.get(oid, "")
         cap = res.pop("capture", None)
         if cap is not None:
             captures[oid] = cap
         per_oid.append(res)
         if n_done % 200 == 0:
             print(f"  {n_done}/{len(groups)} carriageways, {time.time() - t0:.0f} s", flush=True)
+
+    road = np.zeros(z_in.shape, dtype=bool)
+    gpkg_rows = []
+    for oid, (polys, narrow_m) in final_polys.items():
+        for poly in polys:
+            got = _crop_inside(poly, spec)
+            if got is not None:
+                inside, r0, c0 = got
+                road[r0 : r0 + inside.shape[0], c0 : c0 + inside.shape[1]] |= inside
+            gpkg_rows.append({"objectid": oid, "narrowed": int(narrow_m > 0.0), "narrow_m": round(narrow_m, 2), "geometry": poly})
+    carriage_out = out_dir / "carriageway_smooth.gpkg"
+    if carriage_out.exists():
+        carriage_out.unlink()
+    gpd.GeoDataFrame(gpkg_rows, geometry="geometry", crs=roads.crs).to_file(carriage_out, layer="carriageway", driver="GPKG")
+    narrowed = [d for d in per_oid if d["narrow_m"] > 0.0]
+    print(f"carriageways narrowed: {len(narrowed)}, wrote {carriage_out.name}", flush=True)
 
     written = acc["den"] > 0
     z_out = z_in.astype(np.float32).copy()
@@ -802,6 +1018,12 @@ def main() -> None:
         "conflict_px_full_input": int(np.count_nonzero(fade >= 1.0)),
         "outlier_px": int(np.count_nonzero(kept <= 0.0)),
         "carriageways_with_clamped_crossfall": int(sum(1 for d in per_oid if d["clamped_half_stations"])),
+        "narrow_objekt": sorted(NARROW_OBJEKT),
+        "road_tol_m": ROAD_TOL_M,
+        "narrowed_carriageways": len(narrowed),
+        "narrowed_max_m": round(max((d["narrow_m"] for d in narrowed), default=0.0), 2),
+        "most_narrowed": sorted(narrowed, key=lambda d: -d["narrow_m"])[:15],
+        "carriageway_out": str(carriage_out),
         "removed_abs": _dist_stats(rm),
         "before_road_only": before_ro,
         "after_road_only": after_ro,

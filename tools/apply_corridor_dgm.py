@@ -56,8 +56,14 @@ def _bilinear(arr: np.ndarray, fx: np.ndarray, fy: np.ndarray) -> np.ndarray:
 
 
 def _carriageway(proc: Path):
-    bridged = proc / "dgm_repair_transect" / "carriageway_bridged.gpkg"
-    path = bridged if bridged.is_file() else proc / "centerline_shift_taper" / "centerline_shift.gpkg"
+    # Newest stage of the carriageway polygons wins: the narrowed S-G polygons
+    # from the smoothing step, else the bridged ones, else the shifted ones.
+    candidates = (
+        proc / "road_surface_smooth" / "carriageway_smooth.gpkg",
+        proc / "dgm_repair_transect" / "carriageway_bridged.gpkg",
+        proc / "centerline_shift_taper" / "centerline_shift.gpkg",
+    )
+    path = next((p for p in candidates if p.is_file()), candidates[-1])
     if not path.is_file():
         print("road edge clamp skipped: no carriageway", flush=True)
         return None
