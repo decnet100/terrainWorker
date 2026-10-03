@@ -193,6 +193,41 @@ def _profile_at(z_prof, offset, t, i0: int) -> np.ndarray:
     return best_h
 
 
+def _commit_dict(zmap: dict, dmap: dict, rr, cc, zz, dist) -> int:
+    """Same rule as a vectorised write: compare with the distance before this
+    batch, and if several samples hit one cell the last of those wins."""
+    rr = np.asarray(rr)
+    cc = np.asarray(cc)
+    zz = np.asarray(zz, dtype=np.float64)
+    dist = np.asarray(dist, dtype=np.float64)
+    if len(rr) == 0:
+        return 0
+    key = rr.astype(np.int64) * 1_000_000 + cc.astype(np.int64)
+    order = np.argsort(key, kind="mergesort")
+    key = key[order]
+    rr = rr[order]
+    cc = cc[order]
+    zz = zz[order]
+    dist = dist[order]
+    starts = np.flatnonzero(np.r_[True, key[1:] != key[:-1]])
+    ends = np.r_[starts[1:], len(key)]
+    n = 0
+    for a, b in zip(starts.tolist(), ends.tolist()):
+        r = int(rr[a])
+        c = int(cc[a])
+        prev = dmap.get((r, c), np.inf)
+        chosen = None
+        for j in range(a, b):
+            if dist[j] < prev:
+                chosen = j
+        if chosen is None:
+            continue
+        dmap[(r, c)] = float(dist[chosen])
+        zmap[(r, c)] = float(zz[chosen])
+        n += 1
+    return n
+
+
 def _paint_half(xy, direction, offs, prefix, z_prof, gap, usable, spec, slot) -> int:
     z_out, d_out, written = slot
     height, width = gap.shape
@@ -265,10 +300,14 @@ def _paint_half(xy, direction, offs, prefix, z_prof, gap, usable, spec, slot) ->
         rr_i = flat_r[use][take]
         cc_i = flat_c[use][take]
         dist = offset[use][take]
+        zz = height_v[take]
+        if isinstance(d_out, dict):
+            filled += _commit_dict(z_out, d_out, rr_i, cc_i, zz, dist)
+            continue
         closer = dist < d_out[rr_i, cc_i]
         if not np.any(closer):
             continue
-        z_out[rr_i[closer], cc_i[closer]] = height_v[take][closer].astype(np.float32)
+        z_out[rr_i[closer], cc_i[closer]] = zz[closer].astype(np.float32)
         d_out[rr_i[closer], cc_i[closer]] = dist[closer].astype(np.float32)
         written[rr_i[closer], cc_i[closer]] = True
         filled += int(closer.sum())
@@ -415,11 +454,66 @@ def _plot_oid(capture: dict, out_dir: Path) -> dict:
     }
 
 
+def _repair_worker(payload: dict):
+    from proc_pool import array, extra
+
+    info = extra()
+    raw = array("raw")
+    rough = array("rough")
+    gap = array("gap")
+    spec = info["spec"]
+    zones = info["zones"]
+    host = payload["host"]
+    line = payload["line"]
+    if host is None or not host.is_valid:
+        host = host.buffer(0) if host is not None else None
+    zmap: dict = {}
+    dmap: dict = {}
+    known_l = known_r = 0
+    capture = None
+    capture_dist = 1e300
+    if host is not None and line is not None:
+        for piece in _pieces(line, host):
+            xy, station, normals = _densify([(float(x), float(y)) for x, y in piece.coords], STATION_M)
+            if len(xy) < 2 or np.allclose(normals, 0):
+                continue
+            hold = {} if payload["capture"] else None
+            n_l, n_r = _apply_line(
+                xy,
+                station,
+                normals,
+                host,
+                raw,
+                rough,
+                spec,
+                zones,
+                (zmap, dmap, None, gap),
+                hold,
+            )
+            known_l += n_l
+            known_r += n_r
+            if hold is not None and "xy" in hold:
+                fx, fy = PLOT_FOOT
+                dist = float(np.min((hold["xy"][:, 0] - fx) ** 2 + (hold["xy"][:, 1] - fy) ** 2))
+                if dist < capture_dist:
+                    capture = hold
+                    capture_dist = dist
+    if not zmap:
+        return known_l, known_r, None, capture
+    keys = list(zmap)
+    rr = np.array([k[0] for k in keys], dtype=np.int32)
+    cc = np.array([k[1] for k in keys], dtype=np.int32)
+    zz = np.array([zmap[k] for k in keys], dtype=np.float32)
+    dd = np.array([dmap[k] for k in keys], dtype=np.float32)
+    return known_l, known_r, (rr, cc, zz, dd), capture
+
+
 def main() -> None:
     site = load_site()
     proc = processed_dir(site)
     raw_path = proc / "corridor50_raw" / "corridor50_raw.tif"
-    gpkg_in = proc / "centerline_shift_taper" / "centerline_shift.gpkg"
+    merged = proc / "centerline_shift_taper" / "centerline_shift_with_sg.gpkg"
+    gpkg_in = merged if merged.is_file() else proc / "centerline_shift_taper" / "centerline_shift.gpkg"
     for path in (raw_path, gpkg_in):
         if not path.is_file():
             raise SystemExit(f"missing {path}")
@@ -453,7 +547,10 @@ def main() -> None:
     known_left = known_right = 0
     capture = None
     capture_dist = 1e300
+    from proc_pool import Pool, workers
+
     lines_by_oid: dict[int, LineString | None] = {}
+    jobs = []
     for part in parts:
         oid = part["oid"]
         if oid not in lines_by_oid:
@@ -462,35 +559,30 @@ def main() -> None:
         if line is None:
             continue
         host = part["poly"] if part["poly"].is_valid else part["poly"].buffer(0)
-        part_known_l = part_known_r = 0
-        for piece in _pieces(line, host):
-            xy, station, normals = _densify([(float(x), float(y)) for x, y in piece.coords], STATION_M)
-            if len(xy) < 2 or np.allclose(normals, 0):
-                continue
-            hold = {} if oid == PLOT_OID else None
-            n_l, n_r = _apply_line(
-                xy,
-                station,
-                normals,
-                host,
-                raw,
-                rough,
-                spec,
-                zones,
-                (z_out, d_out, written, gap),
-                hold,
-            )
-            part_known_l += n_l
-            part_known_r += n_r
-            if hold is not None:
+        jobs.append({"host": host, "line": line, "capture": oid == PLOT_OID})
+    n_workers = min(workers(), len(jobs))
+    print(f"  repairing {len(jobs)} parts on {n_workers} workers", flush=True)
+    with Pool({"raw": raw, "rough": rough, "gap": gap}, {"spec": spec, "zones": zones}, n=n_workers) as pool:
+        for n, (part_known_l, part_known_r, cells, hold) in enumerate(
+            pool.imap(_repair_worker, jobs, chunksize=4), start=1
+        ):
+            known_left += part_known_l
+            known_right += part_known_r
+            if cells is not None:
+                rr, cc, zz, dd = cells
+                closer = dd < d_out[rr, cc]
+                if np.any(closer):
+                    z_out[rr[closer], cc[closer]] = zz[closer]
+                    d_out[rr[closer], cc[closer]] = dd[closer]
+                    written[rr[closer], cc[closer]] = True
+            if hold is not None and "xy" in hold:
                 fx, fy = PLOT_FOOT
                 dist = float(np.min((hold["xy"][:, 0] - fx) ** 2 + (hold["xy"][:, 1] - fy) ** 2))
                 if dist < capture_dist:
                     capture = hold
                     capture_dist = dist
-        known_left += part_known_l
-        known_right += part_known_r
-        print(f"  oid {oid} known L/R {part_known_l}/{part_known_r}", flush=True)
+            if n % 200 == 0 or n == len(jobs):
+                print(f"  parts {n}/{len(jobs)} known L/R {known_left}/{known_right}", flush=True)
 
     working = raw.copy()
     take = written & gap & np.isfinite(z_out)

@@ -142,8 +142,9 @@ def _load_heightmap_z() -> tuple[np.ndarray, float] | None:
 
 def _heightmap_z(hm: np.ndarray, max_h: float, bx: float, by: float) -> float:
     size = hm.shape[0]
-    px = bx / TERRAIN_EXTENT * (size - 1)
-    py = (1.0 - by / TERRAIN_EXTENT) * (size - 1)
+    # Pixel c is drawn at c * square_m (TERRAIN_EXTENT / size).
+    px = bx / TERRAIN_EXTENT * size
+    py = (size - 1) - by / TERRAIN_EXTENT * size
     x0 = int(math.floor(px))
     y0 = int(math.floor(py))
     x1 = min(x0 + 1, size - 1)

@@ -42,10 +42,11 @@ SLUG = site_slug(SITE)
 def geo_local_to_beamng(lx: float, ly: float) -> tuple[float, float]:
     """Map bbox-local meters → BeamNG terrain meters.
 
-    Heightmap is square HM_SIZE×HM_SIZE imported with squareSize≈MPP (usually 1.0),
-    so both axes of the (possibly non-square) bbox are stretched onto the terrain square.
+    Heightmap is square HM_SIZE×HM_SIZE imported with squareSize≈MPP (usually 1.0).
+    Sample i is drawn at i * MPP, so the bbox is stretched onto (HM_SIZE - 1) * MPP,
+    the same lattice as SiteCoords.crs_to_terrain.
     """
-    extent = HM_SIZE * MPP
+    extent = (HM_SIZE - 1) * MPP
     return lx / BW * extent, ly / BH * extent
 
 
@@ -57,28 +58,42 @@ def load_dgm(path: Path) -> np.ndarray:
 
 
 def to_heightmap(elev: np.ndarray, out_size: int = 512) -> tuple[np.ndarray, float, float]:
-    """Resample to square power-of-two grayscale uint16 for BeamNG."""
-    from PIL import Image as PILImage
+    """Resample to square power-of-two grayscale uint16 for BeamNG.
 
-    # Replace nodata-ish values
-    elev = elev.copy()
-    elev[~np.isfinite(elev)] = np.nan
-    zmin = float(np.nanmin(elev))
-    zmax = float(np.nanmax(elev))
+    Sample i of the terrain is drawn at i * squareSize. Sample 0 is the west
+    (south) edge of the bbox, sample out_size - 1 the east (north) edge. The
+    DGM pixel is an area whose centre sits at (col + 0.5) / w of the bbox, so
+    the lattice is sampled bilinearly at that offset. A plain image resize
+    would put sample c at (c + 0.5) / out_size instead, half a pixel off at
+    the map edges against the road mesh and the corridor layer.
+    """
+    from scipy.ndimage import map_coordinates
+
+    elev = np.asarray(elev, dtype=np.float32)
+    finite = np.isfinite(elev)
+    zmin = float(np.min(elev[finite]))
+    zmax = float(np.max(elev[finite]))
     if zmax <= zmin:
         raise RuntimeError("Invalid elevation range")
     # Pad relief a bit so terrain isn't clipped at extremes
     pad = max(5.0, 0.05 * (zmax - zmin))
     z0, z1 = zmin - pad, zmax + pad
 
-    norm = (elev - z0) / (z1 - z0)
-    norm = np.clip(np.nan_to_num(norm, nan=0.0), 0.0, 1.0)
-    u16 = (norm * 65535.0).astype(np.uint16)
-
-    img = PILImage.fromarray(u16, mode="I;16")
-    # BeamNG: row 0 is typically +Y / north depending on import; keep geo top=north
-    img = img.resize((out_size, out_size), resample=PILImage.Resampling.BILINEAR)
-    return np.array(img), z0, z1
+    # nodata → floor, as the old normalisation did (nan → 0)
+    filled = np.where(finite, elev, np.float32(z0))
+    h, w = filled.shape
+    u = np.arange(out_size, dtype=np.float64) / max(out_size - 1, 1)
+    fx = u * w - 0.5  # columns, west → east
+    fy = u * h - 0.5  # rows, row 0 = north in DGM and heightmap alike
+    out = np.empty((out_size, out_size), dtype=np.uint16)
+    step = 512
+    for r0 in range(0, out_size, step):
+        r1 = min(out_size, r0 + step)
+        gy, gx = np.meshgrid(fy[r0:r1], fx, indexing="ij")
+        z = map_coordinates(filled, [gy, gx], order=1, mode="nearest", output=np.float32)
+        norm = np.clip((z.astype(np.float64) - z0) / (z1 - z0), 0.0, 1.0)
+        out[r0:r1] = np.round(norm * 65535.0).astype(np.uint16)
+    return out, z0, z1
 
 
 def _uses_gip_axis(site: dict | None = None) -> bool:
@@ -269,7 +284,7 @@ def main() -> None:
         "max_height_m": z1 - z0,
         "coord_note": (
             "roads_beamng.json XY are BeamNG terrain meters: "
-            "geo_local * (terrain_extent / bbox_size) per axis. "
+            "geo_local * ((size - 1) * mpp / bbox_size) per axis; sample i is drawn at i * mpp. "
             f"Import with Meters per Pixel={MPP}, size {HM_SIZE}, origin SW (0,0,0)."
         ),
         "note": "Import PNG as 16-bit grayscale; set Max Height to max_height_m; origin SW.",

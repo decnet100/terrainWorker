@@ -259,8 +259,9 @@ def _load_decal_heightmap(proc: Path, size: int, extent: float):
     ext = float(extent) if extent else float(n)
 
     def z_at(bx: float, by: float) -> float:
-        px = max(0.0, min(float(n - 1), bx / ext * (n - 1)))
-        py = max(0.0, min(float(n - 1), (1.0 - by / ext) * (n - 1)))
+        # Pixel c is drawn at c * square_m (ext / n).
+        px = max(0.0, min(float(n - 1), bx / ext * n))
+        py = max(0.0, min(float(n - 1), (n - 1) - by / ext * n))
         x0 = int(math.floor(px))
         y0 = int(math.floor(py))
         x1 = min(x0 + 1, n - 1)
@@ -1977,8 +1978,9 @@ def _elev_z_at(elev, size: int, extent: float, max_h: float):
     is_u16 = elev.dtype == np.uint16 or float(np.nanmax(elev)) > max_h * 1.5
 
     def z_at(bx: float, by: float) -> float:
-        px = max(0.0, min(float(n - 1), bx / extent * (n - 1)))
-        py = max(0.0, min(float(n - 1), (1.0 - by / extent) * (n - 1)))
+        # Pixel c is drawn at c * square_m (extent / n).
+        px = max(0.0, min(float(n - 1), bx / extent * n))
+        py = max(0.0, min(float(n - 1), (n - 1) - by / extent * n))
         x0 = int(math.floor(px))
         y0 = int(math.floor(py))
         x1 = min(x0 + 1, n - 1)

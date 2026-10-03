@@ -1,4 +1,4 @@
-"""Inject BeamNG WaterBlock / River from Tirol landcover Gewässer polygons.
+"""Inject BeamNG WaterBlock / River from landcover lakes + Gewässernetz lines.
 
 Standing water (LN-GWS) → WaterBlock(s) + optional heightmap basin carve.
 Terrain Mud stays as shore/bed paint; reflective water needs WaterBlock meshes.
@@ -11,11 +11,19 @@ After placement, fit_check trims / subdivides / drops blocks that hang over
 terrain steps or punch through MeshRoad decks (tunnels under lakes). Run
 bridges/galleries before water so MeshRoad NDJSON exists.
 
-Flowing water (LN-GWF) → optional River, or WaterBlocks when wide_flowing_min_width_m
-is set and the floodplain is wide enough.
+Flowing water: Tirol Gewässernetz centerlines (sources.waterways, fetch_waterways.py)
+→ River nodes. Landcover LN-GWF stays Mud only (floodplain polygons are too wide).
+Each node then snaps sideways onto the lowest heightmap sample within
+river_snap_halfwidth_m (thalweg). Segments steeper than river_max_slope_deg
+are dropped (waterfall gap).
+
+Seasonal stages live in beamng.water.stages. Bake uses beamng.water.stage
+(default spring = high water). Other stages are written to water_stages.json
+so a GE script can lower Z / width without a rebuild.
 
 Usage:
-  $env:AUTOROAD_SITE='config/sites/l13_kuehtai.yaml'
+  $env:AUTOROAD_SITE='config/sites/fernpass.yaml'
+  python tools/fetch_waterways.py
   python tools/build_water.py
 """
 from __future__ import annotations
@@ -23,6 +31,7 @@ from __future__ import annotations
 import copy
 import json
 import math
+import re
 import sys
 import uuid
 from pathlib import Path
@@ -44,6 +53,113 @@ from build_terrain_masks import (  # noqa: E402
 
 USER_LEVELS = bb.USER_LEVELS
 
+# BeamNG WaterObject look — same fields as a River saved from the editor
+# (e.g. bl_giau). Without these the mesh exists but does not render.
+_WATER_LOOK = {
+    "baseColor": [45, 108, 171, 255],
+    "cubemap": "DefaultSkyCubemap",
+    "rippleTex": "core/art/water/ripple.dds",
+    "foamTex": "core/art/water/foam.dds",
+    "depthGradientTex": "core/art/water/depthcolor_ramp.png",
+    "waterFogDensity": 2,
+    "waterFogDensityOffset": 0.5,
+    "Foam": [{}, {}],
+    "Ripples (texture animation)": [
+        {"rippleDir": [0, 1], "rippleSpeed": -0.065, "rippleTexScale": [7.14, 7.14]},
+        {"rippleDir": [0.707, 0.707], "rippleSpeed": 0.09, "rippleTexScale": [6.25, 12.5]},
+        {"rippleDir": [0.5, 0.86], "rippleSpeed": 0.04, "rippleTexScale": [50, 50]},
+    ],
+    "Waves (vertex undulation)": [
+        {"waveDir": [0, 1], "waveSpeed": 1},
+        {"waveDir": [0.707, 0.707], "waveSpeed": 1},
+        {"waveDir": [0.5, 0.86], "waveSpeed": 1},
+    ],
+}
+
+
+def _with_water_look(obj: dict) -> dict:
+    out = dict(obj)
+    for key, val in _WATER_LOOK.items():
+        out.setdefault(key, copy.deepcopy(val) if isinstance(val, (list, dict)) else val)
+    return out
+
+_DEFAULT_STAGES = {
+    "spring": {
+        "months": [3, 4, 5],
+        "surface_dz_m": 0.0,
+        "width_scale": 1.0,
+        "depth_scale": 1.0,
+        "flow_mps": 2.5,
+    },
+    "summer": {
+        "months": [6, 7, 8],
+        "surface_dz_m": -0.35,
+        "width_scale": 0.85,
+        "depth_scale": 0.85,
+        "flow_mps": 1.6,
+    },
+    "autumn": {
+        "months": [9, 10, 11],
+        "surface_dz_m": -0.7,
+        "width_scale": 0.7,
+        "depth_scale": 0.7,
+        "flow_mps": 1.2,
+    },
+    "winter": {
+        "months": [12, 1, 2],
+        "surface_dz_m": -0.9,
+        "width_scale": 0.55,
+        "depth_scale": 0.6,
+        "flow_mps": 0.8,
+    },
+}
+
+_DEFAULT_WIDTH_BY_TYP = {
+    "fluss": 12.0,
+    "bach": 4.0,
+    "wildbach": 3.5,
+    "graben": 2.0,
+    "kanal": 6.0,
+    "fließgewässer": 6.0,
+    "fliesgewasser": 6.0,
+    "< 10 km2 gewasser": 4.0,
+    "< 10 km2 gewässer": 4.0,
+    "10 km2 gewasser": 6.0,
+    "10 km2 gewässer": 6.0,
+    "100 km2 gewasser": 12.0,
+    "100 km2 gewässer": 12.0,
+    "1000 km2 gewasser": 20.0,
+    "1000 km2 gewässer": 20.0,
+}
+
+
+def _normalize_stages(raw) -> dict[str, dict]:
+    out = {k: dict(v) for k, v in _DEFAULT_STAGES.items()}
+    if not isinstance(raw, dict):
+        return out
+    for name, spec in raw.items():
+        if not isinstance(spec, dict):
+            continue
+        key = str(name).strip().lower()
+        cur = dict(out.get(key) or _DEFAULT_STAGES.get("spring"))
+        if spec.get("months") is not None:
+            months = spec["months"]
+            if isinstance(months, (int, float)):
+                cur["months"] = [int(months)]
+            else:
+                cur["months"] = [int(m) for m in months]
+        for fld in ("surface_dz_m", "width_scale", "depth_scale", "flow_mps"):
+            if spec.get(fld) is not None:
+                cur[fld] = float(spec[fld])
+        out[key] = cur
+    return out
+
+
+def _stage_spec(cfg: dict, name: str | None = None) -> dict:
+    stages = cfg.get("stages") or _DEFAULT_STAGES
+    key = str(name or cfg.get("stage") or "spring").lower()
+    return dict(stages.get(key) or stages.get("spring") or _DEFAULT_STAGES["spring"])
+
 
 def _cfg(bng: dict) -> dict:
     raw = bng.get("water") or {}
@@ -55,7 +171,7 @@ def _cfg(bng: dict) -> dict:
         "standing": str(raw.get("standing") or "waterblock").lower(),  # none | waterblock
         "material": str(raw.get("material") or ""),
         "depth_m": float(raw.get("depth_m") or 3.0),
-        "surface_lift_m": float(raw.get("surface_lift_m") or 0.15),
+        "surface_lift_m": float(raw.get("surface_lift_m") or 0.4),
         # Global Z nudge for all WaterBlocks (m). Positive = higher.
         "waterlevel_z_offset_m": float(raw.get("waterlevel_z_offset_m") or 0.0),
         "min_area_m2": float(raw.get("min_area_m2") or 40.0),
@@ -73,8 +189,17 @@ def _cfg(bng: dict) -> dict:
         "standing_depress_blend_m": float(raw.get("standing_depress_blend_m") or 6.0),
         "river_min_length_m": float(raw.get("river_min_length_m") or 12.0),
         "river_min_width_m": float(raw.get("river_min_width_m") or 2.0),
-        "river_max_width_m": float(raw.get("river_max_width_m") or 12.0),
-        "river_depth_m": float(raw.get("river_depth_m") or 1.5),
+        "river_max_width_m": float(raw.get("river_max_width_m") or 16.0),
+        "river_depth_m": float(raw.get("river_depth_m") or 1.2),
+        "river_node_step_m": float(raw.get("river_node_step_m") or 12.0),
+        # Cross-track snap onto the DGM thalweg (0 = keep official midline).
+        "river_snap_halfwidth_m": float(raw.get("river_snap_halfwidth_m") or 10.0),
+        "river_snap_step_m": float(raw.get("river_snap_step_m") or 1.0),
+        "river_max_slope_deg": float(raw.get("river_max_slope_deg") or 35.0),
+        "river_depth_frac": float(raw.get("river_depth_frac") or 0.30),
+        "stage": str(raw.get("stage") or "spring").lower(),
+        "width_by_typ": dict(raw.get("width_by_typ") or {}),
+        "stages": _normalize_stages(raw.get("stages")),
         "grid_element_size": float(raw.get("grid_element_size") or 4.0),
         "segment_length": float(raw.get("segment_length") or 8.0),
         "subdivide_length": float(raw.get("subdivide_length") or 2.5),
@@ -214,7 +339,7 @@ def _water_block_box(
     mat = cfg.get("material") or ""
     if mat:
         obj["material"] = mat
-    return obj
+    return _with_water_look(obj)
 
 
 def _as_polygon(xy: np.ndarray) -> Polygon | None:
@@ -322,51 +447,239 @@ def _standing_water_blocks(name: str, xy: np.ndarray, z_at, cfg: dict) -> list[d
     return out
 
 
-def _river(name: str, xy: np.ndarray, z_at, cfg: dict) -> dict | None:
-    """Two-node River along PCA long axis of the polygon."""
-    mean = xy.mean(axis=0)
-    centered = xy - mean
-    # SVD principal axis
-    _, _, vt = np.linalg.svd(centered, full_matrices=False)
-    axis = vt[0]
-    proj = centered @ axis
-    t0, t1 = float(proj.min()), float(proj.max())
-    length = t1 - t0
-    if length < float(cfg["river_min_length_m"]):
+def _norm_typ(text: str) -> str:
+    s = str(text or "").strip().lower().replace("²", "2")
+    return s
+
+
+def _width_for_props(props: dict, cfg: dict) -> float:
+    table = {_norm_typ(k): float(v) for k, v in (cfg.get("width_by_typ") or {}).items()}
+    # GRKATWRRL is the catchment class; GEW_TYP is almost always "Fließgewässer".
+    for key in (props.get("GRKATWRRL"), props.get("GEW_TYP"), props.get("gew_typ")):
+        hit = table.get(_norm_typ(key))
+        if hit:
+            return max(float(cfg["river_min_width_m"]), min(hit, float(cfg["river_max_width_m"])))
+        hit = _DEFAULT_WIDTH_BY_TYP.get(_norm_typ(key))
+        if hit:
+            return max(float(cfg["river_min_width_m"]), min(hit, float(cfg["river_max_width_m"])))
+    return max(float(cfg["river_min_width_m"]), min(6.0, float(cfg["river_max_width_m"])))
+
+
+def _line_xy_crs(geom: dict) -> list[np.ndarray]:
+    """Line parts as Nx2 arrays in the source CRS (already site CRS after fetch)."""
+    gtype = (geom or {}).get("type")
+    coords = (geom or {}).get("coordinates")
+    parts: list[np.ndarray] = []
+    if gtype == "LineString" and coords and len(coords) >= 2:
+        parts.append(np.asarray([(float(c[0]), float(c[1])) for c in coords if len(c) >= 2], dtype=np.float64))
+    elif gtype == "MultiLineString":
+        for part in coords or []:
+            if part and len(part) >= 2:
+                parts.append(
+                    np.asarray([(float(c[0]), float(c[1])) for c in part if len(c) >= 2], dtype=np.float64)
+                )
+    return [p for p in parts if p.shape[0] >= 2]
+
+
+def _crs_line_to_beamng(xy: np.ndarray, coords: SiteCoords) -> np.ndarray:
+    out = []
+    for x, y in xy:
+        bx, by = coords.crs_to_beamng(float(x), float(y))
+        out.append((bx, by))
+    return np.asarray(out, dtype=np.float64)
+
+
+def _resample_xy(xy: np.ndarray, step_m: float) -> np.ndarray:
+    if xy.shape[0] < 2:
+        return xy
+    seg = np.diff(xy, axis=0)
+    leng = np.hypot(seg[:, 0], seg[:, 1])
+    total = float(leng.sum())
+    if total < 1e-3:
+        return xy[:1]
+    step = max(2.0, float(step_m))
+    n = max(2, int(math.floor(total / step)) + 1)
+    targets = np.linspace(0.0, total, n)
+    cum = np.concatenate([[0.0], np.cumsum(leng)])
+    pts = []
+    j = 0
+    for t in targets:
+        while j + 1 < len(cum) and cum[j + 1] < t:
+            j += 1
+        span = cum[j + 1] - cum[j] if j + 1 < len(cum) else 0.0
+        if span < 1e-9:
+            pts.append(xy[min(j, len(xy) - 1)])
+            continue
+        u = (t - cum[j]) / span
+        pts.append(xy[j] * (1.0 - u) + xy[min(j + 1, len(xy) - 1)] * u)
+    return np.asarray(pts, dtype=np.float64)
+
+
+def _polyline_perp(xy: np.ndarray, i: int) -> np.ndarray | None:
+    if xy.shape[0] < 2:
         return None
-    # width ≈ 2 * RMS perpendicular extent (clamped)
-    perp = vt[1] if vt.shape[0] > 1 else np.array([-axis[1], axis[0]])
-    lat = centered @ perp
-    width = max(float(cfg["river_min_width_m"]), 2.0 * float(np.percentile(np.abs(lat), 50)))
-    width = min(width, float(cfg["river_max_width_m"]))
-    p0 = mean + axis * t0
-    p1 = mean + axis * t1
-    z0 = float(z_at(float(p0[0]), float(p0[1]))) + float(cfg["surface_lift_m"])
-    z1 = float(z_at(float(p1[0]), float(p1[1]))) + float(cfg["surface_lift_m"])
-    depth = float(cfg["river_depth_m"])
-    nodes = [
-        [float(p0[0]), float(p0[1]), z0, width, depth, 0.0, 0.0, 1.0],
-        [float(p1[0]), float(p1[1]), z1, width, depth, 0.0, 0.0, 1.0],
-    ]
-    # downhill flow: higher Z first
-    if z0 < z1:
-        nodes.reverse()
+    if i <= 0:
+        d = xy[1] - xy[0]
+    elif i >= xy.shape[0] - 1:
+        d = xy[-1] - xy[-2]
+    else:
+        d = xy[i + 1] - xy[i - 1]
+    leng = float(np.hypot(d[0], d[1]))
+    if leng < 1e-6:
+        return None
+    return np.array((-d[1] / leng, d[0] / leng), dtype=np.float64)
+
+
+def _snap_to_thalweg(
+    xy: np.ndarray,
+    z_at,
+    halfwidth_m: float,
+    step_m: float,
+    *,
+    max_xy: float,
+) -> tuple[np.ndarray, list[float]]:
+    """Move each vertex onto the lowest heightmap sample on the local perpendicular.
+
+    Search axis stays the official tangent (not already-snapped neighbours), so
+    one node cannot pull the next search sideways.
+    """
+    if halfwidth_m <= 0 or xy.shape[0] == 0:
+        return xy, []
+    step = max(0.25, float(step_m))
+    n_off = int(math.ceil(float(halfwidth_m) / step))
+    out = np.array(xy, dtype=np.float64, copy=True)
+    shifts: list[float] = []
+    for i, p in enumerate(xy):
+        perp = _polyline_perp(xy, i)
+        if perp is None:
+            shifts.append(0.0)
+            continue
+        best_xy = np.asarray(p, dtype=np.float64)
+        best_z = float(z_at(float(p[0]), float(p[1])))
+        for k in range(-n_off, n_off + 1):
+            q = p + (k * step) * perp
+            if q[0] < 0.0 or q[1] < 0.0 or q[0] > max_xy or q[1] > max_xy:
+                continue
+            z = float(z_at(float(q[0]), float(q[1])))
+            if z < best_z - 1e-4:
+                best_z = z
+                best_xy = q
+        out[i] = best_xy
+        shifts.append(float(np.hypot(*(best_xy - p))))
+    return out, shifts
+
+
+def _split_by_slope(xy: np.ndarray, z_at, max_deg: float) -> tuple[list[np.ndarray], int]:
+    if xy.shape[0] < 2:
+        return [], 0
+    zs = [float(z_at(float(p[0]), float(p[1]))) for p in xy]
+    segs: list[list[int]] = [[0]]
+    n_drop = 0
+    for i in range(1, len(xy)):
+        dx = float(np.hypot(xy[i, 0] - xy[i - 1, 0], xy[i, 1] - xy[i - 1, 1]))
+        dz = abs(zs[i] - zs[i - 1])
+        slope = math.degrees(math.atan2(dz, max(dx, 1e-6)))
+        if slope > max_deg:
+            n_drop += 1
+            segs.append([i])
+        else:
+            segs[-1].append(i)
+    out = []
+    for idx in segs:
+        if len(idx) < 2:
+            continue
+        out.append(xy[np.asarray(idx, dtype=int)])
+    return out, n_drop
+
+
+def _line_length_m(xy: np.ndarray) -> float:
+    if xy.shape[0] < 2:
+        return 0.0
+    d = np.diff(xy, axis=0)
+    return float(np.hypot(d[:, 0], d[:, 1]).sum())
+
+
+def _apply_stage_nodes(base_nodes: list[list[float]], stage: dict) -> list[list[float]]:
+    dz = float(stage.get("surface_dz_m") or 0.0)
+    ws = float(stage.get("width_scale") or 1.0)
+    ds = float(stage.get("depth_scale") or 1.0)
+    out = []
+    for n in base_nodes:
+        node = list(n)
+        node[2] = float(n[2]) + dz
+        node[3] = max(0.25, float(n[3]) * ws)
+        node[4] = max(0.25, float(n[4]) * ds)
+        out.append(node)
+    return out
+
+
+def _river_object_name(oid, pi: int, props: dict) -> str:
+    raw = str(props.get("GEW_NAME") or "bach").split("(")[0].strip()
+    slug = re.sub(r"[^A-Za-z0-9]+", "_", raw).strip("_") or "bach"
+    if len(slug) > 36:
+        slug = slug[:36].rstrip("_")
+    return f"river_{slug}_{oid}_{pi}"
+
+
+def _river_from_line(
+    name: str,
+    xy: np.ndarray,
+    z_at,
+    width: float,
+    cfg: dict,
+    stage: dict,
+) -> tuple[dict, list[list[float]]] | None:
+    """River along a BeamNG-XY polyline. Returns (object, spring-base nodes)."""
+    if xy.shape[0] < 2 or _line_length_m(xy) < float(cfg["river_min_length_m"]):
+        return None
+    lift = float(cfg["surface_lift_m"])
+    depth = max(float(cfg["river_depth_m"]), float(width) * float(cfg["river_depth_frac"]))
+    base: list[list[float]] = []
+    for p in xy:
+        z = float(z_at(float(p[0]), float(p[1]))) + lift
+        base.append([float(p[0]), float(p[1]), z, float(width), float(depth), 0.0, 0.0, 1.0])
+    if base[0][2] < base[-1][2]:
+        base.reverse()
+    nodes = _apply_stage_nodes(base, stage)
     obj: dict = {
         "name": name,
         "class": "River",
-        "__parent": "Water",
+        "__parent": "water",
         "persistentId": str(uuid.uuid4()),
         "position": nodes[0][:3],
         "nodes": nodes,
-        "SegmentLength": float(cfg["segment_length"]),
-        "SubdivideLength": float(cfg["subdivide_length"]),
-        "FlowMagnitudePhysics": 1.5,
-        "LowLODDistance": 80.0,
+        "segmentLength": float(cfg["segment_length"]),
+        "subdivideLength": float(cfg["subdivide_length"]),
+        "flowMagnitudePhysics": float(stage.get("flow_mps") or 1.5),
+        "lowLODDistance": 4000.0,
     }
     mat = cfg.get("material") or ""
     if mat:
         obj["material"] = mat
-    return obj
+    return _with_water_look(obj), base
+
+
+def _load_waterway_lines(site: dict, coords: SiteCoords) -> list[tuple[dict, np.ndarray]]:
+    try:
+        import fetch_waterways as fw
+    except ImportError:
+        fw = None
+    proc = processed_dir(site)
+    path = proc / "waterways.geojson"
+    data = None
+    if fw is not None:
+        data = fw.load_waterways(site)
+    elif path.is_file():
+        data = json.loads(path.read_text(encoding="utf-8"))
+    feats = (data or {}).get("features") or []
+    out: list[tuple[dict, np.ndarray]] = []
+    for feat in feats:
+        props = feat.get("properties") or {}
+        for part in _line_xy_crs(feat.get("geometry") or {}):
+            xy = _crs_line_to_beamng(part, coords)
+            if xy.shape[0] >= 2:
+                out.append((props, xy))
+    return out
 
 
 def _load_water_features(proc: Path) -> list[tuple[str, dict]]:
@@ -750,14 +1063,20 @@ def fit_water_blocks(
     return out
 
 
-def build_entries(site: dict, cfg: dict) -> list[dict]:
+def build_entries(site: dict, cfg: dict) -> tuple[list[dict], list[dict]]:
+    """Return (scene objects, stage sidecar object records)."""
     proc = processed_dir(site)
     coords = SiteCoords(site)
     to_crs = Transformer.from_crs("EPSG:4326", coords.crs, always_xy=True)
     z_at, _ = bg.load_terrain_z_slope(site)
+    stage = _stage_spec(cfg)
 
     entries: list[dict] = []
-    n_block = n_river = n_skip = n_wide = 0
+    stage_objs: list[dict] = []
+    n_block = n_river = n_skip = n_wide = n_steep = 0
+    snap_shifts: list[float] = []
+    snap_half = float(cfg["river_snap_halfwidth_m"])
+    snap_step = float(cfg["river_snap_step_m"])
     wide_min = float(cfg["wide_flowing_min_width_m"])
     for i, (kind, feat) in enumerate(_load_water_features(proc)):
         props = feat.get("properties") or {}
@@ -781,25 +1100,121 @@ def build_entries(site: dict, cfg: dict) -> list[dict]:
                 if not blocks:
                     n_skip += 1
                     continue
+                dz = float(stage.get("surface_dz_m") or 0.0)
+                if abs(dz) > 1e-6:
+                    for blk in blocks:
+                        blk["position"] = [
+                            float(blk["position"][0]),
+                            float(blk["position"][1]),
+                            float(blk["position"][2]) + dz,
+                        ]
                 entries.extend(blocks)
                 n_block += len(blocks)
+                for blk in blocks:
+                    stage_objs.append(
+                        {
+                            "name": blk["name"],
+                            "class": "WaterBlock",
+                            "base_z": float(blk["position"][2]) - dz,
+                        }
+                    )
                 continue
 
-            if cfg["flowing"] != "river":
-                n_skip += 1
-                continue
-            river = _river(name, xy, z_at, cfg)
-            if river is not None:
-                entries.append(river)
+            # LN-GWF floodplain: Mud only. Rivers come from Gewässernetz lines.
+            n_skip += 1
+
+    if cfg["flowing"] == "river":
+        lines = _load_waterway_lines(site, coords)
+        if not lines:
+            print(
+                "flowing=river but no waterways.geojson — "
+                "run python tools\\fetch_waterways.py"
+            )
+        step = float(cfg["river_node_step_m"])
+        max_slope = float(cfg["river_max_slope_deg"])
+        max_xy = float(int((site.get("beamng") or {}).get("mask_size") or 512) - 1) * float(
+            (site.get("beamng") or {}).get("meters_per_pixel") or 1.0
+        )
+        for i, (props, xy) in enumerate(lines):
+            oid = props.get("OBJECTID") or props.get("GEW_ID") or i
+            width = _width_for_props(props, cfg)
+            sampled = _resample_xy(xy, step)
+            sampled, shifts = _snap_to_thalweg(
+                sampled, z_at, snap_half, snap_step, max_xy=max_xy
+            )
+            snap_shifts.extend(shifts)
+            parts, n_drop = _split_by_slope(sampled, z_at, max_slope)
+            n_steep += n_drop
+            for pi, part in enumerate(parts):
+                name = _river_object_name(oid, pi, props)
+                built = _river_from_line(name, part, z_at, width, cfg, stage)
+                if built is None:
+                    n_skip += 1
+                    continue
+                obj, base = built
+                entries.append(obj)
+                stage_objs.append(
+                    {
+                        "name": obj["name"],
+                        "class": "River",
+                        "gew_id": props.get("GEW_ID"),
+                        "gew_name": props.get("GEW_NAME"),
+                        "gew_typ": props.get("GEW_TYP"),
+                        "base_nodes": base,
+                        "base_flow": float((_DEFAULT_STAGES.get("spring") or {}).get("flow_mps") or 2.5),
+                    }
+                )
                 n_river += 1
-            else:
-                n_skip += 1
+    if snap_shifts:
+        arr = np.asarray(snap_shifts, dtype=np.float64)
+        print(
+            f"river thalweg snap: half={snap_half:.1f}m step={snap_step:.1f}m "
+            f"mean={float(arr.mean()):.2f}m p95={float(np.percentile(arr, 95)):.2f}m "
+            f"max={float(arr.max()):.2f}m moved={int(np.count_nonzero(arr > 0.25))}/{arr.size}"
+        )
     print(
         f"Water objects: WaterBlock={n_block} River={n_river} "
-        f"skipped={n_skip} wide_flowing->block={n_wide} "
-        f"(flowing={cfg['flowing']}, standing={cfg['standing']})"
+        f"skipped={n_skip} steep_spans={n_steep} wide_flowing->block={n_wide} "
+        f"(flowing={cfg['flowing']}, standing={cfg['standing']}, "
+        f"stage={cfg['stage']})"
     )
-    return entries
+    return entries, stage_objs
+
+
+def _write_jsonl(path: Path, entries: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="\n") as f:
+        for e in entries:
+            f.write(json.dumps(e, separators=(",", ":")) + "\n")
+
+
+def _ensure_simgroup(items_path: Path, name: str, parent: str) -> bool:
+    lines: list[str] = []
+    if items_path.is_file() and items_path.stat().st_size:
+        lines = [ln for ln in items_path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    names = set()
+    for ln in lines:
+        try:
+            names.add(json.loads(ln).get("name"))
+        except json.JSONDecodeError:
+            pass
+    if name in names:
+        return False
+    items_path.parent.mkdir(parents=True, exist_ok=True)
+    lines.append(
+        json.dumps(
+            {
+                "name": name,
+                "class": "SimGroup",
+                "__parent": parent,
+                "enabled": "1",
+                "persistentId": str(uuid.uuid4()),
+            },
+            separators=(",", ":"),
+        )
+    )
+    items_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return True
 
 
 def write_level(level_name: str, entries: list[dict]) -> Path | None:
@@ -807,39 +1222,31 @@ def write_level(level_name: str, entries: list[dict]) -> Path | None:
     if not user_level.is_dir():
         print(f"Level folder missing: {user_level}")
         return None
-    group_dir = user_level / "main" / "MissionGroup" / "level_objects" / "Water"
-    group_dir.mkdir(parents=True, exist_ok=True)
-    items_path = group_dir / "items.level.json"
-    with items_path.open("w", encoding="utf-8", newline="\n") as f:
-        for e in entries:
-            f.write(json.dumps(e, separators=(",", ":")) + "\n")
+    rivers = [e for e in entries if e.get("class") == "River"]
+    blocks = [e for e in entries if e.get("class") != "River"]
+    for e in rivers:
+        e["__parent"] = "water"
+    for e in blocks:
+        e["__parent"] = "Water"
 
+    # Official maps keep River under MissionGroup/water (River Editor looks there).
+    river_dir = user_level / "main" / "MissionGroup" / "water"
+    river_items = river_dir / "items.level.json"
+    _write_jsonl(river_items, rivers)
+    mg_items = user_level / "main" / "MissionGroup" / "items.level.json"
+    if _ensure_simgroup(mg_items, "water", "MissionGroup"):
+        print("Registered SimGroup water under MissionGroup")
+
+    # Standing WaterBlocks stay where the existing Imst tree already shows them.
+    block_dir = user_level / "main" / "MissionGroup" / "level_objects" / "Water"
+    block_items = block_dir / "items.level.json"
+    _write_jsonl(block_items, blocks)
     lo_items = user_level / "main" / "MissionGroup" / "level_objects" / "items.level.json"
-    lines = []
-    if lo_items.is_file() and lo_items.stat().st_size:
-        lines = [ln for ln in lo_items.read_text(encoding="utf-8").splitlines() if ln.strip()]
-    names = set()
-    for ln in lines:
-        try:
-            names.add(json.loads(ln).get("name"))
-        except json.JSONDecodeError:
-            pass
-    if "Water" not in names:
-        lines.append(
-            json.dumps(
-                {
-                    "name": "Water",
-                    "class": "SimGroup",
-                    "__parent": "level_objects",
-                    "enabled": "1",
-                    "persistentId": str(uuid.uuid4()),
-                },
-                separators=(",", ":"),
-            )
-        )
-        lo_items.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    if _ensure_simgroup(lo_items, "Water", "level_objects"):
         print("Registered SimGroup Water under level_objects")
-    return items_path
+    print(f"Rivers -> {river_items} ({len(rivers)})")
+    print(f"WaterBlocks -> {block_items} ({len(blocks)})")
+    return river_items if rivers else block_items
 
 
 def _standing_rings_px(
@@ -859,8 +1266,9 @@ def _standing_rings_px(
                 continue
             pts = []
             for bx, by in xy:
-                px = float(bx) / extent * (size - 1)
-                py = (1.0 - float(by) / extent) * (size - 1)
+                # Pixel c is drawn at c * square_m (extent / size).
+                px = float(bx) / extent * size
+                py = (size - 1) - float(by) / extent * size
                 pts.append((px, py))
             if len(pts) >= 3:
                 rings_px.append(pts)
@@ -911,7 +1319,7 @@ def depress_standing_lakes(
     blend_m = max(0.0, float(cfg["standing_depress_blend_m"]))
     if blend_m > 0:
         # ~1 px ≈ mpp meters; radius ≈ half blend width.
-        radius = max(1.0, 0.5 * blend_m / max(extent / max(size - 1, 1), 1e-6))
+        radius = max(1.0, 0.5 * blend_m / max(extent / max(size, 1), 1e-6))
         weight_img = mask_img.filter(ImageFilter.GaussianBlur(radius=radius))
     else:
         weight_img = mask_img
@@ -956,16 +1364,33 @@ def main() -> None:
     # Basin first so import HM is ready; WaterBlock Z still samples pristine surface.
     depress_standing_lakes(site, level_name, cfg)
 
-    entries = build_entries(site, cfg)
+    entries, stage_objs = build_entries(site, cfg)
     z_at, _ = bg.load_terrain_z_slope(site)
     entries = fit_water_blocks(site, level_name, entries, cfg, z_at=z_at)
+    kept_names = {str(e.get("name")) for e in entries}
+    stage_objs = [o for o in stage_objs if str(o.get("name")) in kept_names]
     out = proc / "water_items.level.json"
     with out.open("w", encoding="utf-8", newline="\n") as f:
         for e in entries:
             f.write(json.dumps(e, separators=(",", ":")) + "\n")
     print(f"Wrote {out} ({len(entries)} objects)")
+    stages_payload = {
+        "stage": cfg["stage"],
+        "attribution": "Land Tirol — Gewässernetz, CC BY 3.0 AT",
+        "stages": cfg["stages"],
+        "objects": stage_objs,
+    }
+    stages_path = proc / "water_stages.json"
+    stages_path.write_text(json.dumps(stages_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"Wrote {stages_path} ({len(stage_objs)} staged objects)")
 
     injected = write_level(level_name, entries)
+    user_level = USER_LEVELS / level_name
+    if user_level.is_dir():
+        (user_level / "water_stages.json").write_text(
+            json.dumps(stages_payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
     if injected:
         print(f"Injected: {injected}")
         # Verify Fernstein-sized lakes landed at expected Z (editor must not overwrite).

@@ -1,4 +1,7 @@
-"""Fetch the 0.5 m DGM in a corridor around Landes- and Bundesstraßen.
+"""Fetch the 0.5 m DGM in a corridor around the road mesh.
+
+Landes- and Bundesstraßen, Autobahnen, and Gemeindestraße S-G. S-GW is not
+included. The playable heightmap is left unchanged.
 
 The site DGM is stored at 1 m. This requests the 50 cm coverage only for tiles
 the road buffer touches, and leaves the playable heightmap unchanged.
@@ -14,8 +17,8 @@ from pathlib import Path
 import numpy as np
 import tifffile as tiff
 
-from build_asphalt_meshroads import _is_main_road
 from build_decal_roads import _cfg, stitch_abutting_roads
+from gip_road_segments import road_mesh_piece
 from diag_road_bed_modes import _gip_polylines
 from raster_tile_fetch import elevation_nodata_mask, http_get_geotiff, read_tiff_bytes
 from site_coords import SiteCoords, load_site, processed_dir, site_slug
@@ -94,7 +97,7 @@ def main() -> None:
     sc = SiteCoords(site)
     proc = processed_dir(site)
     cfg = _cfg((site.get("beamng") or {}))
-    roads = [r for r in stitch_abutting_roads(_gip_polylines(site, proc), cfg) if _is_main_road(r, site)]
+    roads = [r for r in stitch_abutting_roads(_gip_polylines(site, proc), cfg) if road_mesh_piece(r)]
     km = 0.0
     for road in roads:
         pts = road.get("pts") or []

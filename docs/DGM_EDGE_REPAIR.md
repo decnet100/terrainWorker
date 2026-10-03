@@ -214,6 +214,12 @@ Plots: `dgm_repair_transect/oid6975_laengs.png` and
 
 ## In the level
 
+The method below is the road mesh. The level does not currently show it.
+The last inject is the rejected bridge fill (`dom_bridge_deck/deck.tif` and
+`clip.gpkg`). What differs, and the command that builds the road mesh again,
+is in [ROAD_MESH.md](ROAD_MESH.md). Do not extend `tools/apply_bridge_deck.py`
+as if it were this method.
+
 The surface the wheel drives is a COLLADA mesh, not the heightmap.
 `tools/build_road_grid.py` reads `dgm_repair_transect/02_repaired.tif` and
 clips to the `carriageway` layer of `centerline_shift.gpkg`. A 0.5 m cell

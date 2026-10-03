@@ -149,6 +149,21 @@ STEPS: tuple[Step, ...] = (
         needs="sources.gip",
     ),
     Step(
+        id="gip_routing_load",
+        title="Load GIP routing graph",
+        summary="Cut the national routing IDF to the site and join it onto Verkehrswege (nodes, levels, turns).",
+        script="tools/gip_routing_load.py",
+        group="1  Raw data",
+        docs="docs/GIP.md",
+        yaml_keys=("sources.gip.routing_idf",),
+        outputs=(
+            "data/processed/{slug}/gip_routing/gip_routing.json",
+            "data/processed/{slug}/gip_routing/gip_routing.gpkg",
+        ),
+        flags=(Flag("force", "--force", "bool", "Rebuild even if output is newer than the IDF"),),
+        needs="sources.gip.routing_idf",
+    ),
+    Step(
         id="fetch_landcover",
         title="Fetch Landnutzung",
         summary="Tirol traffic and land-use polygons (needed before GIP width samples).",
@@ -162,6 +177,22 @@ STEPS: tuple[Step, ...] = (
         outputs=("data/processed/{slug}/landcover_index.json",),
         flags=(Flag("force", "--force", "bool", "Re-download even if cache exists"),),
         needs="tirol_landcover",
+    ),
+    Step(
+        id="fetch_waterways",
+        title="Fetch waterways",
+        summary="Tirol Gewässernetz centerlines (Fliessgewässer) clipped to the site bbox.",
+        script="tools/fetch_waterways.py",
+        group="1  Raw data",
+        docs="docs/WATER.md",
+        yaml_keys=(
+            "sources.waterways.url",
+            "beamng.water.flowing",
+            "beamng.water.stage",
+        ),
+        outputs=("data/processed/{slug}/waterways.geojson",),
+        flags=(Flag("force", "--force", "bool", "Re-download even if cache exists"),),
+        needs="sources.waterways",
     ),
     Step(
         id="measure_gip_widths",
@@ -463,14 +494,16 @@ STEPS: tuple[Step, ...] = (
         id="build_water",
         title="Water",
         summary=(
-            "WaterBlocks + optional lake basin on the heightmap. "
+            "WaterBlocks + Gewässernetz Rivers + optional lake basin. "
             "fit_check vs terrain and MeshRoad (run after bridges/galleries)."
         ),
         script="tools/build_water.py",
         group="5  Carriageway and structures",
-        docs="docs/HEIGHTMAP_COMPOSE.md",
+        docs="docs/WATER.md",
         yaml_keys=(
             "beamng.water.enabled",
+            "beamng.water.flowing",
+            "beamng.water.stage",
             "beamng.water.fit_check",
             "beamng.water.hang_max_m",
             "beamng.water.meshroad_clearance_m",

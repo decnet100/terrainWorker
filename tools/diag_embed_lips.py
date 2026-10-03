@@ -33,8 +33,8 @@ def main() -> None:
     out.mkdir(parents=True, exist_ok=True)
 
     def to_px(bx: float, by: float) -> tuple[int, int]:
-        px = bx / extent * (size - 1)
-        py = (1.0 - by / extent) * (size - 1)
+        px = bx / extent * size
+        py = (size - 1) - by / extent * size
         return int(round(px)), int(round(py))
 
     for g in cl["galleries"]:

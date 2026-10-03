@@ -662,7 +662,12 @@ def _sync_import(
     if not user_import.parent.is_dir():
         return
     user_import.mkdir(parents=True, exist_ok=True)
-    Image.fromarray(u16, mode="I;16").save(user_import / f"heightmap_{size}.png")
+    dest = user_import / f"heightmap_{size}.png"
+    src = composed_path(proc, size)
+    if src.is_file():
+        shutil.copy2(src, dest)
+    else:
+        Image.fromarray(u16, mode="I;16").save(dest)
     preset_path = proc / "terrainPreset.json"
     preset: dict = {}
     if preset_path.is_file():

@@ -16,7 +16,7 @@ Die Klasse steht in **`OBJEKT`**, nicht im Straßennamen. `KUNSTBAUTEN` ist Frei
 |----------|-----------|----------|
 | `S-A` / `S-B` | Stammstrecke Autobahn / Bundesstraße | volles Kit (Decal, Road-Bed, Guardrails) |
 | `S-AT` / `S-BT` / `S-LT` | Tunnel | Galerie/Tunnel-Mesh, kein Oberflächen-Decal im Bohrloch |
-| `S-AB` / `S-BB` | Brücke | MeshRoad-Deck |
+| `S-AB` / `S-BB` / `S-LB` / `S-GB` | Brücke (Autobahn, Bundes-, Landes-, Gemeindestraße) | MeshRoad-Deck |
 | `S-BG` | Galerie, falls das GIP sie so taggt | offene Schale |
 | `S-AR` / `S-AP` / `S-BR` / `S-BP` | eine Spur, der Stammstrecke **untergeordnet** | 3,75 m, keine eigenen Schienen; Einfahrt an der Stammstrecke bleibt offen |
 | `S-FRW` / `S-STRAIL` | Fuß-/Radweg | Kies, kein Road-Bed; Seitenschnitt der Platte **darf** durchgehen |
@@ -71,7 +71,7 @@ Lua, `portals.json`, injizierte TSStatics/DAE: Spiel **ganz beenden**, nicht nur
 
 ## Neue Brücke
 
-1. GIP-OBJECTID der Brücke (`S-AB` / `S-BB`, oder `KUNSTBAUTEN` mit „Brücke“). Fehlt das Feature im Cache: `beamng.bridges.gip_extra` mit `objectid` (siehe [GIP.md](GIP.md)).
+1. GIP-OBJECTID der Brücke (`S-AB` / `S-BB` / `S-LB` / `S-GB`, oder `KUNSTBAUTEN` mit „Brücke“). Fehlt das Feature im Cache: `beamng.bridges.gip_extra` mit `objectid` (siehe [GIP.md](GIP.md)).
 2. In `beamng.bridges.items` matchen und nur Abweichungen von `defaults` setzen.
 
 ```yaml

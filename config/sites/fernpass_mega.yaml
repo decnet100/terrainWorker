@@ -97,6 +97,9 @@ sources:
       waldflaeche:
         url: "https://services3.arcgis.com/hG7UfxX49PQ8XkXh/arcgis/rest/services/Waldflaeche/FeatureServer/0"
         label: Waldfläche
+  waterways:
+    type: featureserver
+    url: "https://services3.arcgis.com/hG7UfxX49PQ8XkXh/arcgis/rest/services/Fliessgewaesser/FeatureServer/0/query"
   tiris_buildings:
     type: featureserver
     url: "https://services3.arcgis.com/hG7UfxX49PQ8XkXh/arcgis/rest/services/Gebaeude/FeatureServer/0"
@@ -381,8 +384,51 @@ beamng:
 
   water:
     enabled: true
-    flowing: none
+    flowing: river
     standing: waterblock
+    river_node_step_m: 12
+    river_max_slope_deg: 18
+    river_min_length_m: 12
+    river_min_width_m: 2
+    river_max_width_m: 16
+    river_depth_m: 1.2
+    stage: spring
+    width_by_typ:
+      "< 10 km² Gewässer": 4
+      "10 km² Gewässer": 6
+      "100 km² Gewässer": 12
+      "1000 km² Gewässer": 20
+      Fließgewässer: 6
+      Fluss: 12
+      Bach: 4
+      Wildbach: 3.5
+      Graben: 2
+      Kanal: 6
+    stages:
+      spring:
+        months: [3, 4, 5]
+        surface_dz_m: 0.0
+        width_scale: 1.0
+        depth_scale: 1.0
+        flow_mps: 2.5
+      summer:
+        months: [6, 7, 8]
+        surface_dz_m: -0.35
+        width_scale: 0.85
+        depth_scale: 0.85
+        flow_mps: 1.6
+      autumn:
+        months: [9, 10, 11]
+        surface_dz_m: -0.7
+        width_scale: 0.7
+        depth_scale: 0.7
+        flow_mps: 1.2
+      winter:
+        months: [12, 1, 2]
+        surface_dz_m: -0.9
+        width_scale: 0.55
+        depth_scale: 0.6
+        flow_mps: 0.8
     # One AABB WaterBlock per lake (not a dense tile grid — FPS).
     # Tiling only if a single side exceeds standing_max_side_m.
     shore_inset_m: 1.0

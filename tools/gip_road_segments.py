@@ -59,10 +59,11 @@ def _load_z_at(site: dict):
     extent = float(meta.get("terrain_extent_m") or size)
 
     def z_at(bx: float, by: float) -> float:
-        # Same convention as guardrails / strassennetz: bilinear would be nicer,
-        # nearest is enough for segment Z.
-        c = int(max(0, min(n - 1, round(bx / extent * (n - 1)))))
-        r = int(max(0, min(n - 1, round((1.0 - by / extent) * (n - 1)))))
+        # Pixel c is drawn at c * square_m (extent / n). Same lattice as the
+        # guardrails, the road mesh and the corridor heightmap. Nearest is
+        # enough for segment Z.
+        c = int(max(0, min(n - 1, round(bx / extent * n))))
+        r = int(max(0, min(n - 1, round((n - 1) - by / extent * n))))
         return float(hm[r, c]) / 65535.0 * max_h
 
     return z_at
@@ -91,6 +92,22 @@ def gip_is_named_road(road: dict) -> bool:
 
 def gip_objekt(road: dict) -> str:
     return str(road.get("objekt") or road.get("OBJEKT") or "").upper().strip()
+
+
+def road_mesh_piece(row) -> bool:
+    """Landesstraße, Bundesstraße, Autobahn, and Gemeindestraße S-G.
+
+    S-GW is a track. It does not get a road mesh.
+    """
+    code = str(row.get("STR_CODE") or row.get("str_code") or "").strip()
+    obj = gip_objekt(row)
+    if obj == "S-GW":
+        return False
+    if obj in {"S-G", "S-GB", "S-AB", "S-BB", "S-LB"}:
+        return True
+    if len(code) >= 2 and code[0] in "ABLabl" and code[1].isdigit():
+        return True
+    return obj == "S-A"
 
 
 def gip_is_subordinate_lane(road: dict) -> bool:
@@ -833,7 +850,7 @@ def _gip_segment_width_m(
         return 2.5
     if objekt in ("S-F", "S-GW"):
         return 4.0
-    if objekt == "S-G":
+    if objekt in ("S-G", "S-GB"):
         return 5.0
     if objekt in _SUBORDINATE_LANE_OBJEKT:
         return float(lane_width_m)

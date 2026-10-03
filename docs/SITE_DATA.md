@@ -47,6 +47,9 @@ sources:
   roads:
     type: osm             # or gip / local gpkg
     # bbox from site.bbox
+  waterways:
+    type: featureserver   # Tirol Gewässernetz (see docs/WATER.md)
+    url: "https://services3.arcgis.com/hG7UfxX49PQ8XkXh/arcgis/rest/services/Fliessgewaesser/FeatureServer/0/query"
 ```
 
 After `crs` and `bbox` are set, fill the authority list (required before any

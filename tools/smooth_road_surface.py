@@ -8,7 +8,8 @@ remainder explain. Everything shorter than the cutoff wavelength along the
 road, and every outlier such as a parked vehicle, ends up in a residual raster
 instead of the driving surface.
 
-Per carriageway (one ``objectid``):
+Per carriageway (one ``objectid``, or several WFS pieces that share a GIP
+routing link):
 
 * every road pixel gets a station ``s`` on the axis and a signed offset ``t``
   (left positive);
@@ -27,7 +28,10 @@ Per carriageway (one ``objectid``):
   scaled and masked, as a controlled roughness layer.
 
 Structure spans (bridge, tunnel, gallery) and pixels farther than
-``MAX_HALF_M`` from the axis keep the input height. Where carriageways overlap
+``MAX_HALF_M`` from the axis keep the input height. A bridge that has a DOM
+deck (``bridge_deck``) keeps that stamped surface on the overpass mesh. The
+road model fits the approaches on either side of it and does not replace the
+plate. Where carriageways overlap
 (junctions, parallel roads), each model is weighted by the distance to its own
 polygon edge, so the mix is continuous across that edge. A crossfall steeper
 than ``MAX_CROSSFALL`` is an embankment inside a too-wide polygon and is
@@ -43,6 +47,16 @@ and a variable-width ribbon replaces the polygon when at least
 height. The result is ``carriageway_smooth.gpkg`` (layer ``carriageway``),
 which the mesh and the terrain clamp read instead of
 ``carriageway_bridged.gpkg``.
+
+When ``gip_routing.json`` is present, each WFS piece is assigned to one
+routing link; pieces on that link are one carriageway (one axis, one model).
+Overlapping geometry is not a merge key. Bridge codes ``S-BB`` / ``S-AB`` /
+``S-LB`` that the centerline shift left out of the clip are put back from the
+shift buffer. A road that crosses another without a routing node and at a
+different ``LEVEL_INTERMEDIATE`` is tagged ``overpass`` / ``underpass`` and
+fitted into separate accumulators: the two surfaces keep their own height, and
+``build_road_grid.py`` emits a mesh per layer. The lower polygon is not cut
+back.
 
     cd C:\\temp\\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/imst.yaml"; python tools\\smooth_road_surface.py
 
@@ -80,6 +94,7 @@ from repair_dgm_cross_var import _road_only  # noqa: E402
 from repair_dgm_edge_profile import _crop_inside, _densify  # noqa: E402
 from repair_dgm_iterate import _deviation, _stats  # noqa: E402
 from repair_dgm_side_band import DROP_ROUGH_M  # noqa: E402
+from gip_routing_load import apply_routing_carriageways, merge_centerline_parts  # noqa: E402
 from repair_dgm_transect import _line_of, _structure_mask, _zones  # noqa: E402
 from site_coords import load_site, processed_dir  # noqa: E402
 
@@ -105,6 +120,9 @@ ITERATIONS = 4
 # the carriageway keeps its input height. A wide sigma alone is not a reason:
 # a too-wide polygon with an embankment still holds a road in its middle.
 MIN_FIT_SHARE = 0.35
+# Empty cells in a clip polygon (S-BB omitted from the repair mask) take the
+# raw 0.5 m DGM when it sits on the same terrace as the finite samples.
+FILL_RAW_M = 2.0
 # The remainder is kept with its own biweight on a physical scale: a 5 cm
 # one-lane overlay stays, a vehicle or a wall does not. Beyond KEEP_M the
 # pixel is an outlier and takes the model plus the neighbours' remainder.
@@ -147,7 +165,107 @@ def _lambda(cutoff_m: float) -> float:
     return (n / (2.0 * math.pi)) ** 4
 
 
-def _pixels(polys, z: np.ndarray, spec: dict, skip: np.ndarray):
+class _ZView:
+    """Base raster plus a few replaced cells. The base array is not copied."""
+
+    def __init__(self, base: np.ndarray, rows: np.ndarray, cols: np.ndarray, vals: np.ndarray):
+        self.base = base
+        self.shape = base.shape
+        width = int(base.shape[1])
+        key = rows.astype(np.int64) * width + cols.astype(np.int64)
+        order = np.argsort(key, kind="mergesort")
+        key = key[order]
+        vals = np.asarray(vals, dtype=np.float64)[order]
+        if len(key):
+            last = np.r_[key[1:] != key[:-1], True]
+            key = key[last]
+            vals = vals[last]
+        self._key = key
+        self._vals = vals
+
+    def __getitem__(self, idx):
+        if not (isinstance(idx, tuple) and len(idx) == 2 and isinstance(idx[0], np.ndarray)):
+            return self.base[idx]
+        rows, cols = idx
+        out = np.array(self.base[rows, cols], dtype=np.float64, copy=True)
+        if len(self._key) == 0:
+            return out
+        key = rows.astype(np.int64) * self.shape[1] + cols.astype(np.int64)
+        pos = np.searchsorted(self._key, key)
+        pos = np.clip(pos, 0, len(self._key) - 1)
+        hit = self._key[pos] == key
+        out[hit] = self._vals[pos[hit]]
+        return out
+
+
+def _view_from_map(base: np.ndarray, filled: dict) -> np.ndarray | _ZView:
+    if not filled:
+        return base
+    rows = np.fromiter((k[0] for k in filled), dtype=np.int32, count=len(filled))
+    cols = np.fromiter((k[1] for k in filled), dtype=np.int32, count=len(filled))
+    vals = np.fromiter((filled[k] for k in filled), dtype=np.float64, count=len(filled))
+    return _ZView(base, rows, cols, vals)
+
+
+class SparseAcc:
+    """Pixel contributions of one carriageway, applied to the full accumulator later."""
+
+    def __init__(self):
+        self.rows: list[np.ndarray] = []
+        self.cols: list[np.ndarray] = []
+        self.num: list[np.ndarray] = []
+        self.den: list[np.ndarray] = []
+        self.wsum: list[np.ndarray] = []
+        self.z: list[np.ndarray] = []
+
+    def add(self, rows, cols, num, den, wsum, z) -> None:
+        self.rows.append(np.asarray(rows, dtype=np.int32))
+        self.cols.append(np.asarray(cols, dtype=np.int32))
+        self.num.append(np.asarray(num, dtype=np.float64))
+        self.den.append(np.asarray(den, dtype=np.float64))
+        self.wsum.append(np.asarray(wsum, dtype=np.float64))
+        self.z.append(np.asarray(z, dtype=np.float64))
+
+    def packed(self) -> dict | None:
+        if not self.rows:
+            return None
+        return {
+            "rows": np.concatenate(self.rows),
+            "cols": np.concatenate(self.cols),
+            "num": np.concatenate(self.num),
+            "den": np.concatenate(self.den),
+            "wsum": np.concatenate(self.wsum),
+            "z": np.concatenate(self.z),
+        }
+
+
+def _acc_add(acc, rows, cols, zout, blend, w) -> None:
+    num = blend * zout
+    den = blend
+    wsum = blend * w
+    if isinstance(acc, SparseAcc):
+        acc.add(rows, cols, num, den, wsum, zout)
+        return
+    np.add.at(acc["num"], (rows, cols), num)
+    np.add.at(acc["den"], (rows, cols), den)
+    np.add.at(acc["wsum"], (rows, cols), wsum)
+    np.minimum.at(acc["lo"], (rows, cols), zout)
+    np.maximum.at(acc["hi"], (rows, cols), zout)
+
+
+def _apply_sparse(acc: dict, packed: dict | None) -> None:
+    if not packed:
+        return
+    rows = packed["rows"]
+    cols = packed["cols"]
+    np.add.at(acc["num"], (rows, cols), packed["num"])
+    np.add.at(acc["den"], (rows, cols), packed["den"])
+    np.add.at(acc["wsum"], (rows, cols), packed["wsum"])
+    np.minimum.at(acc["lo"], (rows, cols), packed["z"])
+    np.maximum.at(acc["hi"], (rows, cols), packed["z"])
+
+
+def _pixels(polys, z: np.ndarray, spec: dict, skip: np.ndarray | None):
     rows_all = []
     cols_all = []
     for poly in polys:
@@ -165,7 +283,11 @@ def _pixels(polys, z: np.ndarray, spec: dict, skip: np.ndarray):
     flat = np.unique(rows.astype(np.int64) * z.shape[1] + cols)
     rows = (flat // z.shape[1]).astype(np.int32)
     cols = (flat % z.shape[1]).astype(np.int32)
-    keep = np.isfinite(z[rows, cols]) & ~skip[rows, cols]
+    vals = z[rows, cols]
+    if skip is None:
+        keep = np.isfinite(vals)
+    else:
+        keep = np.isfinite(vals) & ~np.asarray(skip[rows, cols], dtype=bool)
     rows = rows[keep]
     cols = cols[keep]
     if len(rows) == 0:
@@ -440,6 +562,50 @@ def _bridge_decks(carriage: Path) -> list:
     return [g for g in gdf.geometry if g is not None and not g.is_empty]
 
 
+def _raster_mask(polys, shape, spec) -> np.ndarray:
+    """True on cells whose centre lies inside any polygon."""
+    mask = np.zeros(shape, dtype=bool)
+    for poly in polys:
+        for part in _iter_polys(poly):
+            got = _crop_inside(part, spec)
+            if got is None:
+                continue
+            inside, r0, c0 = got
+            view = mask[r0 : r0 + inside.shape[0], c0 : c0 + inside.shape[1]]
+            view |= inside
+    return mask
+
+
+def _keep_deck(acc, polys, z, spec, deck: np.ndarray) -> int:
+    """Write the stamped deck into the overpass layer. The road model does not."""
+    rows_all = []
+    cols_all = []
+    for poly in polys:
+        got = _crop_inside(poly, spec)
+        if got is None:
+            continue
+        inside, r0, c0 = got
+        rr, cc = np.nonzero(inside)
+        rows_all.append(rr + r0)
+        cols_all.append(cc + c0)
+    if not rows_all:
+        return 0
+    rows = np.concatenate(rows_all)
+    cols = np.concatenate(cols_all)
+    flat = np.unique(rows.astype(np.int64) * z.shape[1] + cols)
+    rows = (flat // z.shape[1]).astype(np.int32)
+    cols = (flat % z.shape[1]).astype(np.int32)
+    keep = deck[rows, cols] & np.isfinite(z[rows, cols])
+    rows = rows[keep]
+    cols = cols[keep]
+    if len(rows) == 0:
+        return 0
+    zz = z[rows, cols].astype(np.float64)
+    w = np.ones(len(rows), dtype=np.float64)
+    _acc_add(acc, rows, cols, zz, w, w)
+    return int(len(rows))
+
+
 def _gip_classes(site) -> dict[int, str]:
     """OBJECTID -> OBJEKT from the site's GIP cache."""
     from build_bridges import find_gip_geojson
@@ -453,6 +619,153 @@ def _gip_classes(site) -> dict[int, str]:
         except (TypeError, ValueError):
             continue
     return out
+
+
+def _oid_members(group) -> list[int]:
+    """Original WFS ids in a routing-merged carriageway row."""
+    oid = int(group.iloc[0].objectid)
+    if "members" not in group.columns:
+        return [oid]
+    raw = group.iloc[0].members
+    if raw is None or str(raw).strip() == "":
+        return [oid]
+    try:
+        return [int(x) for x in str(raw).split(",") if x.strip()]
+    except ValueError:
+        return [oid]
+
+
+def _fill_nan_from_raw(z: np.ndarray, raw: np.ndarray | None, polys: list, spec: dict):
+    """Raw DGM in NaN clip cells that sit on the same terrace.
+
+    The result is a view over the original raster. Hole cells are stored
+    beside it, so a worker can read a shared raster without copying it.
+    """
+    if raw is None or z is raw:
+        return z
+    base = z.base if isinstance(z, _ZView) else z
+    filled = {}
+    if isinstance(z, _ZView) and len(z._key):
+        width = int(base.shape[1])
+        filled = {
+            (int(k // width), int(k % width)): float(v)
+            for k, v in zip(z._key.tolist(), z._vals.tolist())
+        }
+    changed = False
+    for poly in polys:
+        got = _crop_inside(poly, spec)
+        if got is None:
+            continue
+        inside, r0, c0 = got
+        sl = base[r0 : r0 + inside.shape[0], c0 : c0 + inside.shape[1]]
+        sl_raw = raw[r0 : r0 + inside.shape[0], c0 : c0 + inside.shape[1]]
+        local = np.array(sl, dtype=np.float64, copy=True)
+        if filled:
+            for (r, c), value in filled.items():
+                if r0 <= r < r0 + local.shape[0] and c0 <= c < c0 + local.shape[1]:
+                    local[r - r0, c - c0] = value
+        finite = inside & np.isfinite(local)
+        hole = inside & ~np.isfinite(local) & np.isfinite(sl_raw)
+        if not np.any(hole):
+            continue
+        if np.any(finite):
+            med = float(np.median(local[finite]))
+            hole = hole & (np.abs(sl_raw - med) <= FILL_RAW_M)
+            if not np.any(hole):
+                continue
+        rr, cc = np.nonzero(hole)
+        for r, c in zip(rr.tolist(), cc.tolist()):
+            filled[(r + r0, c + c0)] = float(sl_raw[r, c])
+        changed = True
+    if not changed and not isinstance(z, _ZView):
+        return z
+    return _view_from_map(base, filled)
+
+
+def _stamp_cover_clearance(
+    z: np.ndarray,
+    spec: dict,
+    members: list[int],
+    site: dict,
+    raw: np.ndarray | None,
+) -> np.ndarray:
+    """Set the underpass floor to cover DGM minus the stored clearance."""
+    if raw is None:
+        return z
+    from gip_bridge_flags import cover_bore_geoms
+
+    bores = cover_bore_geoms(site, set(members))
+    if not bores:
+        return z
+    base = z.base if isinstance(z, _ZView) else z
+    filled: dict[tuple[int, int], float] = {}
+    if isinstance(z, _ZView) and len(z._key):
+        width = int(base.shape[1])
+        filled = {
+            (int(k // width), int(k % width)): float(v)
+            for k, v in zip(z._key.tolist(), z._vals.tolist())
+        }
+    hit_any = False
+    for bore in bores:
+        got = _crop_inside(bore["geometry"], spec)
+        if got is None:
+            continue
+        inside, r0, c0 = got
+        sl_raw = raw[r0 : r0 + inside.shape[0], c0 : c0 + inside.shape[1]]
+        hit = inside & np.isfinite(sl_raw)
+        if not np.any(hit):
+            continue
+        clearance = float(bore["clear_height_m"])
+        rr, cc = np.nonzero(hit)
+        for r, c in zip(rr.tolist(), cc.tolist()):
+            filled[(r + r0, c + c0)] = float(sl_raw[r, c]) - clearance
+        hit_any = True
+    if not hit_any:
+        return z
+    return _view_from_map(base, filled)
+
+
+def _mesh_meta(group, oid: int) -> tuple[str, int, int]:
+    kind = "road"
+    if "mesh_kind" in group.columns:
+        kind = str(group.iloc[0].mesh_kind or "road").strip() or "road"
+    key = 0
+    if "mesh_key" in group.columns:
+        try:
+            key = int(group.iloc[0].mesh_key)
+        except (TypeError, ValueError):
+            key = 0
+    if kind != "road" and key == 0:
+        key = int(oid)
+    layer = 0
+    if "mesh_layer" in group.columns:
+        try:
+            layer = int(group.iloc[0].mesh_layer)
+        except (TypeError, ValueError):
+            layer = 0
+    return kind, key, layer
+
+
+def _empty_acc(shape: tuple[int, int]) -> dict:
+    return {
+        "num": np.zeros(shape, dtype=np.float64),
+        "den": np.zeros(shape, dtype=np.float64),
+        "wsum": np.zeros(shape, dtype=np.float64),
+        "lo": np.full(shape, np.inf, dtype=np.float64),
+        "hi": np.full(shape, -np.inf, dtype=np.float64),
+    }
+
+
+def _finish_acc(acc: dict, z_in: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Composite one accumulator; fade pixels where two models of the same layer disagree."""
+    written = acc["den"] > 0
+    z_out = z_in.astype(np.float32).copy()
+    z_out[written] = (acc["num"][written] / acc["den"][written]).astype(np.float32)
+    spread = np.where(written, acc["hi"] - acc["lo"], 0.0)
+    fade = np.clip((spread - KEEP_M) / KEEP_M, 0.0, 1.0)
+    conflict = written & (fade > 0.0)
+    z_out[conflict] = ((1.0 - fade[conflict]) * z_out[conflict] + fade[conflict] * z_in[conflict]).astype(np.float32)
+    return z_out, written, conflict, fade
 
 
 def _iter_polys(geom):
@@ -536,11 +849,7 @@ def _process(oid, line, polys, z, spec, skip, acc, want_capture, narrow=False):
     lp, lp_grid = _kept_remainder(u, t, r, w, n_st)
     zout = zm + lp
     blend = np.minimum(to_edge, BLEND_REACH_M) ** 2 + 1e-3
-    np.add.at(acc["num"], (rows, cols), blend * zout)
-    np.add.at(acc["den"], (rows, cols), blend)
-    np.add.at(acc["wsum"], (rows, cols), blend * w)
-    np.minimum.at(acc["lo"], (rows, cols), zout)
-    np.maximum.at(acc["hi"], (rows, cols), zout)
+    _acc_add(acc, rows, cols, zout, blend, w)
     out = {
         "oid": int(oid),
         "px": int(len(zin)),
@@ -829,6 +1138,47 @@ def _plot_wheel(before, after, out_dir: Path) -> str:
     return str(path)
 
 
+def _smooth_worker(payload: dict) -> tuple:
+    from proc_pool import array, extra
+
+    info = extra()
+    spec = info["spec"]
+    site = info["site"]
+    z_in = array("z_in")
+    z_ground = array("z_ground")
+    z_raw = array("z_raw") if info["has_raw"] else None
+    struct = array("struct")
+    deck = array("deck") if info["has_deck"] else None
+    kind = payload["kind"]
+    polys = payload["polys"]
+    if kind == "overpass" and deck is not None:
+        skip = deck
+    elif kind in {"underpass", "overpass", "span"}:
+        skip = None
+    else:
+        skip = struct
+    z_fit = z_ground if kind == "underpass" else z_in
+    z_fit = _fill_nan_from_raw(z_fit, z_raw, polys, spec)
+    if kind == "underpass":
+        z_fit = _stamp_cover_clearance(z_fit, spec, payload["members"], site, z_raw)
+    acc = SparseAcc()
+    res = _process(
+        payload["oid"],
+        payload["line"],
+        polys,
+        z_fit,
+        spec,
+        skip,
+        acc,
+        payload["want_plot"],
+        narrow=payload["narrow"],
+    )
+    deck_px = 0
+    if kind == "overpass" and deck is not None:
+        deck_px = _keep_deck(acc, polys, z_fit, spec, deck)
+    return acc.packed(), res, deck_px
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--heights", type=Path, default=None, help="input raster, default 03_with_bridges.tif")
@@ -860,7 +1210,32 @@ def main() -> None:
 
     t0 = time.time()
     z_in, spec = _load_geotiff(heights)
+    z_ground = z_in
+    ground_path = repair / "02_repaired.tif"
+    if ground_path.is_file() and Path(heights).resolve() != ground_path.resolve():
+        zg, spec_g = _load_geotiff(ground_path)
+        if zg.shape == z_in.shape and spec_g.get("xmin") == spec["xmin"] and spec_g.get("ymax") == spec["ymax"]:
+            z_ground = zg
+            print(f"underpass heights {ground_path.name} (DGM before deck stamp)", flush=True)
+        else:
+            print("02_repaired.tif frame differs, underpass uses the input raster", flush=True)
+    z_raw = None
+    raw_path = proc / "corridor50_raw" / "corridor50_raw.tif"
+    if raw_path.is_file():
+        zr, spec_r = _load_geotiff(raw_path)
+        if zr.shape == z_in.shape and spec_r.get("xmin") == spec["xmin"] and spec_r.get("ymax") == spec["ymax"]:
+            z_raw = zr
     roads = gpd.read_file(carriage, layer="carriageway")
+    roads, routing_stats = apply_routing_carriageways(roads, site)
+    if routing_stats.get("used"):
+        print(
+            f"routing: {routing_stats['groups']} groups, "
+            f"{routing_stats['merged_groups']} merged from {routing_stats['merged_oids']} pieces, "
+            f"{routing_stats.get('grade_overpass', 0)} overpass / "
+            f"{routing_stats.get('grade_underpass', 0)} underpass meshes "
+            f"(no XY clip)",
+            flush=True,
+        )
     lines = gpd.read_file(axes_path, layer="centerline")
     try:
         segments = gpd.read_file(axes_path, layer="segments")
@@ -878,6 +1253,9 @@ def main() -> None:
             if not rim.is_empty:
                 zones.append(rim)
     struct = _structure_mask(zones, z_in.shape, spec) if zones else np.zeros(z_in.shape, dtype=bool)
+    # The full ribbon, including the blend into the road. The overpass mesh
+    # keeps this surface. Ordinary roads still use the zone mask above.
+    deck_mask = _raster_mask(decks, z_in.shape, spec) if decks else None
     print(
         f"input {heights.name} {z_in.shape}, structure spans {len(zones)} "
         f"(bridge decks {len(decks)})",
@@ -905,65 +1283,119 @@ def main() -> None:
         print(f"Redrew site plots in {out_dir} in {time.time() - t0:.0f} s", flush=True)
         return
 
-    acc = {
-        "num": np.zeros(z_in.shape, dtype=np.float64),
-        "den": np.zeros(z_in.shape, dtype=np.float64),
-        "wsum": np.zeros(z_in.shape, dtype=np.float64),
-        "lo": np.full(z_in.shape, np.inf, dtype=np.float64),
-        "hi": np.full(z_in.shape, -np.inf, dtype=np.float64),
-    }
+    accs = [_empty_acc(z_in.shape), _empty_acc(z_in.shape)]
     classes = _gip_classes(site)
     per_oid = []
     unfit = []
     axes = []
     captures = {}
     skipped = 0
-    final_polys: dict[int, tuple[list, float]] = {}
+    deck_kept = 0
+    final_polys: dict[int, tuple[list, float, str, int, int]] = {}
+    asked = set(int(x) for x in (args.oid or []))
     groups = list(roads.groupby("objectid"))
-    for n_done, (oid, group) in enumerate(groups, start=1):
+    members_of = {int(oid): _oid_members(group) for oid, group in groups}
+    mesh_of = {int(oid): _mesh_meta(group, int(oid)) for oid, group in groups}
+    jobs: list[dict] = []
+    for oid, group in groups:
         oid = int(oid)
+        members = _oid_members(group)
+        kind, mesh_key, mesh_layer = mesh_of[oid]
         polys = []
         for geom in group.geometry:
             if geom is None or geom.is_empty:
                 continue
             polys.extend(list(geom.geoms) if geom.geom_type == "MultiPolygon" else [geom])
-        final_polys[oid] = (polys, 0.0)
-        if args.oid and oid not in args.oid:
+        final_polys[oid] = (polys, 0.0, kind, mesh_key, mesh_layer)
+        if asked and asked.isdisjoint(set(members) | {oid}):
             continue
-        line = _line_of(lines, oid)
+        pieces = [_line_of(lines, m) for m in members]
+        line = merge_centerline_parts(pieces) if any(p is not None for p in pieces) else None
         if line is None or not polys:
             skipped += 1
             continue
-        narrow = classes.get(oid, "") in NARROW_OBJEKT
-        res = _process(oid, line, polys, z_in, spec, struct, acc, oid in plot_oids, narrow=narrow)
-        if res is None:
-            skipped += 1
-            continue
-        if res.get("unfit"):
-            res.pop("axis")
-            unfit.append(res)
-            continue
-        axes.append(res.pop("axis"))
-        new_polys = res.pop("polys", None)
-        if new_polys:
-            final_polys[oid] = (new_polys, res["narrow_m"])
-        res["objekt"] = classes.get(oid, "")
-        cap = res.pop("capture", None)
-        if cap is not None:
-            captures[oid] = cap
-        per_oid.append(res)
-        if n_done % 200 == 0:
-            print(f"  {n_done}/{len(groups)} carriageways, {time.time() - t0:.0f} s", flush=True)
+        narrow = (
+            kind == "road"
+            and all(classes.get(m, "") in NARROW_OBJEKT for m in members)
+            and bool(members)
+        )
+        jobs.append(
+            {
+                "oid": oid,
+                "kind": kind,
+                "mesh_key": mesh_key,
+                "mesh_layer": mesh_layer,
+                "members": members,
+                "polys": polys,
+                "line": line,
+                "narrow": narrow,
+                "want_plot": bool(plot_oids & (set(members) | {oid})),
+            }
+        )
+    while len(accs) <= max((job["mesh_layer"] for job in jobs), default=0):
+        accs.append(_empty_acc(z_in.shape))
+    from proc_pool import Pool, workers
+
+    arrays = {"z_in": z_in, "z_ground": z_ground, "struct": struct}
+    info = {"spec": spec, "site": site, "has_raw": z_raw is not None, "has_deck": deck_mask is not None}
+    if z_raw is not None:
+        arrays["z_raw"] = z_raw
+    if deck_mask is not None:
+        arrays["deck"] = deck_mask
+    n_workers = min(workers(), len(jobs)) if jobs else 1
+    print(f"fitting {len(jobs)} carriageways on {n_workers} workers", flush=True)
+    with Pool(arrays, info, n=n_workers) as pool:
+        for n, (packed, res, deck_px) in enumerate(pool.imap(_smooth_worker, jobs, chunksize=4), start=1):
+            job = jobs[n - 1]
+            _apply_sparse(accs[job["mesh_layer"]], packed)
+            deck_kept += deck_px
+            if res is None:
+                if deck_px == 0:
+                    skipped += 1
+                continue
+            if res.get("unfit"):
+                res.pop("axis", None)
+                unfit.append(res)
+                continue
+            axes.append(res.pop("axis"))
+            new_polys = res.pop("polys", None)
+            if new_polys:
+                final_polys[job["oid"]] = (
+                    new_polys,
+                    res["narrow_m"],
+                    job["kind"],
+                    job["mesh_key"],
+                    job["mesh_layer"],
+                )
+            res["objekt"] = classes.get(job["oid"], "")
+            res["members"] = job["members"]
+            cap = res.pop("capture", None)
+            if cap is not None:
+                captures[job["oid"]] = cap
+            per_oid.append(res)
+            if n % 200 == 0 or n == len(jobs):
+                print(f"  {n}/{len(jobs)} carriageways, {time.time() - t0:.0f} s", flush=True)
 
     road = np.zeros(z_in.shape, dtype=bool)
     gpkg_rows = []
-    for oid, (polys, narrow_m) in final_polys.items():
+    for oid, (polys, narrow_m, kind, mesh_key, mesh_layer) in final_polys.items():
         for poly in polys:
             got = _crop_inside(poly, spec)
             if got is not None:
                 inside, r0, c0 = got
                 road[r0 : r0 + inside.shape[0], c0 : c0 + inside.shape[1]] |= inside
-            gpkg_rows.append({"objectid": oid, "narrowed": int(narrow_m > 0.0), "narrow_m": round(narrow_m, 2), "geometry": poly})
+            gpkg_rows.append(
+                {
+                    "objectid": oid,
+                    "members": ",".join(str(x) for x in members_of.get(oid, [oid])),
+                    "narrowed": int(narrow_m > 0.0),
+                    "narrow_m": round(narrow_m, 2),
+                    "mesh_kind": kind,
+                    "mesh_key": int(mesh_key),
+                    "mesh_layer": int(mesh_layer),
+                    "geometry": poly,
+                }
+            )
     carriage_out = out_dir / "carriageway_smooth.gpkg"
     if carriage_out.exists():
         carriage_out.unlink()
@@ -971,18 +1403,30 @@ def main() -> None:
     narrowed = [d for d in per_oid if d["narrow_m"] > 0.0]
     print(f"carriageways narrowed: {len(narrowed)}, wrote {carriage_out.name}", flush=True)
 
-    written = acc["den"] > 0
+    finished = [_finish_acc(acc, z_in) for acc in accs]
+    z_layers = [item[0] for item in finished]
+    written_layers = [item[1] for item in finished]
+    conflict_layers = [item[2] for item in finished]
+    fade_layers = [item[3] for item in finished]
+    written = np.zeros(z_in.shape, dtype=bool)
+    conflict = np.zeros(z_in.shape, dtype=bool)
+    fade_any = np.zeros(z_in.shape, dtype=np.float64)
     z_out = z_in.astype(np.float32).copy()
-    z_out[written] = (acc["num"][written] / acc["den"][written]).astype(np.float32)
-    # Two carriageways claiming one pixel at different heights (terrace, wall
-    # between parallel roads): the road surface is undefined there. Fade back
-    # to the measured input as the disagreement grows past KEEP_M.
-    spread = np.where(written, acc["hi"] - acc["lo"], 0.0)
-    fade = np.clip((spread - KEEP_M) / KEEP_M, 0.0, 1.0)
-    conflict = written & (fade > 0.0)
-    z_out[conflict] = ((1.0 - fade[conflict]) * z_out[conflict] + fade[conflict] * z_in[conflict]).astype(np.float32)
+    for z_l, w_l, c_l, f_l in finished:
+        z_out[w_l] = z_l[w_l]
+        written |= w_l
+        conflict |= c_l
+        fade_any = np.maximum(fade_any, f_l)
+    z_under = z_layers[1] if len(z_layers) > 1 else z_in.astype(np.float32)
+    written_under = written_layers[1] if len(written_layers) > 1 else np.zeros(z_in.shape, dtype=bool)
+    den = np.zeros(z_in.shape, dtype=np.float64)
+    wsum = np.zeros(z_in.shape, dtype=np.float64)
+    for acc in accs:
+        den += acc["den"]
+        wsum += acc["wsum"]
     weight = np.full(z_in.shape, np.nan, dtype=np.float32)
-    weight[written] = (acc["wsum"][written] / acc["den"][written]).astype(np.float32)
+    has_w = den > 0
+    weight[has_w] = (wsum[has_w] / den[has_w]).astype(np.float32)
     removed = np.full(z_in.shape, np.nan, dtype=np.float32)
     removed[written] = (z_in[written] - z_out[written]).astype(np.float32)
     on = road & np.isfinite(z_in) & ~struct
@@ -998,11 +1442,26 @@ def main() -> None:
     wheel_before, wheel_after = _wheel_paths(axes, z_in, z_out, spec, ride_ok)
     print(
         f"road-only roughness: hot {before_ro['hot_px']} -> {after_ro['hot_px']} of {after_ro['n']}, "
-        f"p90 {before_ro['p90_m']} -> {after_ro['p90_m']} m, p99 {before_ro['p99_m']} -> {after_ro['p99_m']} m",
+        f"p90 {before_ro['p90_m']} -> {after_ro['p90_m']} m, p99 {before_ro['p99_m']} -> {after_ro['p99_m']} m, "
+        f"deck pixels kept {deck_kept}",
         flush=True,
     )
 
     write_referenced_tif(out_dir / "04_smooth.tif", np.where(road, z_out, np.nan).astype(np.float32), xmin=spec["xmin"], ymax=spec["ymax"], res=RES_M)
+    write_referenced_tif(
+        out_dir / "04_layer0.tif",
+        np.where(road, z_layers[0], np.nan).astype(np.float32),
+        xmin=spec["xmin"],
+        ymax=spec["ymax"],
+        res=RES_M,
+    )
+    write_referenced_tif(
+        out_dir / "04_under.tif",
+        np.where(written_under, z_under, np.nan).astype(np.float32),
+        xmin=spec["xmin"],
+        ymax=spec["ymax"],
+        res=RES_M,
+    )
     write_referenced_tif(out_dir / "04_residual.tif", removed, xmin=spec["xmin"], ymax=spec["ymax"], res=RES_M)
     write_referenced_tif(out_dir / "04_weight.tif", weight, xmin=spec["xmin"], ymax=spec["ymax"], res=RES_M)
 
@@ -1034,6 +1493,7 @@ def main() -> None:
         "edge_support_m": EDGE_SUPPORT_M,
         "max_crossfall": MAX_CROSSFALL,
         "blend_reach_m": BLEND_REACH_M,
+        "routing": routing_stats,
         "iterations": ITERATIONS,
         "carriageways": len(per_oid),
         "skipped": skipped,
@@ -1043,7 +1503,10 @@ def main() -> None:
         "written_px": int(written.sum()),
         "structure_px_kept": int((road & struct).sum()),
         "conflict_px": int(conflict.sum()),
-        "conflict_px_full_input": int(np.count_nonzero(fade >= 1.0)),
+        "conflict_px_full_input": int(np.count_nonzero(fade_any >= 1.0)),
+        "underpass_px": int(written_under.sum()),
+        "deck_px_kept": int(deck_kept),
+        "mesh_layers": len(accs),
         "outlier_px": int(np.count_nonzero(kept <= 0.0)),
         "carriageways_with_clamped_crossfall": int(sum(1 for d in per_oid if d["clamped_half_stations"])),
         "narrow_objekt": sorted(NARROW_OBJEKT),
@@ -1068,12 +1531,15 @@ def main() -> None:
             "04_weight.tif is the keep weight of the remainder (biweight, zero at keep_m); "
             "zero means the pixel was an outlier and took the model. "
             "Structure spans and unfit carriageways keep the input height. Where overlapping "
-            "carriageways disagree by more than keep_m the output fades back to the input (conflict_px). "
+            "carriageways of the same mesh layer disagree by more than keep_m the output fades "
+            "back to the input (conflict_px). WFS pieces on one GIP routing link share a model; "
+            "a grade-separated overpass and underpass keep their full polygons and their own "
+            "height (04_under.tif) so build_road_grid can emit two meshes at that XY. "
             "The wheel-path metric runs over fitted carriageways, 2 m clear of structure spans."
         ),
     }
     (out_dir / "report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
-    print(f"Wrote {out_dir / '04_smooth.tif'}, {out_dir / '04_residual.tif'}, report.json, {len(plots)} plots in {report['seconds']} s", flush=True)
+    print(f"Wrote {out_dir / '04_smooth.tif'}, {out_dir / '04_layer0.tif'}, {out_dir / '04_under.tif'}, {out_dir / '04_residual.tif'}, report.json, {len(plots)} plots in {report['seconds']} s", flush=True)
 
 
 if __name__ == "__main__":

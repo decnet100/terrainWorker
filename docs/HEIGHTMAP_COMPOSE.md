@@ -77,7 +77,7 @@ cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/fernpass_mega.yam
 
 | Tool | Writes | Reads heightmap |
 |------|--------|-----------------|
-| `build_water.py` | `water` (add vs DGM) | DGM |
+| `build_water.py` | `water` (add vs DGM); Rivers from Gewässernetz ([WATER.md](WATER.md)) | DGM |
 | `build_decal_roads.py` | `road_bed` (replace vs DGM; skip bridge decks) | snap: **composed** |
 | `apply_corridor_dgm.py` | `corridor_dgm` (replace, raw 0.5 m DGM) | DGM frame of `corridor50_raw.tif` |
 | `build_bridges.py` | `span/bridge` | conform vs DGM |

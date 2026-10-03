@@ -9,7 +9,8 @@ so a cut vertex samples that raster and does not pick up the slope.
 ``--raw`` reads the unfiltered 0.5 m DGM instead of the
 filtered corridor. ``--heights`` reads one georeferenced 0.5 m GeoTIFF on
 the same frame. Collada files are cut only at export, when a part would
-exceed the vertex limit. Partial edge cells stay as triangles.
+exceed the vertex limit, and again by grade-separated layer (overpass /
+underpass keep their own 2.5D grid). Partial edge cells stay as triangles.
 
     cd C:\\temp\\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/imst.yaml"; python tools\\build_road_grid.py
 
@@ -65,7 +66,7 @@ RIM_RINGS = 2
 RIM_MEDIAN_M = 3.0
 RIM_LOWPASS_SIGMA_M = 4.0
 # An open edge farther inside than this is a hole, not the outline.
-SEAM_INSIDE_M = 0.75
+SEAM_INSIDE_M = EDGE_BAND_M + 0.25
 _MAIN_ROAD_CODE = re.compile(r"^[ABLabl]\d")
 IDENTITY_ROT = [1, 0, 0, 0, 1, 0, 0, 0, 1]
 
@@ -476,6 +477,7 @@ def _emit_rows(
     out_dir: Path,
     written: list[dict],
     covered: set,
+    prefix: str = "part_",
 ) -> None:
     height = int(grid["mask"].shape[0])
     if (r1 - r0) > 1:
@@ -484,11 +486,11 @@ def _emit_rows(
             mid = r0 + (r1 - r0) // 2
             _emit_rows(
                 grid, sc, r0=r0, r1=mid, z_min=z_min, max_h=max_h,
-                out_dir=out_dir, written=written, covered=covered,
+                out_dir=out_dir, written=written, covered=covered, prefix=prefix,
             )
             _emit_rows(
                 grid, sc, r0=mid, r1=r1, z_min=z_min, max_h=max_h,
-                out_dir=out_dir, written=written, covered=covered,
+                out_dir=out_dir, written=written, covered=covered, prefix=prefix,
             )
             return
     built = _build_part(grid, sc, r0=r0, r1=r1, z_min=z_min)
@@ -499,16 +501,16 @@ def _emit_rows(
         mid = r0 + (r1 - r0) // 2
         _emit_rows(
             grid, sc, r0=r0, r1=mid, z_min=z_min, max_h=max_h,
-            out_dir=out_dir, written=written, covered=covered,
+            out_dir=out_dir, written=written, covered=covered, prefix=prefix,
         )
         _emit_rows(
             grid, sc, r0=mid, r1=r1, z_min=z_min, max_h=max_h,
-            out_dir=out_dir, written=written, covered=covered,
+            out_dir=out_dir, written=written, covered=covered, prefix=prefix,
         )
         return
     if pos.shape[0] > COLLADA_MAX_VERTS:
         raise SystemExit(f"rows {r0}-{r1}: {pos.shape[0]} verts in one row band")
-    stem = f"part_{len(written):03d}"
+    stem = f"{prefix}{len(written):03d}"
     _check_geometry(pos, faces, stem=stem, z_min=z_min, max_h=max_h)
     col_pos, col_faces = _decimate_collision(pos, faces)
     _check_geometry(col_pos, col_faces, stem=f"{stem} collision", z_min=z_min, max_h=max_h)
@@ -921,21 +923,40 @@ def _smooth_edge_heights(grid: dict) -> tuple[int, int, int]:
     return assigned, smoothed, outside
 
 
-def _write_surface(out_dir: Path, grid: dict) -> Path:
-    """The heights the mesh is actually cut from, after edge fill and smoothing.
-
-    Road cells plus the 1 m strip outside the outline that ``_paint_outside_band``
-    filled; everything else NaN. ``apply_corridor_dgm.py`` clamps the terrain
-    against this raster, so the ceiling follows the mesh top and not the
-    repaired DGM, which differs from the mesh in the outer metre.
-    """
+def _surface_array(grid: dict) -> np.ndarray:
+    """Heights the mesh is cut from, after edge fill, NaN off the road plus the 1 m rim."""
     from scipy.ndimage import binary_dilation
 
     z = np.asarray(grid["z"], dtype=np.float32)
     mask = grid["mask"]
     reach = int(math.ceil(EDGE_BAND_M / RES_M))
     keep = binary_dilation(mask, structure=np.ones((3, 3), dtype=bool), iterations=reach)
-    out = np.where(keep & np.isfinite(z), z, np.float32(np.nan))
+    return np.where(keep & np.isfinite(z), z, np.float32(np.nan))
+
+
+def _nanmin_stack(acc: np.ndarray | None, layer: np.ndarray) -> np.ndarray:
+    """Lowest finite height. The terrain clamp must sit under the underpass, not the deck."""
+    if acc is None:
+        return layer.copy()
+    both = np.isfinite(acc) & np.isfinite(layer)
+    out = acc.copy()
+    only_layer = ~np.isfinite(acc) & np.isfinite(layer)
+    out[both] = np.minimum(acc[both], layer[both])
+    out[only_layer] = layer[only_layer]
+    return out
+
+
+def _write_surface(out_dir: Path, grid: dict, z: np.ndarray | None = None) -> Path:
+    """The heights the mesh is actually cut from, after edge fill and smoothing.
+
+    Road cells plus the 1 m strip outside the outline that ``_paint_outside_band``
+    filled; everything else NaN. ``apply_corridor_dgm.py`` clamps the terrain
+    against this raster, so the ceiling follows the mesh top and not the
+    repaired DGM, which differs from the mesh in the outer metre. Where an
+    overpass and an underpass occupy the same XY, the stored value is the
+    lower surface so the gorge is not allowed up to the deck.
+    """
+    out = _surface_array(grid) if z is None else z
     dest = out_dir / "road_grid_z.tif"
     write_referenced_tif(dest, out, xmin=float(grid["xmin"]), ymax=float(grid["ymax"]), res=RES_M)
     print(f"Wrote {dest} cells={int(np.count_nonzero(np.isfinite(out)))}", flush=True)
@@ -1205,31 +1226,122 @@ def _road_mesh_row(row) -> bool:
     return road_mesh_piece(row)
 
 
-def _load_clip_polygons(path: Path, layer: str, *, main_only: bool = False) -> tuple[list, dict]:
+def _mesh_prefix(kind: str, key: int) -> str:
+    if kind == "overpass":
+        return f"over{int(key)}_"
+    if kind == "underpass":
+        return f"under{int(key)}_"
+    if kind == "span":
+        return f"span{int(key)}_"
+    return "part_"
+
+
+def _polys_of(geom) -> list:
+    out = []
+    if geom is None or geom.is_empty:
+        return out
+    if geom.geom_type == "MultiPolygon":
+        out.extend(part for part in geom.geoms if part.geom_type == "Polygon" and part.area > 1.0)
+    elif geom.geom_type == "Polygon" and geom.area > 1.0:
+        out.append(geom)
+    return out
+
+
+def _load_clip_polygons(path: Path, layer: str, *, main_only: bool = False) -> tuple[list[dict], dict]:
     import geopandas as gpd
 
     gdf = gpd.read_file(path, layer=layer)
     if main_only:
         keep = gdf.apply(_main_route_row, axis=1)
         gdf = gdf.loc[keep]
-    polys = []
-    for geom in gdf.geometry:
-        if geom is None or geom.is_empty:
+    if "objectid" in gdf.columns and "members" not in gdf.columns:
+        from gip_routing_load import apply_routing_carriageways
+        from site_coords import load_site
+
+        gdf, routing = apply_routing_carriageways(gdf, load_site())
+        if routing.get("used"):
+            print(
+                f"routing layers: {routing['groups']} groups, "
+                f"{routing['merged_groups']} merged, "
+                f"{routing.get('grade_overpass', 0)} overpass / "
+                f"{routing.get('grade_underpass', 0)} underpass meshes",
+                flush=True,
+            )
+    buckets: dict[tuple[str, int], dict] = {}
+    has_kind = "mesh_kind" in gdf.columns
+    has_key = "mesh_key" in gdf.columns
+    has_layer = "mesh_layer" in gdf.columns
+    for rec in gdf.itertuples(index=False):
+        kind = "road"
+        key = 0
+        mesh_layer = 0
+        if has_kind:
+            kind = str(getattr(rec, "mesh_kind", "road") or "road").strip() or "road"
+        if has_key:
+            try:
+                key = int(getattr(rec, "mesh_key", 0) or 0)
+            except (TypeError, ValueError):
+                key = 0
+        if has_layer:
+            try:
+                mesh_layer = int(getattr(rec, "mesh_layer", 0) or 0)
+            except (TypeError, ValueError):
+                mesh_layer = 0
+        if kind == "road":
+            key = 0
+        elif key == 0:
+            try:
+                key = int(getattr(rec, "objectid", 0) or 0)
+            except (TypeError, ValueError):
+                key = 0
+        polys = _polys_of(rec.geometry)
+        if not polys:
             continue
-        if geom.geom_type == "MultiPolygon":
-            polys.extend(part for part in geom.geoms if part.geom_type == "Polygon" and part.area > 1.0)
-        elif geom.geom_type == "Polygon" and geom.area > 1.0:
-            polys.append(geom)
-    if not polys:
+        slot = buckets.setdefault((kind, key), {"polys": [], "layer": mesh_layer})
+        slot["polys"].extend(polys)
+        slot["layer"] = mesh_layer
+    for (kind, _key), slot in buckets.items():
+        if kind == "road" or len(slot["polys"]) < 2:
+            continue
+        merged = shapely.make_valid(shapely.union_all(slot["polys"]))
+        merged = shapely.make_valid(merged.buffer(0.5).buffer(-0.5))
+        closed = _polys_of(merged)
+        if closed:
+            slot["polys"] = closed
+    groups = []
+    for (kind, key), slot in sorted(
+        buckets.items(), key=lambda item: (0 if item[0][0] == "road" else 1, item[0][0], item[0][1])
+    ):
+        groups.append(
+            {
+                "kind": kind,
+                "key": int(key),
+                "layer": int(slot["layer"]),
+                "prefix": _mesh_prefix(kind, key),
+                "polys": slot["polys"],
+            }
+        )
+    if not groups:
         raise SystemExit(f"no polygons in {path} layer {layer}")
+    n_poly = sum(len(g["polys"]) for g in groups)
     stats = {
         "clip": str(path),
         "layer": layer,
-        "polygons": len(polys),
+        "polygons": n_poly,
+        "mesh_layers": [
+            {"kind": g["kind"], "key": g["key"], "polygons": len(g["polys"])} for g in groups
+        ],
         "main_only": bool(main_only),
     }
-    print(f"clip {layer}: {len(polys)} polygons from {path}", flush=True)
-    return polys, stats
+    extra = ", ".join(
+        f"{g['kind']}:{g['key']}x{len(g['polys'])}" for g in groups if g["kind"] != "road"
+    )
+    print(
+        f"clip {layer}: {n_poly} polygons in {len(groups)} mesh layers"
+        + (f" ({extra})" if extra else ""),
+        flush=True,
+    )
+    return groups, stats
 
 
 def main() -> None:
@@ -1275,68 +1387,130 @@ def main() -> None:
         height_label = "filtered corridor"
     if z.ndim == 3:
         z = z[..., 0]
-    grid = {
-        "z": z,
+    frame = {
         "xmin": float(index["xmin"]),
         "ymin": float(index["ymin"]),
         "xmax": float(index["xmax"]),
         "ymax": float(index["ymax"]),
     }
+    z_top = z
+    z_by_layer: dict[int, np.ndarray] = {0: z_top}
+    if heights_arg:
+        parent = Path(heights_arg).parent
+        layer0_path = parent / "04_layer0.tif"
+        if layer0_path.is_file():
+            z0 = np.asarray(tiff.imread(layer0_path), dtype=np.float32)
+            if z0.ndim == 3:
+                z0 = z0[..., 0]
+            if z0.shape == z_top.shape:
+                z_by_layer[0] = z0
+                print(f"layer 0 heights {layer0_path.name}", flush=True)
+        under_path = parent / "04_under.tif"
+        if under_path.is_file():
+            z1 = np.asarray(tiff.imread(under_path), dtype=np.float32)
+            if z1.ndim == 3:
+                z1 = z1[..., 0]
+            if z1.shape == z_top.shape:
+                z_by_layer[1] = z1
+                print(f"layer 1 heights {under_path.name}", flush=True)
+            else:
+                print(
+                    f"04_under.tif shape {z1.shape} != heights {z_top.shape}, ignored",
+                    flush=True,
+                )
     polys_arg = _arg_value("--clip")
     clip_layer = _arg_value("--clip-layer") or "ribbon"
     if polys_arg:
-        polys, poly_stats = _load_clip_polygons(
+        groups, poly_stats = _load_clip_polygons(
             Path(polys_arg), clip_layer, main_only="--clip-main" in sys.argv
         )
-        clip_label = f"{clip_layer}; partial quads cut onto the boundary with surface z"
+        clip_label = f"{clip_layer}; one 2.5D mesh per grade-separated layer"
     else:
         polys, poly_stats = _carriageway_polygons(site, proc, sc)
+        groups = [{"kind": "road", "key": 0, "layer": 0, "prefix": "part_", "polys": polys}]
         clip_label = "landnutzung polygon; partial quads cut onto the boundary with surface z"
-    tree = STRtree(polys)
     print(f"road grid: {height_label}", flush=True)
-    grid["polys"] = polys
-    grid["tree"] = tree
-    grid["mask"] = _clip_mask(z, grid, polys, tree)
-    n_road = int(grid["mask"].sum()) - _drop_orphan_cells(grid)
-    n_band, n_smooth, n_out = _smooth_edge_heights(grid)
-    print(
-        f"edge band {EDGE_BAND_M:.0f} m, cells filled {n_band}, "
-        f"smoothed {n_smooth}, outside {n_out}",
-        flush=True,
-    )
-    _write_mask(proc, grid, poly_stats)
+
+    all_polys = [p for g in groups for p in g["polys"]]
+    overview = dict(frame)
+    overview["z"] = z_top
+    tree_all = STRtree(all_polys) if all_polys else STRtree([])
+    overview["mask"] = _clip_mask(z_top, overview, all_polys, tree_all)
+    _write_mask(proc, overview, poly_stats)
     if "--masks-only" in sys.argv:
         return
-    if n_road == 0:
-        raise SystemExit("no road cells")
 
     out_dir = proc / "road_grid"
     out_dir.mkdir(parents=True, exist_ok=True)
     for old in out_dir.glob("*.dae"):
         old.unlink()
-    _write_surface(out_dir, grid)
-    written: list[dict] = []
-    covered: set = set()
-    _emit_rows(
-        grid, sc,
-        r0=0, r1=int(grid["mask"].shape[0]),
-        z_min=z_min, max_h=max_h,
-        out_dir=out_dir, written=written, covered=covered,
-    )
-    print(
-        f"  mesh parts={len(written)} boundary_quads={int(grid.get('clip_quads') or 0)}",
-        flush=True,
-    )
 
-    missing = []
-    rr, cc = np.nonzero(grid["mask"])
-    for r, c in zip(rr.tolist(), cc.tolist()):
-        if (int(r), int(c)) not in covered:
-            missing.append((int(r), int(c)))
-    if missing:
-        raise SystemExit(
-            f"{len(missing)} road cells have no face, first {missing[:5]}"
+    written: list[dict] = []
+    clamp_z = None
+    n_road = 0
+    col_verts = 0
+    col_tris = 0
+    clip_quads = 0
+    for group in groups:
+        polys = group["polys"]
+        if not polys:
+            continue
+        layer = int(group.get("layer") or 0)
+        z_src = z_by_layer.get(layer, z_top)
+        z_layer = z_src.copy()
+        grid = dict(frame)
+        grid["z"] = z_layer
+        tree = STRtree(polys)
+        grid["polys"] = polys
+        grid["tree"] = tree
+        grid["mask"] = _clip_mask(z_layer, grid, polys, tree)
+        n_layer = int(grid["mask"].sum()) - _drop_orphan_cells(grid)
+        if n_layer == 0:
+            print(f"  skip {group['prefix']}: no cells", flush=True)
+            continue
+        n_band, n_smooth, n_out = _smooth_edge_heights(grid)
+        print(
+            f"  {group['prefix']} cells={n_layer} edge filled {n_band}, "
+            f"smoothed {n_smooth}, outside {n_out}",
+            flush=True,
         )
+        layer_written: list[dict] = []
+        covered: set = set()
+        _emit_rows(
+            grid, sc,
+            r0=0, r1=int(grid["mask"].shape[0]),
+            z_min=z_min, max_h=max_h,
+            out_dir=out_dir, written=layer_written, covered=covered,
+            prefix=group["prefix"],
+        )
+        missing = []
+        rr, cc = np.nonzero(grid["mask"])
+        for r, c in zip(rr.tolist(), cc.tolist()):
+            if (int(r), int(c)) not in covered:
+                missing.append((int(r), int(c)))
+        if missing:
+            raise SystemExit(
+                f"{group['prefix']}: {len(missing)} road cells have no face, first {missing[:5]}"
+            )
+        _assert_sealed(grid, sc)
+        for item in layer_written:
+            item["kind"] = group["kind"]
+            item["key"] = group["key"]
+        written.extend(layer_written)
+        n_road += n_layer
+        col_verts += int(grid.get("col_verts") or 0)
+        col_tris += int(grid.get("col_tris") or 0)
+        clip_quads += int(grid.get("clip_quads") or 0)
+        clamp_z = _nanmin_stack(clamp_z, _surface_array(grid))
+        print(
+            f"  {group['prefix']} parts={len(layer_written)} "
+            f"boundary_quads={int(grid.get('clip_quads') or 0)}",
+            flush=True,
+        )
+
+    if not written or clamp_z is None:
+        raise SystemExit("no road cells")
+    _write_surface(out_dir, {**frame, "z": clamp_z, "mask": np.isfinite(clamp_z)}, z=clamp_z)
 
     _write_material(out_dir / "main.materials.json")
     n_vert = sum(item["verts"] for item in written)
@@ -1348,24 +1522,25 @@ def main() -> None:
         "clip": clip_label,
         "polygons": poly_stats,
         "road_cells": n_road,
-        "covered_cells": len(covered),
         "parts": len(written),
         "verts": n_vert,
         "tris": n_tri,
         "max_edge_m": MAX_EDGE_M,
-        "geometry": "finite, edge<=40m, area>0, normal up, seams sealed",
+        "geometry": "finite, edge<=40m, area>0, normal up, seams sealed per layer",
         "tiles": written,
     }
     (out_dir / "road_grid_index.json").write_text(
         json.dumps(report, indent=2) + "\n", encoding="utf-8"
     )
-    _assert_sealed(grid, sc)
     entries = [_entry(level_name, item["name"]) for item in written]
     _inject(level_name, entries, out_dir)
+    n_over = sum(1 for item in written if item.get("kind") == "overpass")
+    n_under = sum(1 for item in written if item.get("kind") == "underpass")
     print(
-        f"Road grid: {n_road} cells, all covered, {len(written)} parts, "
+        f"Road grid: {n_road} cells, {len(written)} parts "
+        f"({n_over} overpass, {n_under} underpass), "
         f"{n_vert} verts, {n_tri} tris, "
-        f"collision {int(grid.get('col_verts') or 0)} verts / {int(grid.get('col_tris') or 0)} tris, "
+        f"collision {col_verts} verts / {col_tris} tris, "
         f"geometry ok",
         flush=True,
     )

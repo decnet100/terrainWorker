@@ -100,22 +100,21 @@ class SiteCoords:
         mpp = float(bng.get("meters_per_pixel", 1.0))
         size = int(bng.get("mask_size", 512))
         self.square_m = mpp
-        # Object space used by decals and by heightmap painters that still
-        # index pixels with (mask_size). Not where the game draws a sample.
+        # mask_size * square_m. Only a size, not a coordinate span: the game
+        # draws sample i at i * square_m, so the bbox is stretched onto
+        # terrain_span, never onto terrain_extent.
         self.terrain_extent = size * mpp
         # squareSize stays 1 m. Sample i is drawn at i * square_m, so the
         # last sample of an 8192 map sits at 8191 m, not at 8192 m.
         self.terrain_span = (size - 1) * mpp
 
     def beamng_to_crs(self, bx: float, by: float) -> tuple[float, float]:
-        lx = bx / self.terrain_extent * self.bw
-        ly = by / self.terrain_extent * self.bh
-        return self.xmin + lx, self.ymin + ly
+        """Same lattice as crs_to_terrain. Pixel c of the heightmap is at c * square_m."""
+        return self.terrain_to_crs(bx, by)
 
     def crs_to_beamng(self, x: float, y: float) -> tuple[float, float]:
-        lx = x - self.xmin
-        ly = y - self.ymin
-        return lx / self.bw * self.terrain_extent, ly / self.bh * self.terrain_extent
+        """Same lattice as crs_to_terrain. Pixel c of the heightmap is at c * square_m."""
+        return self.crs_to_terrain(x, y)
 
     def crs_to_terrain(self, x: float, y: float) -> tuple[float, float]:
         """World XY on the heightmap lattice. squareSize stays square_m."""

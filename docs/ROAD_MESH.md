@@ -38,7 +38,7 @@ Inject kommen.
 | Fläche und Achse | `centerline_shift_taper/centerline_shift.gpkg`, Layer `carriageway` und `centerline`. Landes- und Bundesstraßen, Autobahnen, und Gemeindestraße `S-G` (5 m, wenn keine gemessene Breite vorliegt). `S-GW` ist kein Mesh |
 | Rahmen | xmin 26316, ymin 232503, xmax 34316, ymax 239159, 16000×13312, 0,5 m. Zeile 0 ist Norden. Die World-Datei nennt die Zellmitte, der GeoTIFF-Anker die äußere Nordwest-Ecke |
 | Rauheit | Betrag der Abweichung vom Mittel in einem Fenster von 1,5 m, nur auf der Fahrbahn (`_road_only`). Schwelle `DROP_ROUGH_M` = 1,5 cm |
-| Kunstbauten | Layer `segments`, `structure = 1`. Diese Spannen sind weder Stützstelle noch Ziel |
+| Kunstbauten | Layer `segments`, `structure = 1`. Diese Spannen sind weder Stützstelle noch Ziel. Ein GIP-Brückenstück, dessen Flag `bridge: false` ist (DGM ist schon die Fahrbahn, oder die DGM-Fläche *ist* das obere Deck), bleibt `structure = 0` und bekommt eine Fahrbahn aus dem DGM |
 
 Die Spiel-Heightmap ist ein anderes Raster: 8192 Knoten, `squareSize` 1,0 m, fest. Knoten `i` wird bei `i` m gezeichnet, die Bounding-Box liegt also auf dem Span 8191 m (`crs_to_terrain`). Seit der Umstellung rechnen `crs_to_beamng` und `beamng_to_crs` mit demselben Span; GIP-Knoten, Decals, Guardrails, Masken und die Basis-Heightmap aus `build_smoke.py` liegen auf diesem Gitter. Pixel aus BeamNG-Metern: `px = bx / squareSize`, nicht `bx / extent · (n − 1)`. Level, die vor der Umstellung erzeugt wurden, haben Objekte bis 1 m zu weit vom Ursprung; sie müssen neu gebaut werden. `squareSize` nicht anfassen.
 
@@ -320,6 +320,32 @@ Danach `apply_corridor_dgm.py` für die Heightmap-Klammer, Import von
 `terrainPreset.json`, BeamNG ganz beenden und neu starten. Die Klammer liest
 `road_grid/road_grid_z.tif`; ein älterer Stand der Heightmap passt nicht zu
 einem neu gebauten Mesh.
+
+## Mehrere Meshes an der Kreuzung ohne Knoten
+
+Ein 2,5D-Raster hat eine Höhe je XY. Brücke und Unterführung liegen in der
+Draufsicht übereinander, in der Höhe mehrere Meter auseinander. Sie können
+nicht in derselben COLLADA-Fläche liegen: die Kante würde die 8 m Höhenunterschied
+über eine Zelle triangulieren.
+
+Der Routing-Graph markiert genau diese Stellen (`LEVEL_INTERMEDIATE`, keine
+gemeinsame Node). Jedes WFS-Stück hängt an einer Kante, nicht an überlappender
+Geometrie; Deck und Unterführung werden nicht in ein Polygon gelegt.
+`smooth_road_surface.py` schreibt die untere Fläche nach `04_under.tif` und
+lässt beide Polygone vollständig. `build_road_grid.py` schneidet dann getrennte
+Meshes:
+
+| Dateiname | Inhalt |
+|---|---|
+| `part_NNN.dae` | Fahrbahn in einer Ebene, ohne die gestapelten Paare |
+| `over{OBJECTID}_NNN.dae` | obere Fläche (Brücke) |
+| `under{OBJECTID}_NNN.dae` | untere Fläche (Unterführung) |
+| `span{OBJECTID}_NNN.dae` | dieselbe Straße ist an einer Stelle oben und an einer anderen unten |
+
+An so einer Stelle liegen mindestens zwei Meshes im Level. Die Heightmap-Klammer
+nimmt dort die untere Fläche, damit das Gelände nicht bis an das Deck darf.
+Der Randstreifen (`EDGE_BAND_M`, Spender `EDGE_DONOR_M`) läuft nur innerhalb
+desselben Meshes, nicht von der Brücke in die Unterführung.
 
 ## Brückenversuch
 

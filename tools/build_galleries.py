@@ -574,6 +574,18 @@ def resolve_gallery_cfg(defaults: dict, items: list, feat: dict) -> dict:
             cfg["wall_radius_m"] = 4.5
         if float(cfg.get("clear_height_m") or 0.0) < 4.0:
             cfg["clear_height_m"] = 4.0
+    if feat.get("from_cover"):
+        # Road mesh is the floor. This builder only does the tube and doors.
+        cfg["clear_height_m"] = float(feat.get("clear_height_m") or 4.0)
+        cfg["deck_enabled"] = False
+        cfg["hole_mode"] = "portals"
+        cfg["portal_hole"] = True
+        cfg["portal_seat"] = True
+        cfg["open_side"] = "none"
+        cfg["fitout"] = "auto"
+        cfg["width_from_road"] = True
+        cfg["z_profile"] = "road"
+        cfg["terrain_roof"] = "none"
     if matched:
         for k in GALLERY_SCALAR_KEYS:
             if k in matched:
@@ -873,6 +885,96 @@ def gallery_features(site: dict, sc: SiteCoords) -> list[dict]:
                 "xy": xy,
             }
         )
+    out.extend(_features_from_cover_flags(site, sc, data, to_site, skip_oids))
+    return out
+
+
+def _features_from_cover_flags(
+    site: dict,
+    sc: SiteCoords,
+    data: dict,
+    to_site,
+    skip_oids: set[int],
+) -> list[dict]:
+    """Turn a DGM-cover bridge claim into a tunnel on the lower road.
+
+    Shell, portals, hole and fitout stay in this builder. The driving surface
+    is the road mesh (``deck_enabled`` off), not a second MeshRoad.
+    """
+    from gip_bridge_flags import cover_records
+    from shapely.geometry import LineString
+
+    recs = cover_records(site)
+    if not recs:
+        return []
+    want = {r["cover_oid"] for r in recs}
+    for r in recs:
+        want.update(r["under_oids"])
+    by_oid: dict[int, dict] = {}
+    from authorities import gip_source_oid, stamp_gip_props
+
+    for f in data.get("features") or []:
+        props = stamp_gip_props(site, f.get("properties") or {})
+        try:
+            oid = int(props.get("OBJECTID"))
+        except (TypeError, ValueError):
+            continue
+        if oid not in want:
+            continue
+        raw_pts: list = []
+        bb._walk_coords((f.get("geometry") or {}).get("coordinates"), raw_pts)
+        xy = []
+        for lon, lat, *_ in raw_pts:
+            x, y = to_site.transform(float(lon), float(lat))
+            bx, by = sc.crs_to_terrain(x, y)
+            if -50 <= bx <= sc.terrain_span + 50 and -50 <= by <= sc.terrain_span + 50:
+                xy.append((bx, by))
+        if len(xy) < 2:
+            continue
+        by_oid[oid] = {
+            "xy": xy,
+            "name": str(props.get("STRNAME") or props.get("OBJEKTBEZEICHNUNG") or ""),
+            "str_code": props.get("STR_CODE"),
+            "width_m": props.get("Shape__Length"),
+        }
+    out = []
+    for r in recs:
+        up = by_oid.get(r["cover_oid"])
+        if up is None or len(up["xy"]) < 2:
+            continue
+        up_line = LineString(up["xy"])
+        host = up_line.buffer(max(6.0, 0.5 * 9.0) + 2.0)
+        for uoid in r["under_oids"]:
+            if uoid in skip_oids:
+                continue
+            low = by_oid.get(uoid)
+            if low is None or len(low["xy"]) < 2:
+                continue
+            low_line = LineString(low["xy"])
+            hit = low_line.intersection(host)
+            if hit.is_empty:
+                continue
+            if hit.geom_type == "MultiLineString":
+                hit = max(hit.geoms, key=lambda g: g.length)
+            if hit.geom_type != "LineString" or hit.length < 2.0:
+                continue
+            xy = [(float(x), float(y)) for x, y in hit.coords]
+            if len(xy) < 2:
+                continue
+            name = (low.get("name") or "").strip() or f"Unterführung {uoid}"
+            out.append(
+                {
+                    "kind": "tunnel",
+                    "from_cover": True,
+                    "cover_oid": r["cover_oid"],
+                    "clear_height_m": r["clear_height_m"],
+                    "name": name,
+                    "objectid": uoid,
+                    "str_code": low.get("str_code"),
+                    "length_m": round(hit.length, 1),
+                    "xy": xy,
+                }
+            )
     return out
 
 

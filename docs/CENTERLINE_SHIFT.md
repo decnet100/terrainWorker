@@ -32,7 +32,7 @@ read that folder.
 - GIP centerlines transformed to EPSG:31254 with the BEV grid. Main route only (`STR_CODE` matching `^[ABL]`, plus `OBJEKT` `S-A`).
 - Measured width `width_mean_m` from `data/roads/gip_widths.json`.
 - Raw corridor DGM `data/processed/tirol-imst-8192/corridor50_raw/corridor50_raw.tif`. The smoothed `filtered_7c_10d.tif` is not used.
-- Bridge, tunnel and gallery pieces stay at offset 0. They are not neighbours for the matching step. The DGM there is not the deck.
+- Bridge, tunnel and gallery pieces stay at offset 0. They are not neighbours for the matching step. The DGM there is not the deck. Their centerline is written unshifted, so both approaches of a bridge join onto one axis. The carriageway ribbon is not written.
 
 ## Roughness
 

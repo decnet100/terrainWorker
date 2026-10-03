@@ -36,8 +36,8 @@ def _load_hm(path: Path, max_h: float) -> np.ndarray:
 
 def _z_at(elev: np.ndarray, bx: float, by: float, extent: float) -> float:
     n = int(elev.shape[0])
-    px = bx / extent * (n - 1)
-    py = (1.0 - by / extent) * (n - 1)
+    px = bx / extent * n
+    py = (n - 1) - by / extent * n
     px = max(0.0, min(n - 1.001, px))
     py = max(0.0, min(n - 1.001, py))
     c0 = int(math.floor(px))

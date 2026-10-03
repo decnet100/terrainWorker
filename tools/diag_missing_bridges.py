@@ -79,8 +79,8 @@ def _load_heightmap_z(proc: Path, *, size: int) -> tuple[callable, str, float]:
 
     def z_at(bx: float, by: float) -> float:
         # Bilinear in pixel space; BeamNG origin at lower-left in our convention.
-        px = max(0.0, min(float(n - 1), float(bx) / extent * (n - 1)))
-        py = max(0.0, min(float(n - 1), (1.0 - float(by) / extent) * (n - 1)))
+        px = max(0.0, min(float(n - 1), float(bx) / extent * n))
+        py = max(0.0, min(float(n - 1), (n - 1) - float(by) / extent * n))
         x0 = int(math.floor(px))
         y0 = int(math.floor(py))
         x1 = min(x0 + 1, n - 1)
@@ -230,6 +230,8 @@ _OBJEKT_KIND = {
     "S-BG": "gallery",
     "S-AB": "bridge",
     "S-BB": "bridge",
+    "S-LB": "bridge",
+    "S-GB": "bridge",
 }
 
 

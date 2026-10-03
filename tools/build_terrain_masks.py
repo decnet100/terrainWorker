@@ -171,9 +171,13 @@ def _to_px_geo(lx: float, ly: float, size: int) -> tuple[float, float]:
 
 
 def _to_px_beamng(bx: float, by: float, size: int) -> tuple[float, float]:
-    """BeamNG terrain meters (square extent) → PNG pixel (row0 = north)."""
-    px = bx / TERRAIN_EXTENT * (size - 1)
-    py = (1.0 - by / TERRAIN_EXTENT) * (size - 1)
+    """BeamNG terrain meters → PNG pixel (row0 = north).
+
+    Pixel c is drawn at c * square_m, so a map of ``size`` samples spans
+    (size - 1) * square_m. Same lattice as the road mesh and the guardrails.
+    """
+    px = bx / TERRAIN_EXTENT * size
+    py = (size - 1) - by / TERRAIN_EXTENT * size
     return px, py
 
 
@@ -769,7 +773,7 @@ def _stroke_road_nodes(
     min_width_m: float = 2.0,
 ) -> int:
     """Paint asphalt + shoulder strokes from a roads_beamng-style dict. Returns count."""
-    m_per_px = TERRAIN_EXTENT / max(size - 1, 1)
+    m_per_px = TERRAIN_EXTENT / max(size, 1)
     scale = ROAD_WIDTH_SCALE if width_scale is None else float(width_scale)
     skip = {str(x).upper().strip() for x in (skip_objekt or ())}
     only = {str(x).upper().strip() for x in (only_objekt or ())}
@@ -822,12 +826,17 @@ def road_masks(size: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
             json.loads(path.read_text(encoding="utf-8")), size, draw_a, draw_s
         )
 
-    decal_src = str(
-        ((SITE.get("beamng") or {}).get("decal_roads") or {}).get("centerline_source")
-        or ""
-    ).lower()
+    bng_cfg = SITE.get("beamng") or {}
+    decal_src = str((bng_cfg.get("decal_roads") or {}).get("centerline_source") or "").lower()
+    rails_src = str((bng_cfg.get("guardrails") or {}).get("centerline") or "").lower()
+    roads_type = str(((SITE.get("sources") or {}).get("roads") or {}).get("type") or "").lower()
+    gip_axis = (
+        decal_src in ("gip", "verkehrswege", "objectid", "oid")
+        or rails_src == "gip"
+        or roads_type == "gip"
+    )
     gip_path = PROC / "gip_roads_beamng.json"
-    if decal_src in ("gip", "verkehrswege", "objectid", "oid") and gip_path.is_file():
+    if gip_axis and gip_path.is_file():
         gip_roads = json.loads(gip_path.read_text(encoding="utf-8"))
         n_gip = _stroke_road_nodes(
             gip_roads,
@@ -857,7 +866,7 @@ def road_masks(size: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     shoulder = np.array(shoulder_img, dtype=np.uint8) > 0
     if gravel.any():
         # Eat leftover OSM asphalt rims around the 4 m forest track.
-        m_per_px = TERRAIN_EXTENT / max(size - 1, 1)
+        m_per_px = TERRAIN_EXTENT / max(size, 1)
         pad_px = max(1, int(round(2.0 / m_per_px)))
         g_img = Image.fromarray(gravel.astype(np.uint8) * 255, mode="L")
         for _ in range(pad_px):
@@ -880,7 +889,7 @@ def bridge_under_mask(size: int, margin_m: float = 0.5) -> np.ndarray:
     if not path.exists():
         return np.zeros((size, size), dtype=bool)
 
-    m_per_px = TERRAIN_EXTENT / max(size - 1, 1)
+    m_per_px = TERRAIN_EXTENT / max(size, 1)
     draw = ImageDraw.Draw(img)
     data = json.loads(path.read_text(encoding="utf-8"))
     n_decks = 0
@@ -921,7 +930,7 @@ def gallery_roof_mask(size: int, margin_m: float = 1.5) -> tuple[np.ndarray, np.
     if not path.exists():
         return empty, empty
 
-    m_per_px = TERRAIN_EXTENT / max(size - 1, 1)
+    m_per_px = TERRAIN_EXTENT / max(size, 1)
     img_force = Image.new("L", (size, size), 0)
     img_keep = Image.new("L", (size, size), 0)
     draw_f = ImageDraw.Draw(img_force)
@@ -1016,7 +1025,7 @@ def gallery_span_omit_mask(size: int, margin_m: float = 1.5) -> np.ndarray:
     empty = np.zeros((size, size), dtype=bool)
     if not path.exists():
         return empty
-    m_per_px = TERRAIN_EXTENT / max(size - 1, 1)
+    m_per_px = TERRAIN_EXTENT / max(size, 1)
     img = Image.new("L", (size, size), 0)
     draw = ImageDraw.Draw(img)
     data = json.loads(path.read_text(encoding="utf-8"))

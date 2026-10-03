@@ -82,7 +82,7 @@ def _synthetic() -> int:
     out_w, out_x = _run_pair(roads, elev, size=size, extent=extent, max_h=20.0, falloff_m=6.0)
     # Pixel row: py = (1 - by/extent) * (size-1)
     def row_for(by: float) -> int:
-        return int(round((1.0 - by / extent) * (size - 1)))
+        return int(round((size - 1) - by / extent * size))
 
     r_hi = row_for(28.0)
     r_lo = row_for(36.0)

@@ -211,9 +211,66 @@ After offset joints, runs are split (same idea as gallery portal clip):
 |-------|---------|
 | `STR_CODE` / `STRNAME` | road id (L13, …) |
 | `KUNSTBAUTEN` | structure name (gallery, bridge, …) or empty |
-| `OBJEKT` | class: `S-A` through Autobahn, `S-AR`/`S-AP` one-lane ramps, `S-AT` tunnel, `S-AB` bridge; `S-B` / `S-BR` / `S-BP` / `S-BT` / `S-BB` analog. Stronger than `KUNSTBAUTEN` for tunnel/bridge. Galleries are often `S-AT`/`S-BT` and still need the name (`Galerie`). |
+| `OBJEKT` | class: `S-A` Autobahn (`S-AB` bridge, `S-AT` tunnel), `S-B` Bundesstraße (`S-BB` bridge, `S-BT` tunnel), `S-L` Landesstraße (`S-LB` bridge, `S-LT` tunnel), `S-G` Gemeindestraße (`S-GB` bridge). Ramps `S-AR`/`S-AP`/`S-BR`/`S-BP`. Stronger than `KUNSTBAUTEN` for tunnel/bridge. Galleries are often `S-AT`/`S-BT` and still need the name (`Galerie`). |
 | `OBJEKTBEZEICHNUNG` | type in plain language |
 | `Shape__Length` | segment length (m) |
+
+## Routing graph (dataset A)
+
+The WFS lines have no topology. The national IDF export (`routingexport_ogd.txt`)
+is the official node-link graph. IDs do not match Tirol `OBJECTID`; the loader
+joins by geometry.
+
+```powershell
+cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/imst.yaml"; python tools\gip_routing_load.py
+```
+
+Path: `--idf`, or `sources.gip.routing_idf`, or
+`data/raw/gip_routingexport/routingexport_ogd.txt`. Output:
+
+- `data/processed/<site>/gip_routing/gip_routing.json` — nodes, links, turns,
+  grade-separated crossings, join onto each Verkehrswege `OBJECTID`
+- `gip_routing.gpkg` — the same for QGIS (`node`, `link`, `crossing`,
+  `bridge_ref`, `road_join`)
+
+A shared routing node means an at-grade junction. Two links that cross without
+a node, with different `LEVEL_INTERMEDIATE`, are an under-/overpass. Later
+tools import `load_routing`, `roads_share_node`, `roads_share_link`,
+`roads_grade_cross` from `tools/gip_routing_load.py`.
+`smooth_road_surface.py` and `build_road_grid.py` group WFS pieces by their
+routing link, not by overlapping geometry. Each piece is assigned to one
+link. A grade-separated crossing (no shared node, different
+`LEVEL_INTERMEDIATE`) is not clipped in XY: the upper road is one mesh, the
+lower road another. Both keep their full polygons.
+
+GIP `S-BB` is a *claim*, not the construction type. `gip_bridge_flags.py`
+looks at the DGM along that piece:
+
+| DGM along the claimed piece | Other road under it | Result |
+|---|---|---|
+| Follows the piece (dip &lt; 1 m) | no | Ordinary carriageway from the DGM (`no_opening`) |
+| Follows the piece | yes | DGM *is* the upper road. No deck plate. Lower road is the underpass (`cover_is_dgm`) |
+| Sags under the chord, or DOM sits well above DGM | — | Bridge: stamp a deck from the surface model |
+
+`cover_is_dgm` does not become `S-BT` on the upper road. The upper OBJECTID
+stays a carriageway (`S-B` / `S-A` / `S-L`). The lower OBJECTIDs in
+`under_oids` are fed into `build_galleries.py` as a short tunnel: same
+portals, hole, and (if the bore is long enough) lamps and fans. The road
+mesh is the driving surface (`deck_enabled: false`). Clearance is
+`min(4.0, dz_under_m − 1.0)`. A tube keeps its GIP width in the
+centerline shift and in the S-G polygon pinch (it makes its own space).
+
+A crossing without a shared node and with different `LEVEL_INTERMEDIATE`
+is already a separate over-/underpass mesh. An S-G on the upper side is
+`routing_over` until the surface model is checked. If that model stays at
+least 1.5 m above the DGM for 4 m and for half the piece, the piece is at most 160 m, and the
+road below is not a footpath, the piece becomes a bridge (`dom_deck`).
+The deck stamp then copies the DOM. GIP Z is not used for that test: on
+18904 it follows the DGM down onto the B189, while the DOM holds the plate.
+
+```powershell
+cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/imst.yaml"; python tools\build_galleries.py
+```
 
 ### L13 Kühtai crop (2048²)
 

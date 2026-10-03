@@ -153,6 +153,12 @@ def main() -> None:
     z_min = float(meta["z_min_m"])
     scale = extent / (size - 1)
 
+    from gip_bridge_flags import cover_bore_union
+
+    bore = cover_bore_union(site)
+    if bore is not None:
+        print("cover bore: skip heightmap clamp (DGM stays the upper road)", flush=True)
+
     raw_path = proc / "corridor50_raw" / "corridor50_raw.tif"
     if not raw_path.is_file():
         raise SystemExit(f"missing {raw_path}")
@@ -217,9 +223,12 @@ def main() -> None:
         sampled = _bilinear(raw, fx, fy)
         good = inside & np.isfinite(sampled) & (sampled > 50.0) & (sampled < 4500.0)
         cap_rel = None
+        in_bore = np.zeros(gx.shape, dtype=bool)
+        if bore is not None:
+            in_bore = shapely.contains_xy(bore, gx.ravel(), gy.ravel()).reshape(gx.shape)
         if road is not None and road_arr is not None:
             on_road = shapely.contains_xy(road, gx.ravel(), gy.ravel()).reshape(gx.shape)
-            deck = on_road & good
+            deck = on_road & good & ~in_bore
             if np.any(deck):
                 rz = np.full(gx.shape, np.nan, dtype=np.float64)
                 rh, rw = road_arr.shape[:2]
@@ -254,7 +263,7 @@ def main() -> None:
                     n_deck += n
         if band is not None and tree is not None:
             near = shapely.contains_xy(band, gx.ravel(), gy.ravel()).reshape(gx.shape)
-            hit = near & good
+            hit = near & good & ~in_bore
             if np.any(hit):
                 rows, cols = np.nonzero(hit)
                 dist, idx = tree.query(

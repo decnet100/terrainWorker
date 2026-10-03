@@ -176,8 +176,8 @@ def _load_z_at(proc: Path, size: int, extent: float):
     n = int(hm.shape[0])
 
     def z_at(bx: float, by: float) -> float:
-        px = max(0.0, min(float(n - 1), bx / extent * (n - 1)))
-        py = max(0.0, min(float(n - 1), (1.0 - by / extent) * (n - 1)))
+        px = max(0.0, min(float(n - 1), bx / extent * n))
+        py = max(0.0, min(float(n - 1), (n - 1) - by / extent * n))
         x0 = int(math.floor(px))
         y0 = int(math.floor(py))
         x1 = min(x0 + 1, n - 1)

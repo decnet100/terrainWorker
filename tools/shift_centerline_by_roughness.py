@@ -41,6 +41,7 @@ from build_bridges import find_gip_geojson  # noqa: E402
 from build_road_grid import RES_M, _ensure_raw_mosaic, _load_geotiff, _road_mesh_row  # noqa: E402
 from export_gip_width_m import _project, _to_31254  # noqa: E402
 from filter_road_corridor import write_referenced_tif  # noqa: E402
+from gip_bridge_flags import load_flags  # noqa: E402
 from gip_catalog import catalog_segment  # noqa: E402
 from gip_road_segments import _gip_segment_width_m  # noqa: E402
 from site_coords import load_site, processed_dir, site_slug  # noqa: E402
@@ -77,6 +78,7 @@ class Segment:
     nx: float
     ny: float
     structure: bool
+    tube: bool = False
     prev: Segment | None = None
     next: Segment | None = None
     scores: dict[float, dict] = field(default_factory=dict)
@@ -162,11 +164,22 @@ def _left_normal(coords: list[tuple[float, float]]) -> tuple[float, float]:
     return -dy / span, dx / span
 
 
-_STRUCTURE_OBJEKT = {"S-AT", "S-BT", "S-LT", "S-BG", "S-AB", "S-BB"}
+_STRUCTURE_OBJEKT = {"S-AT", "S-BT", "S-LT", "S-BG", "S-AB", "S-BB", "S-LB", "S-GB"}
 
 
-def _is_structure(props: dict) -> bool:
-    """Bridge, tunnel and gallery stay at offset 0. The DGM is not the deck."""
+def _is_structure(props: dict, flag: dict | None = None) -> bool:
+    """Bridge, tunnel and gallery stay at offset 0. The DGM is not the deck.
+
+    The unshifted centerline is still written. A bridge between two approaches
+    is then an axis the connection search can follow to both ends. The
+    carriageway ribbon is not written: repair must not pave the span.
+
+    A GIP bridge claim whose flag is ``bridge: false`` is a carriageway: the
+    DGM already is the driving surface (no opening, or the DGM *is* the
+    upper deck and the structure is the road below).
+    """
+    if flag is not None and "bridge" in flag:
+        return bool(flag.get("bridge"))
     from build_bridges import _structure_kind
 
     kind = _structure_kind(props)
@@ -177,6 +190,30 @@ def _is_structure(props: dict) -> bool:
         return True
     text = f"{props.get('KUNSTBAUTEN') or ''} {props.get('OBJEKTBEZEICHNUNG') or ''}".lower()
     return "unterflur" in text or "unterflur" in text.replace("ü", "u")
+
+
+_TUBE_OBJEKT = frozenset({"S-AT", "S-BT", "S-LT", "S-BG"})
+
+
+def _tube_oids(site: dict) -> set[int]:
+    """Lower roads of a DGM cover, plus GIP tunnel/gallery labels."""
+    from gip_bridge_flags import cover_records
+
+    oids: set[int] = set()
+    for rec in cover_records(site):
+        oids.update(int(x) for x in rec.get("under_oids") or [])
+    return oids
+
+
+def _is_tube(props: dict, oid: int, tube_oids: set[int]) -> bool:
+    """Tube makes its own width. Do not pinch it onto the DGM strip."""
+    if oid in tube_oids:
+        return True
+    from build_bridges import _structure_kind
+
+    if _structure_kind(props) in {"gallery", "tunnel"}:
+        return True
+    return str(props.get("OBJEKT") or "").upper().strip() in _TUBE_OBJEKT
 
 
 def _roughness(z: np.ndarray) -> np.ndarray:
@@ -252,6 +289,8 @@ def _load_segments(site: dict) -> list[Segment]:
     path = find_gip_geojson(site)
     data = json.loads(path.read_text(encoding="utf-8"))
     tf = _to_31254(site, data)
+    flags = load_flags(site) or {}
+    tubes = _tube_oids(site)
     out: list[Segment] = []
     for feat in data.get("features") or []:
         props = feat.get("properties") or {}
@@ -266,10 +305,14 @@ def _load_segments(site: dict) -> list[Segment]:
             oid = int(props.get("OBJECTID"))
         except (TypeError, ValueError):
             continue
+        rec_flag = flags.get(str(oid))
+        if rec_flag and rec_flag.get("objekt"):
+            props = dict(props)
+            props["OBJEKT"] = rec_flag["objekt"]
         rec = catalog_segment(oid) or {}
         width = rec.get("width_mean_m")
         if width is None or float(width) < 1.5:
-            if str(props.get("OBJEKT") or "").upper().strip() != "S-G":
+            if str(props.get("OBJEKT") or "").upper().strip() not in {"S-G", "S-GB", "S-AB", "S-BB", "S-LB"}:
                 continue
             width = _gip_segment_width_m(props, 5.0)
         if width is None or float(width) < 1.5:
@@ -291,7 +334,8 @@ def _load_segments(site: dict) -> list[Segment]:
                     width_m=round(float(width), 2),
                     nx=nx,
                     ny=ny,
-                    structure=_is_structure(props),
+                    structure=_is_structure(props, rec_flag),
+                    tube=_is_tube(props, oid, tubes),
                 )
             )
             cursor += span
@@ -434,28 +478,104 @@ def _classify(seg: Segment) -> str:
     return "pass"
 
 
-def _score_all(segs: list[Segment], rough: np.ndarray, spec: dict) -> None:
-    for n, seg in enumerate(segs, start=1):
-        if seg.structure or seg.nx == 0.0:
-            seg.kind = "structure" if seg.structure else "degenerate"
-            seg.chosen = 0.0
-            seg.width_used_m = seg.width_m
-            continue
+def _score_segment(seg: Segment, rough: np.ndarray, spec: dict) -> None:
+    """Score one piece. Neighbour locking happens later, so pieces are independent."""
+    if seg.structure or seg.nx == 0.0:
+        seg.kind = "structure" if seg.structure else "degenerate"
+        seg.chosen = 0.0
+        seg.width_used_m = seg.width_m
+        return
+    if seg.tube:
         seg.narrow_m = 0.0
-        while True:
-            seg.width_used_m = round(seg.width_m - seg.narrow_m, 2)
-            radius = seg.width_used_m / 2.0
-            if radius < 0.5:
-                break
-            seg.scores = _measure(seg, radius, rough, spec)
-            state = _classify(seg)
-            if state != "fail":
-                break
-            if seg.narrow_m >= MAX_NARROW_M - 1e-6:
-                break
-            seg.narrow_m = round(min(MAX_NARROW_M, seg.narrow_m + WIDTH_STEP_M), 2)
-        if n % 200 == 0:
-            print(f"  scored {n}/{len(segs)}", flush=True)
+        seg.width_used_m = seg.width_m
+        seg.scores = _measure(seg, seg.width_m / 2.0, rough, spec)
+        state = _classify(seg)
+        if state == "fail":
+            seg.kind = "tube"
+            seg.chosen = 0.0
+            seg.passed = True
+        return
+    seg.narrow_m = 0.0
+    while True:
+        seg.width_used_m = round(seg.width_m - seg.narrow_m, 2)
+        radius = seg.width_used_m / 2.0
+        if radius < 0.5:
+            break
+        seg.scores = _measure(seg, radius, rough, spec)
+        state = _classify(seg)
+        if state != "fail":
+            break
+        if seg.narrow_m >= MAX_NARROW_M - 1e-6:
+            break
+        seg.narrow_m = round(min(MAX_NARROW_M, seg.narrow_m + WIDTH_STEP_M), 2)
+
+
+def _score_payload(seg: Segment) -> dict:
+    return {
+        "seg_id": seg.seg_id,
+        "oid": seg.oid,
+        "seq": seg.seq,
+        "coords": seg.coords,
+        "s0": seg.s0,
+        "s1": seg.s1,
+        "width_m": seg.width_m,
+        "nx": seg.nx,
+        "ny": seg.ny,
+        "tube": seg.tube,
+    }
+
+
+def _score_worker(payload: dict) -> dict:
+    from proc_pool import array, extra
+
+    seg = Segment(
+        seg_id=payload["seg_id"],
+        oid=payload["oid"],
+        seq=payload["seq"],
+        coords=payload["coords"],
+        s0=payload["s0"],
+        s1=payload["s1"],
+        width_m=payload["width_m"],
+        nx=payload["nx"],
+        ny=payload["ny"],
+        structure=False,
+        tube=payload["tube"],
+    )
+    _score_segment(seg, array("rough"), extra())
+    return {
+        "kind": seg.kind,
+        "chosen": seg.chosen,
+        "scores": seg.scores,
+        "trials": seg.trials,
+        "good": seg.good,
+        "best": seg.best,
+        "span": seg.span,
+        "narrow_m": seg.narrow_m,
+        "width_used_m": seg.width_used_m,
+        "passed": seg.passed,
+    }
+
+
+def _score_all(segs: list[Segment], rough: np.ndarray, spec: dict) -> None:
+    from proc_pool import Pool, workers
+
+    pending: list[tuple[int, dict]] = []
+    for i, seg in enumerate(segs):
+        if seg.structure or seg.nx == 0.0:
+            _score_segment(seg, rough, spec)
+            continue
+        pending.append((i, _score_payload(seg)))
+    if not pending:
+        return
+    n_workers = min(workers(), len(pending))
+    print(f"  scoring {len(pending)} pieces on {n_workers} workers", flush=True)
+    with Pool({"rough": rough}, spec, n=n_workers) as pool:
+        for n, result in enumerate(pool.imap(_score_worker, (item[1] for item in pending), chunksize=16), start=1):
+            seg = segs[pending[n - 1][0]]
+            for name, value in result.items():
+                setattr(seg, name, value)
+            if n % 400 == 0 or n == len(pending):
+                print(f"  scored {n}/{len(pending)}", flush=True)
 
 
 def _lock_neighbours(segs: list[Segment]) -> None:
@@ -766,8 +886,6 @@ def main() -> None:
                         "narrow_m": seg.narrow_m,
                     }
                 )
-        if any(s.structure for s in group) and all(s.structure for s in group):
-            continue
         moved = _creep_line(group)
         if len(moved) < 2:
             continue
@@ -781,8 +899,13 @@ def main() -> None:
                 "n_segments": len(group),
                 "n_narrowed": len(narrowed),
                 "mean_abs_offset_m": round(float(np.mean([abs(s.chosen) for s in group])), 3),
+                "structure": int(bool(group) and all(s.structure for s in group)),
             }
         )
+        # Offset stays 0, so the line is the original axis. The ribbon would
+        # tell repair to pave the span; that stays omitted.
+        if all(s.structure for s in group):
+            continue
         parts = _tapered_carriageway(moved, group)
         if parts is None:
             continue

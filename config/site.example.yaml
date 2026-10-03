@@ -108,11 +108,17 @@ sources:
     # crs: EPSG:31254            # request CRS; default = GIP authority / site.crs
     # include: bbox              # full Verkehrswege layer in site.bbox (FeatureServer)
     # str_codes: [L13, B179]     # fallback / explicit instead of spatial intersect
+    # routing_idf: data/raw/gip_routingexport/routingexport_ogd.txt  # dataset A; python tools\gip_routing_load.py
 
   # Roofprints (default for beamng.buildings). URL is also the code default.
   # tiris_buildings:
   #   type: featureserver
   #   url: "https://services3.arcgis.com/hG7UfxX49PQ8XkXh/arcgis/rest/services/Gebaeude/FeatureServer/0"
+
+  # Tirol Gewässernetz centerlines (CC BY 3.0 AT). See docs/WATER.md.
+  waterways:
+    type: featureserver
+    url: "https://services3.arcgis.com/hG7UfxX49PQ8XkXh/arcgis/rest/services/Fliessgewaesser/FeatureServer/0/query"
 
 beamng:
   meters_per_pixel: 1.0          # heightmap resolution in the level (starting value)

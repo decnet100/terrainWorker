@@ -423,7 +423,7 @@ def main() -> None:
     sc = SiteCoords(site)
     proc = processed_dir(site)
     cfg = bdr._cfg(site.get("beamng") or {})
-    scale = sc.bw / sc.terrain_extent
+    scale = sc.bw / sc.terrain_span
     src = ROOT / "data" / "raw" / f"dgm_{site_slug(site)}_corridor50"
     if not (src / "corridor_index.json").is_file():
         raise SystemExit(f"missing {src / 'corridor_index.json'}")

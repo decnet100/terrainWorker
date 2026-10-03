@@ -112,8 +112,9 @@ def crop_elev(
 
 def _z_at_u16(u16: np.ndarray, max_h: float, size: int, extent: float, bx: float, by: float) -> float:
     n = int(u16.shape[0])
-    c = int(max(0, min(n - 1, round(bx / extent * (n - 1)))))
-    r = int(max(0, min(n - 1, round((1.0 - by / extent) * (n - 1)))))
+    # Pixel c is drawn at c * square_m (extent / n).
+    c = int(max(0, min(n - 1, round(bx / extent * n))))
+    r = int(max(0, min(n - 1, round((n - 1) - by / extent * n))))
     return float(u16[r, c]) / 65535.0 * max_h
 
 
