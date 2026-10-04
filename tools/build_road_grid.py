@@ -36,7 +36,7 @@ import tifffile as tiff
 import shapely
 from shapely import clip_by_rect, constrained_delaunay_triangles, intersects_xy
 from shapely.errors import GEOSException
-from shapely.geometry import box
+from shapely.geometry import LineString, box
 from shapely.ops import unary_union
 from shapely.strtree import STRtree
 
@@ -49,6 +49,8 @@ from raster_tile_fetch import elevation_nodata_mask
 from measure_gip_widths import _ln_to_31254, _pick_poly, find_landnutzung_geojson, load_street_polygons
 from site_coords import SiteCoords, load_site, processed_dir, site_slug
 
+from mesh_dateinaht import SAMPLE_M, build_seam_chain
+
 ROOT = Path(__file__).resolve().parents[1]
 COLLADA_MAX_VERTS = 65535
 RES_M = 0.5
@@ -57,6 +59,10 @@ UV_M = 6.0
 MAX_EDGE_M = 40.0
 MIN_AREA_M2 = 1.0e-6
 SNAP_M = 1.0e-3
+# Shared cut / outline vertices: round plan XY to millimetres, then store one
+# (x, y, z) for that key so neighbouring mesh parts write the same triple.
+# Do not snap outline verts onto the 0.5 m lattice; that drops odd edge pixels.
+SEAM_DECIMALS = 3
 # Cells this close to the carriageway outline take the road height.
 EDGE_BAND_M = 1.0
 # A donor farther than this belongs to another road.
@@ -67,6 +73,12 @@ RIM_MEDIAN_M = 3.0
 RIM_LOWPASS_SIGMA_M = 4.0
 # An open edge farther inside than this is a hole, not the outline.
 SEAM_INSIDE_M = EDGE_BAND_M + 0.25
+# If the clip still has separate road ribbons (no unify), close hairlines.
+AT_GRADE_CLOSE_M = 0.05
+# Visible concrete box under a DOM deck. Vertical, so the soffit stays parallel.
+DECK_BOX_M = 0.50
+# A cut between mesh parts lies inside the deck. It is not the fascia.
+DECK_BOX_SEAM_M = 0.75
 _MAIN_ROAD_CODE = re.compile(r"^[ABLabl]\d")
 IDENTITY_ROT = [1, 0, 0, 0, 1, 0, 0, 0, 1]
 
@@ -77,11 +89,13 @@ def _cell_on(grid: dict, r: int, c: int) -> tuple[bool, float, float, float]:
     y = float(grid["ymax"]) - (r + 0.5) * RES_M
     if r < 0 or c < 0 or r >= height or c >= width or not grid["mask"][r, c]:
         return False, float("nan"), x, y
-    return True, float(grid["z"][r, c]), x, y
+    # Same sampler as clip vertices. At this cell centre the bilinear weight
+    # sits on (r, c) alone when xmin/ymax/RES match the raster lattice.
+    return True, _sample_z(grid, x, y), x, y
 
 
 def _sample_z(grid: dict, x: float, y: float) -> float:
-    """Height of the filtered surface at an arbitrary plan position."""
+    """Bilinear height of the surface raster at an arbitrary plan position."""
     z = grid["z"]
     height, width = z.shape
     fc = (x - float(grid["xmin"])) / RES_M - 0.5
@@ -262,6 +276,118 @@ def _check_geometry(pos: np.ndarray, faces: np.ndarray, *, stem: str, z_min: flo
         raise SystemExit(f"{stem}: face normal points down")
 
 
+def _load_deck_box(sc: SiteCoords) -> dict | None:
+    """DOM-deck ribbons in terrain XY. Only these faces get the visible box."""
+    path = processed_dir(sc.site) / "dgm_repair_transect" / "carriageway_bridged.gpkg"
+    if not path.is_file():
+        return None
+    import geopandas as gpd
+
+    try:
+        gdf = gpd.read_file(path, layer="bridge_deck")
+    except (ValueError, OSError):
+        return None
+    geoms = [g for g in gdf.geometry if g is not None and not g.is_empty]
+    if not geoms:
+        return None
+
+    def _xy(coords: np.ndarray) -> np.ndarray:
+        out = np.array(coords, dtype=np.float64, copy=True)
+        out[:, 0] = (out[:, 0] - sc.xmin) / sc.bw * sc.terrain_span
+        out[:, 1] = (out[:, 1] - sc.ymin) / sc.bh * sc.terrain_span
+        return out
+
+    moved = [shapely.transform(g, _xy) for g in geoms]
+    return {"union": shapely.union_all(moved), "n": len(moved)}
+
+
+def _append_deck_box(
+    pos: np.ndarray,
+    uv: np.ndarray,
+    faces: np.ndarray,
+    deck: dict,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Soffit and fascia under deck triangles. Top faces stay as they are.
+
+    Bottom and sides use their own vertices, so the crease at the deck edge
+    does not share a normal with the driving surface. The collision mesh is
+    built before this and is not passed in.
+    """
+    union = deck["union"]
+    cent = pos[faces].mean(axis=1)[:, :2]
+    inside = shapely.contains_xy(union, cent[:, 0], cent[:, 1])
+    if not np.any(inside):
+        return pos, uv, faces
+    deck_faces = faces[inside]
+    used = np.unique(deck_faces.reshape(-1))
+    remap = np.full(pos.shape[0], -1, dtype=np.int64)
+    remap[used] = np.arange(pos.shape[0], pos.shape[0] + used.shape[0])
+    bot_pos = pos[used].copy()
+    bot_pos[:, 2] -= DECK_BOX_M
+    bot_uv = uv[used].copy()
+    bot_faces = np.stack(
+        (
+            remap[deck_faces[:, 0]],
+            remap[deck_faces[:, 2]],
+            remap[deck_faces[:, 1]],
+        ),
+        axis=1,
+    )
+    ab = bot_pos[bot_faces[:, 1] - pos.shape[0]] - bot_pos[bot_faces[:, 0] - pos.shape[0]]
+    ac = bot_pos[bot_faces[:, 2] - pos.shape[0]] - bot_pos[bot_faces[:, 0] - pos.shape[0]]
+    if int(np.count_nonzero(np.cross(ab, ac)[:, 2] >= -1.0e-9)):
+        raise SystemExit("deck box: soffit normal does not point down")
+
+    counts: dict[tuple[int, int], int] = {}
+    for tri in deck_faces:
+        a, b, c = int(tri[0]), int(tri[1]), int(tri[2])
+        for edge in ((a, b), (b, c), (c, a)):
+            counts[edge] = counts.get(edge, 0) + 1
+    outline = [(u, v) for (u, v), n in counts.items() if n == 1 and counts.get((v, u), 0) == 0]
+    rim = union.boundary
+    side_at: dict[tuple[int, bool], int] = {}
+    side_pos: list[np.ndarray] = []
+    side_uv: list[np.ndarray] = []
+    side_faces: list[tuple[int, int, int]] = []
+    side_base = int(pos.shape[0] + used.shape[0])
+
+    def side_vert(idx: int, lower: bool) -> int:
+        key = (idx, lower)
+        hit = side_at.get(key)
+        if hit is not None:
+            return hit
+        p = pos[idx].copy()
+        if lower:
+            p[2] -= DECK_BOX_M
+        n = side_base + len(side_pos)
+        side_at[key] = n
+        side_pos.append(p)
+        side_uv.append(uv[idx].copy())
+        return n
+
+    for u, v in outline:
+        mid = 0.5 * (pos[u, :2] + pos[v, :2])
+        if bool(shapely.contains_xy(union, [mid[0]], [mid[1]])[0]):
+            dist = float(shapely.distance(rim, shapely.points(float(mid[0]), float(mid[1]))))
+            if dist > DECK_BOX_SEAM_M:
+                continue
+        su0 = side_vert(u, False)
+        su1 = side_vert(u, True)
+        sv1 = side_vert(v, True)
+        sv0 = side_vert(v, False)
+        side_faces.append((su0, su1, sv1))
+        side_faces.append((su0, sv1, sv0))
+
+    parts_pos = [pos, bot_pos]
+    parts_uv = [uv, bot_uv]
+    parts_faces = [faces, bot_faces]
+    if side_pos:
+        parts_pos.append(np.stack(side_pos))
+        parts_uv.append(np.stack(side_uv))
+        parts_faces.append(np.asarray(side_faces, dtype=np.int64))
+    return np.vstack(parts_pos), np.vstack(parts_uv), np.vstack(parts_faces)
+
+
 def _z_nearest(grid: dict, x: float, y: float, reach: int = 3) -> float:
     """Height of the nearest finite road cell around a plan position.
 
@@ -311,6 +437,106 @@ def _z_from_inside(x: float, y: float, packed: list) -> float:
     return acc / weight
 
 
+def _mm_xy(x: float, y: float) -> tuple[float, float]:
+    return (round(float(x), SEAM_DECIMALS), round(float(y), SEAM_DECIMALS))
+
+
+def _canon_xyz(
+    bag: dict[tuple, tuple[float, float, float]],
+    key: tuple,
+    x: float,
+    y: float,
+    z_abs: float,
+) -> tuple[float, float, float]:
+    """First writer defines (x, y, z); later writers copy that triple exactly."""
+    hit = bag.get(key)
+    if hit is not None:
+        return hit
+    x, y = _mm_xy(x, y)
+    stored = (x, y, float(z_abs))
+    bag[key] = stored
+    return stored
+
+
+def _row_center_y(grid: dict, r: int) -> float:
+    return float(grid["ymax"]) - (r + 0.5) * RES_M
+
+
+def _split_template(grid: dict, mid: int) -> LineString:
+    y = _row_center_y(grid, mid)
+    pad = 50.0
+    return LineString(
+        [
+            (float(grid["xmin"]) - pad, y),
+            (float(grid["xmax"]) + pad, y),
+        ]
+    )
+
+
+def _split_chains(grid: dict, mid: int) -> list[list[dict]]:
+    polys = grid.get("polys") or []
+    if not polys:
+        return []
+    try:
+        road = unary_union(polys)
+    except (GEOSException, ValueError):
+        road = shapely.union_all([shapely.make_valid(p) for p in polys])
+    if road is None or road.is_empty:
+        return []
+    return build_seam_chain(
+        _split_template(grid, mid),
+        shapely.make_valid(road),
+        grid["mask"],
+        grid["z"],
+        float(grid["xmin"]),
+        float(grid["ymax"]),
+        sample_z=lambda x, y: _sample_z(grid, x, y),
+    )
+
+
+def _nearest_chain_point(
+    x: float, y: float, chains: list, *, max_d: float
+) -> dict | None:
+    best = None
+    best_d = max_d
+    for ch in chains:
+        for p in ch:
+            d = math.hypot(x - float(p["x"]), y - float(p["y"]))
+            if d <= best_d:
+                best_d = d
+                best = p
+    return best
+
+
+def _bind_seam_names(records: list[dict], written: list[dict]) -> list[dict]:
+    out = []
+    for rec in records:
+        mid = int(rec["mid"])
+        r0, r1 = int(rec["r0"]), int(rec["r1"])
+        lefts = [
+            w["name"]
+            for w in written
+            if int(w["rows"][1]) == mid and r0 <= int(w["rows"][0]) < mid
+        ]
+        rights = [
+            w["name"]
+            for w in written
+            if int(w["rows"][0]) == mid and mid < int(w["rows"][1]) <= r1
+        ]
+        left = lefts[-1] if lefts else None
+        right = rights[0] if rights else None
+        for ch in rec["chains"]:
+            out.append(
+                {
+                    "left": left,
+                    "right": right,
+                    "mid_row": mid,
+                    "points": ch,
+                }
+            )
+    return out
+
+
 def _build_part(
     grid: dict,
     sc: SiteCoords,
@@ -318,6 +544,8 @@ def _build_part(
     r0: int,
     r1: int,
     z_min: float,
+    seam_rows: list[int] | None = None,
+    chains: list | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, set, int] | None:
     mask = grid["mask"]
     height, width = mask.shape
@@ -330,12 +558,40 @@ def _build_part(
     uv_l: list[tuple[float, float]] = []
     faces: list[tuple[int, int, int]] = []
     used: set[tuple[int, int]] = set()
+    canon_cell: dict[tuple, tuple[float, float, float]] = grid.setdefault(
+        "canon_cell", {}
+    )
+    canon_xy: dict[tuple, tuple[float, float, float]] = grid.setdefault(
+        "canon_xy", {}
+    )
+    chain_items = chains or []
+    chain_lists = [ch for ch, _sign in chain_items]
+    seam_ys = [_row_center_y(grid, r) for r in (seam_rows or [])]
+    for ch in chain_lists:
+        for p in ch:
+            zx = float(p["z"])
+            if not math.isfinite(zx):
+                continue
+            if p.get("role") == "cell" and p.get("row") is not None:
+                _canon_xyz(
+                    canon_cell,
+                    (int(p["row"]), int(p["col"])),
+                    float(p["x"]),
+                    float(p["y"]),
+                    zx,
+                )
+            else:
+                _canon_xyz(
+                    canon_xy, _mm_xy(float(p["x"]), float(p["y"])),
+                    float(p["x"]), float(p["y"]), zx,
+                )
 
     def vid(r: int, c: int, x: float, y: float, z_abs: float) -> int:
         key = (r, c)
         hit = index.get(key)
         if hit is not None:
             return hit
+        x, y, z_abs = _canon_xyz(canon_cell, key, x, y, z_abs)
         bx = (x - sc.xmin) / sc.bw * extent
         by = (y - sc.ymin) / sc.bh * extent
         bz = (z_abs - z_min) + CLEARANCE_M
@@ -366,17 +622,43 @@ def _build_part(
         for rr, cc, cx, cy, cz, on in packed:
             if on and math.hypot(x - cx, y - cy) <= SNAP_M:
                 return vid(rr, cc, cx, cy, cz)
-        key = (round(x, 4), round(y, 4))
+        if seam_ys and chain_lists and any(abs(y - sy) <= RES_M * 0.52 for sy in seam_ys):
+            hitp = _nearest_chain_point(x, y, chain_lists, max_d=RES_M * 2.0)
+            if hitp is not None:
+                if hitp.get("role") == "cell" and hitp.get("row") is not None:
+                    return vid(
+                        int(hitp["row"]),
+                        int(hitp["col"]),
+                        float(hitp["x"]),
+                        float(hitp["y"]),
+                        float(hitp["z"]),
+                    )
+                x, y, z_abs = float(hitp["x"]), float(hitp["y"]), float(hitp["z"])
+                key = _mm_xy(x, y)
+                hit = boundary.get(key)
+                if hit is not None:
+                    return hit
+                x, y, z_abs = _canon_xyz(canon_xy, key, x, y, z_abs)
+                bx = (x - sc.xmin) / sc.bw * extent
+                by = (y - sc.ymin) / sc.bh * extent
+                bz = (z_abs - z_min) + CLEARANCE_M
+                boundary[key] = len(pos_l)
+                pos_l.append((bx, by, bz))
+                uv_l.append((bx / UV_M, by / UV_M))
+                return boundary[key]
+            return None
+        key = _mm_xy(x, y)
         hit = boundary.get(key)
         if hit is not None:
             return hit
-        z_abs = _sample_z(grid, x, y)
+        z_abs = _sample_z(grid, key[0], key[1])
         if not math.isfinite(z_abs):
-            z_abs = _z_nearest(grid, x, y)
+            z_abs = _z_nearest(grid, key[0], key[1])
         if not math.isfinite(z_abs):
-            z_abs = _z_from_inside(x, y, packed)
+            z_abs = _z_from_inside(key[0], key[1], packed)
         if not math.isfinite(z_abs):
             return None
+        x, y, z_abs = _canon_xyz(canon_xy, key, key[0], key[1], z_abs)
         bx = (x - sc.xmin) / sc.bw * extent
         by = (y - sc.ymin) / sc.bh * extent
         bz = (z_abs - z_min) + CLEARANCE_M
@@ -393,12 +675,31 @@ def _build_part(
         miny, maxy = min(ys), max(ys)
         parts = []
         for idx in tree.query(box(minx, miny, maxx, maxy)):
-            inter = clip_by_rect(polys[int(idx)], minx, miny, maxx, maxy)
-            if not inter.is_empty:
+            poly = polys[int(idx)]
+            try:
+                inter = clip_by_rect(poly, minx, miny, maxx, maxy)
+            except Exception:
+                try:
+                    inter = poly.intersection(box(minx, miny, maxx, maxy))
+                except Exception:
+                    continue
+            if inter is not None and not inter.is_empty:
                 parts.append(inter)
         if not parts:
             return
-        geom = parts[0] if len(parts) == 1 else unary_union(parts)
+        if len(parts) == 1:
+            geom = parts[0]
+        else:
+            try:
+                geom = unary_union(parts)
+            except (GEOSException, ValueError):
+                geom = shapely.GeometryCollection(
+                    [shapely.make_valid(p) for p in parts]
+                )
+            else:
+                if geom is None or geom.is_empty:
+                    return
+                geom = shapely.make_valid(geom)
         emitted = False
         for poly in _iter_polygons(geom):
             if poly.area < MIN_AREA_M2:
@@ -458,12 +759,116 @@ def _build_part(
                 emit(ids[0], ids[2], ids[1])
             elif inside and tree is not None:
                 emit_clip(packed)
+    if chain_items:
+        def chain_vid(p: dict):
+            zx = float(p["z"])
+            if not math.isfinite(zx):
+                return None
+            if p.get("role") == "cell" and p.get("row") is not None:
+                return vid(
+                    int(p["row"]), int(p["col"]),
+                    float(p["x"]), float(p["y"]), zx,
+                )
+            key = _mm_xy(float(p["x"]), float(p["y"]))
+            hit = boundary.get(key)
+            if hit is not None:
+                return hit
+            x, y, z_abs = _canon_xyz(
+                canon_xy, key, float(p["x"]), float(p["y"]), zx
+            )
+            bx = (x - sc.xmin) / sc.bw * extent
+            by = (y - sc.ymin) / sc.bh * extent
+            bz = (z_abs - z_min) + CLEARANCE_M
+            boundary[key] = len(pos_l)
+            pos_l.append((bx, by, bz))
+            uv_l.append((bx / UV_M, by / UV_M))
+            return boundary[key]
+
+        edge_seen = set()
+        for a, b, c in faces:
+            for u, v in ((a, b), (b, c), (c, a)):
+                edge_seen.add((u, v) if u < v else (v, u))
+        stitched = []
+        for ch, ysign in chain_items:
+            ids = []
+            for p in ch:
+                i = chain_vid(p)
+                if i is not None:
+                    ids.append(i)
+            stitched.append((ids, ysign))
+        world = []
+        for bx, by, _bz in pos_l:
+            world.append(
+                (
+                    sc.xmin + bx / extent * sc.bw,
+                    sc.ymin + by / extent * sc.bh,
+                )
+            )
+        for ids, ysign in stitched:
+            for ia, ib in zip(ids, ids[1:]):
+                if ia == ib:
+                    continue
+                e = (ia, ib) if ia < ib else (ib, ia)
+                if e in edge_seen:
+                    continue
+                ax, ay = world[ia]
+                bx_, by_ = world[ib]
+                mx, my = 0.5 * (ax + bx_), 0.5 * (ay + by_)
+                best = None
+                best_d = RES_M * 3.0
+                for k, (wx, wy) in enumerate(world):
+                    if k == ia or k == ib:
+                        continue
+                    if (wy - my) * ysign < 0.05:
+                        continue
+                    d = math.hypot(wx - mx, wy - my)
+                    if d < best_d:
+                        best_d = d
+                        best = k
+                if best is None:
+                    continue
+                before = len(faces)
+                emit(ia, ib, best)
+                if len(faces) > before:
+                    edge_seen.add(e)
+    if chain_lists:
+        for ch in chain_lists:
+            for p in ch:
+                if p.get("role") != "cell" or p.get("row") is None:
+                    continue
+                rr, cc = int(p["row"]), int(p["col"])
+                if r0 <= rr < r1 or rr in (seam_rows or []):
+                    on, z, x, y = _cell_on(grid, rr, cc)
+                    if on and math.isfinite(z):
+                        vid(rr, cc, x, y, z)
     if not faces:
         return None
     pos = np.asarray(pos_l, dtype=np.float64)
     uv = np.asarray(uv_l, dtype=np.float64)
     fac = np.asarray(faces, dtype=np.int32)
     return pos, uv, fac, used, clipped
+
+
+def _seam_rows_for(grid: dict, r0: int, r1: int) -> list[int]:
+    rows = []
+    for rec in grid.get("file_seams") or []:
+        mid = int(rec["mid"])
+        if r1 == mid or r0 == mid:
+            rows.append(mid)
+    return rows
+
+
+def _chains_for(grid: dict, r0: int, r1: int) -> list:
+    """Chains touching this row band, with interior side in +Y (north) or -Y."""
+    acc: list = []
+    for rec in grid.get("file_seams") or []:
+        mid = int(rec["mid"])
+        for ch in rec.get("chains") or []:
+            if r1 == mid:
+                acc.append((ch, 1.0))
+            elif r0 == mid:
+                acc.append((ch, -1.0))
+    return acc
 
 
 def _emit_rows(
@@ -484,6 +889,14 @@ def _emit_rows(
         n_cells = int(grid["mask"][max(0, r0) : min(height, r1)].sum())
         if n_cells > 50000:
             mid = r0 + (r1 - r0) // 2
+            chains = _split_chains(grid, mid)
+            grid.setdefault("file_seams", []).append(
+                {"r0": r0, "mid": mid, "r1": r1, "chains": chains}
+            )
+            print(
+                f"  split rows {r0}-{r1} at {mid}: {len(chains)} seam pieces",
+                flush=True,
+            )
             _emit_rows(
                 grid, sc, r0=r0, r1=mid, z_min=z_min, max_h=max_h,
                 out_dir=out_dir, written=written, covered=covered, prefix=prefix,
@@ -493,12 +906,25 @@ def _emit_rows(
                 out_dir=out_dir, written=written, covered=covered, prefix=prefix,
             )
             return
-    built = _build_part(grid, sc, r0=r0, r1=r1, z_min=z_min)
+    built = _build_part(
+        grid, sc, r0=r0, r1=r1, z_min=z_min,
+        seam_rows=_seam_rows_for(grid, r0, r1),
+        chains=_chains_for(grid, r0, r1),
+    )
     if built is None:
         return
     pos, uv, faces, used, clipped = built
     if pos.shape[0] > COLLADA_MAX_VERTS and (r1 - r0) > 1:
         mid = r0 + (r1 - r0) // 2
+        chains = _split_chains(grid, mid)
+        grid.setdefault("file_seams", []).append(
+            {"r0": r0, "mid": mid, "r1": r1, "chains": chains}
+        )
+        print(
+            f"  split verts {pos.shape[0]} rows {r0}-{r1} at {mid}: "
+            f"{len(chains)} seam pieces",
+            flush=True,
+        )
         _emit_rows(
             grid, sc, r0=r0, r1=mid, z_min=z_min, max_h=max_h,
             out_dir=out_dir, written=written, covered=covered, prefix=prefix,
@@ -515,6 +941,20 @@ def _emit_rows(
     col_pos, col_faces = _decimate_collision(pos, faces)
     _check_geometry(col_pos, col_faces, stem=f"{stem} collision", z_min=z_min, max_h=max_h)
     _note_seams(grid, pos, faces)
+    deck = grid.get("deck_box")
+    n_top = int(faces.shape[0])
+    if deck is not None:
+        pos, uv, faces = _append_deck_box(pos, uv, faces, deck)
+        if int(faces.shape[0]) != n_top:
+            print(
+                f"  {stem}: deck box {DECK_BOX_M:.2f} m, "
+                f"+{int(faces.shape[0]) - n_top} tris",
+                flush=True,
+            )
+        if pos.shape[0] > COLLADA_MAX_VERTS:
+            raise SystemExit(
+                f"{stem}: {pos.shape[0]} verts after the deck box"
+            )
     _write_collada(
         out_dir / f"{stem}.dae", pos, uv, faces, stem,
         col_pos=col_pos, col_faces=col_faces,
@@ -671,6 +1111,28 @@ def _carriageway_polygons(site: dict, proc: Path, sc: SiteCoords) -> tuple[list,
         flush=True,
     )
     return polys, stats
+
+
+def _crop_window(z: np.ndarray, frame: dict, polys: list, pad_m: float = 8.0):
+    """Raster window around the polygons, with room for the edge band."""
+    height, width = z.shape
+    minx = min(float(p.bounds[0]) for p in polys) - pad_m
+    miny = min(float(p.bounds[1]) for p in polys) - pad_m
+    maxx = max(float(p.bounds[2]) for p in polys) + pad_m
+    maxy = max(float(p.bounds[3]) for p in polys) + pad_m
+    c0 = max(0, int(math.floor((minx - float(frame["xmin"])) / RES_M)))
+    c1 = min(width, int(math.ceil((maxx - float(frame["xmin"])) / RES_M)))
+    r0 = max(0, int(math.floor((float(frame["ymax"]) - maxy) / RES_M)))
+    r1 = min(height, int(math.ceil((float(frame["ymax"]) - miny) / RES_M)))
+    if r1 <= r0 or c1 <= c0:
+        return None
+    sub = {
+        "xmin": float(frame["xmin"]) + c0 * RES_M,
+        "xmax": float(frame["xmin"]) + c1 * RES_M,
+        "ymax": float(frame["ymax"]) - r0 * RES_M,
+        "ymin": float(frame["ymax"]) - r1 * RES_M,
+    }
+    return r0, r1, c0, c1, sub
 
 
 def _clip_mask(z: np.ndarray, spec: dict, polys: list, tree: STRtree) -> np.ndarray:
@@ -832,33 +1294,23 @@ def _assign_edge_band(grid: dict) -> int:
     The donor is the nearest carriageway cell that sits more than 1 m inside,
     or the centre of a road that is itself narrower than 2 m. A donor more
     than a few metres away is left alone, so a parallel road is not copied.
+
+    Distance to the outline comes from the mask, not from each polygon ring.
+    A closed at-grade union may be one large outline; walking every ring would
+    not finish.
     """
-    from scipy.ndimage import maximum_filter
+    from scipy.ndimage import distance_transform_edt, maximum_filter
     from scipy.spatial import cKDTree
-    from shapely import distance, points
 
     z = grid["z"]
     if not z.flags.writeable:
         z = np.array(z, dtype=np.float32, copy=True)
         grid["z"] = z
     mask = grid["mask"]
-    ys, xs = np.nonzero(mask)
-    if ys.size == 0:
+    if not mask.any():
         return 0
-    x = float(grid["xmin"]) + (xs.astype(np.float64) + 0.5) * RES_M
-    y = float(grid["ymax"]) - (ys.astype(np.float64) + 0.5) * RES_M
-    best = np.full(ys.shape[0], np.inf, dtype=np.float64)
-    for poly in grid.get("polys") or []:
-        minx, miny, maxx, maxy = poly.bounds
-        sel = (x >= minx) & (x <= maxx) & (y >= miny) & (y <= maxy)
-        idx = np.nonzero(sel)[0]
-        if idx.size == 0:
-            continue
-        d = np.asarray(distance(poly.boundary, points(x[idx], y[idx])), dtype=np.float64)
-        best[idx] = np.minimum(best[idx], d)
-    known = np.isfinite(best)
     dist_img = np.full(mask.shape, -1.0, dtype=np.float32)
-    dist_img[ys[known], xs[known]] = best[known].astype(np.float32)
+    dist_img[mask] = (distance_transform_edt(mask) * RES_M).astype(np.float32)[mask]
     local_max = maximum_filter(dist_img, size=3, mode="constant", cval=-1.0)
     on_mask = dist_img >= 0.0
     center = on_mask & (dist_img <= EDGE_BAND_M) & (dist_img + 1.0e-4 >= local_max)
@@ -972,10 +1424,16 @@ def _note_seams(grid: dict, pos: np.ndarray, faces: np.ndarray) -> None:
         for u, v in ((corners[0], corners[1]), (corners[1], corners[2]), (corners[2], corners[0])):
             p = pos[u]
             q = pos[v]
-            ku = (round(float(p[0]), 3), round(float(p[1]), 3))
-            kv = (round(float(q[0]), 3), round(float(q[1]), 3))
-            zu = round(float(p[2]), 3)
-            zv = round(float(q[2]), 3)
+            ku = (
+                round(float(p[0]), SEAM_DECIMALS),
+                round(float(p[1]), SEAM_DECIMALS),
+            )
+            kv = (
+                round(float(q[0]), SEAM_DECIMALS),
+                round(float(q[1]), SEAM_DECIMALS),
+            )
+            zu = round(float(p[2]), SEAM_DECIMALS)
+            zv = round(float(q[2]), SEAM_DECIMALS)
             if ku <= kv:
                 key = (ku, kv, zu, zv)
             else:
@@ -1287,7 +1745,9 @@ def _load_clip_polygons(path: Path, layer: str, *, main_only: bool = False) -> t
                 mesh_layer = int(getattr(rec, "mesh_layer", 0) or 0)
             except (TypeError, ValueError):
                 mesh_layer = 0
-        if kind == "road":
+        if kind in ("road", "junction", "link"):
+            # One road raster (no link/junction split). Files split at 65535 verts.
+            kind = "road"
             key = 0
         elif key == 0:
             try:
@@ -1300,14 +1760,30 @@ def _load_clip_polygons(path: Path, layer: str, *, main_only: bool = False) -> t
         slot = buckets.setdefault((kind, key), {"polys": [], "layer": mesh_layer})
         slot["polys"].extend(polys)
         slot["layer"] = mesh_layer
+    # carriageway_mesh_clip.gpkg already dissolved the at-grade surface into
+    # overlapping tiles. Do not grow those again.
+    unified = False
+    if "members" in gdf.columns:
+        unified = any(
+            str(m) == "unified" for m in gdf["members"].tolist() if m is not None
+        )
     for (kind, _key), slot in buckets.items():
-        if kind == "road" or len(slot["polys"]) < 2:
+        if len(slot["polys"]) < 2:
             continue
-        merged = shapely.make_valid(shapely.union_all(slot["polys"]))
-        merged = shapely.make_valid(merged.buffer(0.5).buffer(-0.5))
-        closed = _polys_of(merged)
-        if closed:
-            slot["polys"] = closed
+        if kind in ("overpass", "underpass", "span"):
+            # Half a metre glues stacked deck pieces of one bridge.
+            merged = shapely.make_valid(shapely.union_all(slot["polys"]))
+            merged = shapely.make_valid(merged.buffer(0.5).buffer(-0.5))
+            closed = _polys_of(merged)
+            if closed:
+                slot["polys"] = closed
+        elif kind == "road" and not unified:
+            grown = []
+            for poly in slot["polys"]:
+                g = shapely.make_valid(poly.buffer(AT_GRADE_CLOSE_M))
+                grown.extend(_polys_of(g))
+            if grown:
+                slot["polys"] = grown
     groups = []
     for (kind, key), slot in sorted(
         buckets.items(), key=lambda item: (0 if item[0][0] == "road" else 1, item[0][0], item[0][1])
@@ -1332,13 +1808,17 @@ def _load_clip_polygons(path: Path, layer: str, *, main_only: bool = False) -> t
             {"kind": g["kind"], "key": g["key"], "polygons": len(g["polys"])} for g in groups
         ],
         "main_only": bool(main_only),
+        "at_grade_unified": bool(unified),
     }
-    extra = ", ".join(
-        f"{g['kind']}:{g['key']}x{len(g['polys'])}" for g in groups if g["kind"] != "road"
-    )
+    counts: dict[str, int] = {}
+    for group in groups:
+        counts[group["kind"]] = counts.get(group["kind"], 0) + 1
+    summary = ", ".join(f"{kind}={count}" for kind, count in sorted(counts.items()))
+    road_n = next((len(g["polys"]) for g in groups if g["kind"] == "road"), 0)
+    note = "unified tiles" if unified else f"overlap {AT_GRADE_CLOSE_M*100:.0f} cm"
     print(
-        f"clip {layer}: {n_poly} polygons in {len(groups)} mesh layers"
-        + (f" ({extra})" if extra else ""),
+        f"clip {layer}: {n_poly} polygons in {len(groups)} meshes ({summary})"
+        f"; at-grade {note}, {road_n} pieces",
         flush=True,
     )
     return groups, stats
@@ -1446,24 +1926,56 @@ def main() -> None:
         old.unlink()
 
     written: list[dict] = []
-    clamp_z = None
+    seam_dump: list[dict] = []
+    clamp_z = np.full(z_top.shape, np.nan, dtype=np.float32)
     n_road = 0
     col_verts = 0
     col_tris = 0
     clip_quads = 0
+    deck_box = _load_deck_box(sc)
+    if deck_box is not None:
+        print(
+            f"bridge box {DECK_BOX_M:.2f} m under {deck_box['n']} deck ribbons",
+            flush=True,
+        )
+    # Over/under/span own their plan cells. The road mesh must not reuse them.
+    grade_polys = [
+        p for g in groups if g["kind"] != "road" for p in g["polys"]
+    ]
+    grade_tree = STRtree(grade_polys) if grade_polys else None
+
     for group in groups:
         polys = group["polys"]
         if not polys:
             continue
         layer = int(group.get("layer") or 0)
         z_src = z_by_layer.get(layer, z_top)
-        z_layer = z_src.copy()
-        grid = dict(frame)
-        grid["z"] = z_layer
+        if z_src.shape != z_top.shape:
+            z_src = z_top
+        window = _crop_window(z_src, frame, polys)
+        if window is None:
+            print(f"  skip {group['prefix']}: outside the raster", flush=True)
+            continue
+        r0, r1, c0, c1, sub = window
+        grid = dict(sub)
+        grid["z"] = np.array(z_src[r0:r1, c0:c1], dtype=np.float32, copy=True)
+        grid["deck_box"] = (
+            deck_box if group["kind"] in ("overpass", "road") else None
+        )
         tree = STRtree(polys)
         grid["polys"] = polys
         grid["tree"] = tree
-        grid["mask"] = _clip_mask(z_layer, grid, polys, tree)
+        grid["mask"] = _clip_mask(grid["z"], grid, polys, tree)
+        if group["kind"] == "road" and grade_tree is not None:
+            taken = _clip_mask(grid["z"], grid, grade_polys, grade_tree)
+            n_taken = int((grid["mask"] & taken).sum())
+            if n_taken:
+                grid["mask"] &= ~taken
+                print(
+                    f"  {group['prefix']} exclusive: dropped {n_taken} cells "
+                    f"owned by over/under/span",
+                    flush=True,
+                )
         n_layer = int(grid["mask"].sum()) - _drop_orphan_cells(grid)
         if n_layer == 0:
             print(f"  skip {group['prefix']}: no cells", flush=True)
@@ -1483,6 +1995,9 @@ def main() -> None:
             out_dir=out_dir, written=layer_written, covered=covered,
             prefix=group["prefix"],
         )
+        seam_dump.extend(
+            _bind_seam_names(grid.get("file_seams") or [], layer_written)
+        )
         missing = []
         rr, cc = np.nonzero(grid["mask"])
         for r, c in zip(rr.tolist(), cc.tolist()):
@@ -1501,7 +2016,9 @@ def main() -> None:
         col_verts += int(grid.get("col_verts") or 0)
         col_tris += int(grid.get("col_tris") or 0)
         clip_quads += int(grid.get("clip_quads") or 0)
-        clamp_z = _nanmin_stack(clamp_z, _surface_array(grid))
+        surf = _surface_array(grid)
+        view = clamp_z[r0:r1, c0:c1]
+        clamp_z[r0:r1, c0:c1] = _nanmin_stack(view, surf)
         print(
             f"  {group['prefix']} parts={len(layer_written)} "
             f"boundary_quads={int(grid.get('clip_quads') or 0)}",
@@ -1526,12 +2043,29 @@ def main() -> None:
         "verts": n_vert,
         "tris": n_tri,
         "max_edge_m": MAX_EDGE_M,
-        "geometry": "finite, edge<=40m, area>0, normal up, seams sealed per layer",
+        "geometry": (
+            "finite, edge<=40m, area>0, normal up, "
+            "seams sealed per layer (XY to mm, shared XYZ across part cuts)"
+        ),
+        "seam_decimals": SEAM_DECIMALS,
         "tiles": written,
     }
     (out_dir / "road_grid_index.json").write_text(
         json.dumps(report, indent=2) + "\n", encoding="utf-8"
     )
+    (out_dir / "mesh_seams.json").write_text(
+        json.dumps(
+            {
+                "res_m": RES_M,
+                "sample_m": SAMPLE_M,
+                "seams": seam_dump,
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    print(f"wrote mesh_seams.json ({len(seam_dump)} pieces)", flush=True)
     entries = [_entry(level_name, item["name"]) for item in written]
     _inject(level_name, entries, out_dir)
     n_over = sum(1 for item in written if item.get("kind") == "overpass")

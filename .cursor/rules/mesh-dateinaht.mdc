@@ -1,0 +1,13 @@
+---
+description: Mesh-Dateinaht auf Zellmitten; Cross-Mesh-Check vor fertig
+alwaysApply: true
+---
+
+# Mesh-Dateinaht
+
+Beim Zerlegen von Straßenmeshes in mehrere DAE gilt
+[docs/MESH_DATEINAHT.md](docs/MESH_DATEINAHT.md).
+
+Kurz: Vorlage → mit Fahrbahn schneiden → 25 cm → Zellmitten (eigene Maske,
+einmal, Reihenfolge) → echte Randpunkte → gleiches `(x,y,z)` in beiden
+Dateien. Ohne bestandenen Cross-Mesh-Check nicht als fertig bezeichnen.

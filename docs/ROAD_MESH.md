@@ -99,8 +99,12 @@ Vor dem Schnitt, nur auf diesem Raster:
 
 Danach erst werden die Teile geschnitten, und nur wenn ein Teil 65 535
 Vertices überschreiten würde. Das ist die Grenze des BeamNG-Imports, nicht
-der COLLADA-Datei. Pro Teil wird keine Höhe mehr geändert. Der Bau bricht ab,
-wenn ein gemeinsamer Schnitt um mehr als 1 cm auseinanderliegt oder eine
+der COLLADA-Datei. Die innere Schnittkante ist die gemeinsame Zeile der
+Zellmitten am Band (`mid` in `_emit_rows`). Pro Teil wird keine Höhe mehr
+geändert, außer: Plan-XY wird auf Millimeter gerundet, und derselbe Schlüssel
+schreibt in allen Teilen dasselbe Tripel `(x, y, z)`. Randvertices bleiben
+auf der Polygonkante (kein Einschnappen auf das 0,5-m-Raster). Der Bau bricht
+ab, wenn ein gemeinsamer Schnitt um mehr als 1 cm auseinanderliegt oder eine
 offene Kante mehr als 0,75 m innerhalb des Polygons liegt. In dem Fall wird
 nicht ins Level kopiert.
 
@@ -115,8 +119,10 @@ haben dieselbe Höhe, einschließlich der 4 cm. Das Colmesh ist das sichtbare
 Mesh, innen auf ein 2-m-Raster zusammengezogen. Rand-Vertices bleiben, damit
 Umriss und Schnitte nicht aufgehen. Eine Winkelgrenze von 2° ist nicht gelaufen.
 Das Colmesh nach unten zu schieben würde das Fahrzeug durch den sichtbaren
-Asphalt fallen lassen. Eine Dicke nach unten, deren Oberkante auf der
-sichtbaren Fläche bleibt, ist nicht gebaut.
+Asphalt fallen lassen. Liegt eine Zelle der oberen Fahrbahn im DOM-Deck
+(`bridge_deck`), bekommt die gezeichnete Fläche dort einen Kasten: dieselbe
+Oberkante, 50 cm tiefer die Unterkante, Seiten dazwischen. Die untere
+Fahrbahn und das Colmesh bleiben ohne diesen Kasten.
 
 Das Gelände neben und unter dem Mesh ist das rohe 0,5-m-DGM
 (`apply_corridor_dgm.py`, Layer `corridor_dgm`, Priorität 45). Das reparierte
@@ -310,10 +316,36 @@ cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/imst.yaml"; pytho
 `road_surface_smooth_trial/`, damit das Site-Ergebnis nicht überschrieben
 wird. `--plot-oid` wählt die Objekte für die Einzelplots (Default 6975).
 
-Das Mesh dann aus dem glatten Raster und den verschmälerten Polygonen:
+Vor dem Mesh: `unify_carriageway_mesh_clip.py` bildet **eine** Fahrbahnfläche
+(alles außer Brücke/Unterführung/Spanne), schneidet over/under/span daraus
+heraus und schreibt jeden Polygon-Schritt nach
+`road_surface_smooth/mesh_clip_steps/`. Keine Mesh-Aufteilung road/link/junction.
+
+| Datei | Inhalt |
+|---|---|
+| `01_road_source.gpkg` | Quelle ohne over/under/span |
+| `02_snapped.gpkg` | Vertices auf 5-cm-Gitter (`set_precision`) |
+| `03_dissolved.gpkg` | eine Fläche, Überlappung entfernt |
+| `04_closed.gpkg` | ±5 cm Buffer gegen Haarrisse; Löcher ≥ 15 m² zurück |
+| `05_smooth.gpkg` | ±15 cm Kantenglättung (Bordsteinmaß) |
+| `06_grade_separated.gpkg` | overpass/underpass/span |
+| `07_exclusive.gpkg` | Fahrbahn minus over/under/span — eine Zelle, ein Owner |
+| `08_fishnet.gpkg` | überlappende 80-m-Kacheln für den Clip |
+
+Zellmitten im 0,5-m-Raster: liegt die Mitte in over/under/span, gehört die
+Zelle nicht zu `part_*`. Deck und Durchfahrt dürfen dieselbe XY teilen
+(verschiedene Z); normale Fahrbahn und underpass nicht.
+
+Arbeitsdateien für den Mesh-Bau: `carriageway_mesh_outline.gpkg` (eine
+Silhouette) und `carriageway_mesh_clip.gpkg` (Fishnet plus Ebenenwechsel).
+Decals lesen diese Dateien nicht.
 
 ```powershell
-cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/imst.yaml"; python tools\build_road_grid.py --heights "data\processed\tirol-imst-tarrenz-8192\road_surface_smooth\04_smooth.tif" --clip "data\processed\tirol-imst-tarrenz-8192\road_surface_smooth\carriageway_smooth.gpkg" --clip-layer carriageway
+cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/imst.yaml"; python tools\unify_carriageway_mesh_clip.py
+```
+
+```powershell
+cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/imst.yaml"; python tools\build_road_grid.py --heights "data\processed\tirol-imst-tarrenz-8192\road_surface_smooth\04_smooth.tif" --clip "data\processed\tirol-imst-tarrenz-8192\road_surface_smooth\carriageway_mesh_clip.gpkg" --clip-layer carriageway
 ```
 
 Danach `apply_corridor_dgm.py` für die Heightmap-Klammer, Import von
