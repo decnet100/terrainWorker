@@ -1,0 +1,314 @@
+# Timmelsjoch / Passo del Rombo — Grenzausschnitt Südtirol + Nordtirol.
+# Aktivieren:  $env:AUTOROAD_SITE="config/sites/timmelsjoch.yaml"
+# Mittelpunkt 661370 / 5194460 (EPSG:25832), ~46.884°N 11.118°E.
+# 2048×2048 m auf 2048² @ 1 m/px. Arbeits-CRS fest UTM32N (nicht Mehrheits-Auto).
+name: suedtirol-timmelsjoch-2048
+crs: EPSG:25832
+level:
+  crs: EPSG:25832
+# NUTS 2024 (1:1M) sieht diesen Kasten als 100 % ITH1. tirol bleibt bewusst
+# drin: Grenzlevel, ID-Band 0, und Tirol-WCS liefert im Nordzipfel noch Werte.
+authorities:
+  - suedtirol
+  - tirol
+bbox:
+  - 660346.0
+  - 5193436.0
+  - 662394.0
+  - 5195484.0
+
+sources:
+  # Provinz Bozen DGM 2,5 m (WCS 1.0) — native holen, lokal cubicspline → 1 m.
+  # grid_origin = Zellmitte (0,0) laut DescribeCoverage. Pad 4 Zellen Standard.
+  dgm:
+    type: wcs
+    url: "https://geoservices9.civis.bz.it/geoserver/ows"
+    coverage: "p_bz-Elevation:DigitalTerrainModel-2.5m"
+    version: "1.0.0"
+    resolution_m: 2.5
+    grid_origin: [605000.0000008999, 5220799.999878633]
+  dom:
+    type: wcs
+    url: "https://geoservices9.civis.bz.it/geoserver/ows"
+    coverage: "p_bz-Elevation:DigitalElevationModel-2.5m"
+    version: "1.0.0"
+    resolution_m: 2.5
+    grid_origin: [605000.0000008999, 5220799.999878633]
+    optional: true
+  twi:
+    smooth_m: 10.0
+  snow:
+    type: dgm_proxy
+    preset: november
+  # Ortho: MapProxy WMTS layer via WMS GetMap (gleiche Layer-ID).
+  # WMTS: https://geoservices.buergernetz.bz.it/mapproxy/service?SERVICE=WMTS
+  #        layer p_bz-BaseMap:Basemap-Meteo-Aerial, tileMatrixSet EPSG-25832-EU
+  ortho:
+    type: wms
+    url: "https://geoservices.buergernetz.bz.it/mapproxy/service"
+    layer: "p_bz-BaseMap:Basemap-Meteo-Aerial"
+    version: "1.3.0"
+    format: "image/jpeg"
+  backdrop_ortho:
+    type: wms
+    url: "https://geoservices.buergernetz.bz.it/mapproxy/service"
+    layer: "p_bz-BaseMap:Basemap-Meteo-Aerial"
+    version: "1.3.0"
+  # Landcover: CORINE catalog (raw CODE) + treatment groups in
+  # config/landcover_treatment.yaml — not collapsed to BEV 0..5.
+  landcover:
+    type: wfs
+    catalog: corine
+    url: "https://geoservices8.civis.bz.it/geoserver/ows"
+    type_name: "p_bz-Inspire:LC.LandCoverSurfaces"
+    version: "2.0.0"
+    srs: EPSG:25832
+    code_field: CODE
+    label_field: LAND_COVER_OBSERVATION
+  landuse:
+    type: corine
+  # Südtirol only — Tirol sites without this block keep OSM/GIP stroke asphalt.
+  road_areas:
+    authority: suedtirol
+    type: wfs
+    url: "https://geoservices3.civis.bz.it/geoserver/ows"
+    type_name: "gvcc-BasicCore:TrasRoadArea-Polygon"
+    version: "2.0.0"
+    srs: EPSG:25832
+  # Südtirol only — TransportNetwork axes (not Italy-wide).
+  road_links:
+    authority: suedtirol
+    type: wfs
+    url: "https://geoservices1.civis.bz.it/geoserver/ows"
+    type_name: "p_bz-TransportNetwork:LinksSequences-Rendering"
+    version: "2.0.0"
+    srs: EPSG:25832
+  waterways:
+    type: osm
+  roads:
+    type: suedtirol
+
+beamng:
+  meters_per_pixel: 1.0
+  level_name: Timmelsjoch_2048
+  mask_size: 2048
+  slope_rock_deg: 40
+  slope_rock_open_px: 1
+  road_width_scale: 0.9
+  lane_width_m: 3.75
+  default_lanes: 2
+  road_terrain: asphalt
+  dirt_material: gravel
+  dry_grass_material: dry_meadow
+  forest_material: ForestFloor
+  grass_material: Grass
+  snow_material: SnowTirol
+  snow_albedo_gain: 0.75
+  shoulder_m: 3.0
+
+  # Ground LOCATION that still runs through a span — omit like LOCATION bridge.
+  roads:
+    span_objectids: [714631]
+
+  compose:
+    ndsm_canopy_m: 5.0
+    ndsm_scrub_m: 1.5
+    ndsm_clearing_m: 1.0
+    twi_wet: 5.0
+    snow_light: 0.25
+    snow_heavy: 0.55
+
+  decal_roads:
+    enabled: true
+    # roads_beamng.json (Südtirol LinksSequences via sources.roads.type)
+    centerline_source: osm
+    highways: [secondary, primary, tertiary, trunk, motorway]
+    width_scale: 0.9
+    material: AsphaltRoad_variation_01
+    texture_length: 6.0
+    detail_scale: 4.0
+    render_priority: 10
+    drivability: 1.0
+    improved_spline: true
+    densify_max_step_m: 10.0
+    decal_bias: 0.20
+    z_bias: 0.02
+    over_objects: true
+    snap_to_heightmap: true
+    snap_follow_heightmap: true
+    z_lift_m: 0.03
+    snap_max_raise_m: 2.0
+    road_bed_conform: true
+    start_end_fade: [0.0, 0.0]
+    stitch_abutting: true
+    stitch_tol_m: 1.25
+    width_fill_dip_m: 40.0
+    width_blend_m: 25.0
+    centerline:
+      enabled: true
+      style: dashed
+      width_m: 0.15
+      material: Road_Line_White
+      dash_m: 3.0
+      gap_m: 6.0
+      render_priority: 25
+      decal_bias: 0.22
+
+  guardrails:
+    enabled: false
+
+  bridges:
+    defaults:
+      profile: road_spline
+      centerline: osm
+      free_span: linear
+      width_m: 7.5
+      width_from_road: false
+      depth_m: 0.4
+      deck_lift_m: 0.0
+      node_z_is_top: true
+      extend_before_m: 1.0
+      extend_after_m: 1.0
+      under_inset_m: 3.0
+      auto_span: true
+      span_dip_m: 0.55
+      span_search_m: 40.0
+      solid_run_m: 3.0
+      step_m: 1.0
+      crossfall_max: 0.0
+      corner_up_m: 0.0
+      corner_down_m: 0.0
+      style:
+        understructure: none
+        edge: none
+      materials:
+        top: Asphalt
+        bottom: Concrete
+        side: Concrete
+        texture_length: 6.0
+        detail_scale: 4.0
+
+  galleries:
+    merge_abutting: true
+    merge_tol_m: 15.0
+    defaults:
+      centerline: osm
+      width_m: 7.5
+      width_from_road: true
+      clear_height_m: 4.5
+      roof_thickness_m: 0.5
+      wall_thickness_m: 0.4
+      overhang_m: 1.0
+      extend_before_m: 2.0
+      extend_after_m: 2.0
+      step_m: 2.0
+      crossfall_max: 0.12
+      open_side: none
+      deck_enabled: true
+      node_z_is_top: true
+      terrain_roof: none
+      z_profile: hermite
+      materials:
+        top: Asphalt
+        bottom: Concrete
+        side: Concrete
+        texture_length: 6.0
+
+  forest:
+    enabled: true
+    trees: true
+    dry_grass: false
+    spacing_high_m: 9.0
+    spacing_scrub_m: 4.5
+    spacing_meadow_m: 5.0
+    slope_max_deg: 42.0
+    slope_max_meadow_deg: 38.0
+    clear_road_m: 4.0
+    max_items: 80000
+    max_items_meadow: 0
+    scrub_fraction: 0.35
+    scale_high: [0.85, 1.3]
+    scale_scrub: [0.65, 1.1]
+    seed: 13
+
+  backdrop:
+    radius_m: 40000
+    observer_grid: 5
+    observer_z_extra_m: 10
+    extra_peaks: 4
+    min_views: 1
+    viewshed_step_m: 50
+    mesh_step_m: 120
+    hole_pad_m: 30
+    near_m: 5000
+    near_step_m: 5
+    near_dgm_res_m: 2
+    near_overlap_m: 80
+    near_lip_drop_m: 1.0
+    near_texture_size: 2048
+    near_normal_size: 4096
+    near_tiles: 15
+    near_canopy: true
+    near_canopy_min_m: 1.0
+    near_canopy_spike_m: 8.0
+    near_canopy_min_area_m2: 40
+    mid_m: 10000
+    mid_step_m: 15
+    mid_overlap_m: 150
+    mid_texture_size: 2048
+    mid_tiles: 8
+    mid_canopy: false
+    n_rays: 2048
+    curvature_cc: 0.85714
+    texture_size: 2048
+    albedo_gain: 0.58
+    ortho_gamma: 1.0
+    ortho_hillshade: 0.10
+    normal_strength: 0.32
+    ortho_grade: none
+    olive_mix: 0.68
+    lip_fade_m: 800
+    lip_olive: 0.40
+    lip_darken: 0.12
+    snow_tint: false
+    detect_grade: true
+    forest_detect: none
+    grass_cut: 0.5
+    grass_mix: 0.55
+    grass_dark: 0.28
+    forest_mix: 0.45
+    forest_dark: 0.38
+    snow_cut: 0.40
+    snow_mix: 0.65
+    base_color: [1.0, 1.0, 1.0]
+
+  buildings:
+    enabled: true
+    source: osm
+    default_height_m: 8.0
+    level_height_m: 3.0
+    min_area_m2: 25.0
+    max_area_m2: 8000.0
+    max_items: 5000
+    sink_m: 1.5
+    height_jitter: 0.12
+    gable_chance: 0.72
+    gable_fill_min: 0.88
+    style_seed: 17
+
+  water:
+    enabled: false
+
+annotations:
+  gpkg: data/annotations/suedtirol-timmelsjoch-2048.gpkg
+  guardrail_source: heuristic
+
+notes: |
+  Grenzlevel: Arbeits-CRS EPSG:25832 (level.crs), Behörden suedtirol + tirol.
+  Aktuell 2048² (NUTS: ganz Südtirol); später 8192² mit Nordtirol-Anteil.
+  DGM/DOM: Civis 2,5 m native + Pad, lokal cubicspline → 1 m.
+  Landcover: CORINE WFS → landcover_codes.tif; Behandlung in landcover_treatment.yaml.
+  Straßen/Gebäude: OSM. Ortho: Basemap-Meteo-Aerial (WMS).
+  python tools/fill_site_authorities.py --site config/sites/timmelsjoch.yaml
+  $env:AUTOROAD_SITE = "config/sites/timmelsjoch.yaml"; python tools\fetch_dgm.py
+  $env:AUTOROAD_SITE = "config/sites/timmelsjoch.yaml"; python tools\fetch_suedtirol_landcover.py

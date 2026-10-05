@@ -18,7 +18,7 @@ sources:
     url: "https://gis.tirol.gv.at/arcgis/services/Service_Public/terrain/MapServer/WCSServer"
     coverage: "Gelaendemodell_50cm_M28"
     version: "1.0.0"
-    resolution_m: 1.0
+    resolution_m: 0.5          # native; cubicspline → beamng.meters_per_pixel
     tile_px: 1024
     tile_retries: 4
   # DOM = DSM (Oberflächenmodell) — für nDSM / Vegetationshöhe (DOM − DGM)
@@ -27,7 +27,7 @@ sources:
     url: "https://gis.tirol.gv.at/arcgis/services/Service_Public/terrain/MapServer/WCSServer"
     coverage: "Oberflaechenmodell_50cm_M28"
     version: "1.0.0"
-    resolution_m: 1.0
+    resolution_m: 0.5
     tile_px: 1024
     tile_retries: 4
   # TWI from DGM (build_twi.py); smooth_m = Gaussian σ in metres

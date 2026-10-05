@@ -824,6 +824,19 @@ def merge_abutting_gallery_features(
 
 
 def gallery_features(site: dict, sc: SiteCoords) -> list[dict]:
+    try:
+        from fetch_suedtirol_road_links import (  # noqa: WPS433
+            suedtirol_span_features,
+            uses_suedtirol_structures,
+        )
+
+        if uses_suedtirol_structures(site):
+            feats = suedtirol_span_features(site, kinds={"tunnel", "gallery"})
+            print(f"Galleries/tunnels from Südtirol LOCATION: {len(feats)}")
+            return feats
+    except ImportError:
+        pass
+
     path = bb.find_gip_geojson(site)
     data = json.loads(path.read_text(encoding="utf-8"))
     from gip_road_segments import not_tunnel_objectids
@@ -1334,6 +1347,9 @@ def build_gallery_road_spline(
         deck_lift_m=float(cfg.get("deck_lift_m") or 0.0),
         abutment_s=(s_p0, s_p1),
         free_span=str(cfg.get("free_span") or "linear"),
+        crossfall_max=float(
+            cfg["crossfall_max"] if cfg.get("crossfall_max") is not None else 0.12
+        ),
         corner_up_m=float(cfg.get("corner_up_m") if cfg.get("corner_up_m") is not None else 0.25),
         corner_down_m=float(
             cfg.get("corner_down_m") if cfg.get("corner_down_m") is not None else 0.06
@@ -4638,9 +4654,16 @@ def _z_on_pts(
 
 def _surface_road_z_fn(site: dict):
     """A12 / unify-approach Z (not DGM) for deck approach ramps."""
-    from gip_road_segments import load_gip_polylines_for_decals
+    roads: list = []
+    try:
+        from gip_road_segments import load_gip_polylines_for_decals
 
-    roads = load_gip_polylines_for_decals(site)
+        roads = load_gip_polylines_for_decals(site)
+    except SystemExit:
+        # Südtirol / OSM sites have no GIP cache — use roads_beamng.
+        roads = []
+    if not roads:
+        roads = bb.load_road_polylines(processed_dir(site))
     preferred: list = []
     fallback: list = []
     for r in roads:
@@ -4656,6 +4679,9 @@ def _surface_road_z_fn(site: dict):
         if "approach" in rid.lower() or "approach" in name.lower():
             preferred.extend(pts)
         elif code == "A12":
+            fallback.extend(pts)
+        else:
+            # Non-A12 sites (Südtirol Links): any surface axis is fine.
             fallback.extend(pts)
     use = preferred or fallback
     if len(use) < 2:
@@ -7646,7 +7672,10 @@ def main() -> None:
 
     feats = gallery_features(site, sc)
     if not feats:
-        raise SystemExit("No gallery/tunnel features in GIP cache for this site")
+        raise SystemExit(
+            "No gallery/tunnel features for this site "
+            "(Südtirol LOCATION / GIP cache)"
+        )
 
     gal_raw = bng.get("galleries") or {}
     merge_on = bool(gal_raw.get("merge_abutting", True))
@@ -7697,6 +7726,9 @@ def main() -> None:
 
         roads = load_gip_polylines_for_decals(site)
         print(f"Gallery roads centerline=gip segments={len(roads)}")
+    else:
+        roads = bb.load_road_polylines(proc)
+        print(f"Gallery roads centerline=osm segments={len(roads)}")
 
     corridors = None
     net_road = None

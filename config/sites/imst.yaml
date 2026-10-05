@@ -21,13 +21,13 @@ sources:
     url: "https://gis.tirol.gv.at/arcgis/services/Service_Public/terrain/MapServer/WCSServer"
     coverage: "Gelaendemodell_50cm_M28"
     version: "1.0.0"
-    resolution_m: 1.0
+    resolution_m: 0.5          # native; cubicspline → beamng.meters_per_pixel
   dom:
     type: wcs
     url: "https://gis.tirol.gv.at/arcgis/services/Service_Public/terrain/MapServer/WCSServer"
     coverage: "Oberflaechenmodell_50cm_M28"
     version: "1.0.0"
-    resolution_m: 1.0
+    resolution_m: 0.5
   twi:
     smooth_m: 10.0
   bev_landcover:
@@ -95,10 +95,9 @@ beamng:
   snow_albedo_gain: 0.75     # 1=stock white (~212); lower = more ToD/sky color
   shoulder_m: 3.0
 
-  # Fahrbahn = COLLADA-Straßenmesh (docs/ROAD_MESH.md): fetch_road_corridor_dgm,
-  # shift_centerline_by_roughness, repair_dgm_transect, blend_bridge_deck,
-  # build_road_grid, apply_corridor_dgm. Brückendecks liegen im Mesh. Keine
-  # DecalRoads, kein Road-Bed, keine MeshRoad-Brücken. Breiten aus data/roads/.
+  # Fahrbahn = COLLADA-Straßenmesh (docs/ROAD_MESH.md). DecalRoads liegen
+  # mit overObjects auf der Platte (ETK/Industrial-Asphalt), ohne Road-Bed.
+  # Keine MeshRoad-Brücken. Breiten aus data/roads/.
 
   compose:
     ndsm_canopy_m: 5.0
@@ -107,6 +106,47 @@ beamng:
     twi_wet: 5.0
     snow_light: 0.25
     snow_heavy: 0.55
+
+  decal_roads:
+    enabled: true
+    centerline_source: gip
+    gip_decals: named
+    width_scale: 0.9
+    # ETK Test Center (level Industrial). Textures stay in the game zip.
+    material: AsphaltRoad_variation_01
+    texture_length: 6.0
+    detail_scale: 4.0
+    render_priority: 10
+    drivability: 1.0
+    improved_spline: true
+    densify_max_step_m: 10.0
+    decal_bias: 0.20
+    z_bias: 0.02
+    over_objects: true
+    snap_to_heightmap: true
+    snap_follow_heightmap: true
+    z_lift_m: 0.03
+    snap_max_raise_m: 2.0
+    road_bed_conform: false
+    start_end_fade: [0.0, 0.0]
+    stitch_abutting: true
+    stitch_tol_m: 1.25
+    width_fill_dip_m: 40.0
+    width_blend_m: 25.0
+    max_decal_length_m: 300.0
+    clip_galleries: true
+    clip_bridges: true
+    deck_decals: true
+    highways: [secondary, primary, tertiary, trunk, motorway]
+    centerline:
+      enabled: true
+      style: dashed
+      width_m: 0.15
+      material: Road_Line_White
+      dash_m: 3.0
+      gap_m: 6.0
+      render_priority: 25
+      decal_bias: 0.22
 
   galleries:
     merge_abutting: true

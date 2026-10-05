@@ -11,6 +11,7 @@
 | [`reschen.yaml`](reschen.yaml) | B180 Reschenstraße (Prutz / Kaunertal) | `autoroad_reschen_8192` | 8000×8000 → 8192² |
 | [`imst.yaml`](imst.yaml) | B189 Imst / Tarrenz (defaults check) | `imst_tarrenz` | 8191×8191 m → 8192², 1 m per sample |
 | [`oetz.yaml`](oetz.yaml) | Draft copy of the site template | `autoroad_test` | — |
+| [`timmelsjoch.yaml`](timmelsjoch.yaml) | Timmelsjoch / Passo del Rombo (Südtirol + Nordtirol, EPSG:25832) | `autoroad_timmelsjoch_2048` | 2048² @ 1 m/px |
 
 A new profile needs `crs` + `bbox`, then `authorities` from that crop
 ([AUTHORITIES.md](../../docs/AUTHORITIES.md)):
@@ -61,6 +62,10 @@ $env:AUTOROAD_SITE = "config/sites/reschen.yaml"
 
 ```powershell
 $env:AUTOROAD_SITE = "config/sites/imst.yaml"
+```
+
+```powershell
+$env:AUTOROAD_SITE = "config/sites/timmelsjoch.yaml"
 ```
 
 Same Core steps without the window:

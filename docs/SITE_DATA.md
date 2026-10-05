@@ -6,7 +6,21 @@
 
 1. **BBOX** of the test crop (coordinates + EPSG)
 2. **Layer / coverage names** (if GetCapabilities is ambiguous)
-3. Optional: desired **resolution** (e.g. DGM 0.5 m, ortho 0.2 m, or coarser for tests)
+3. Optional: desired **resolution** (e.g. DGM native 0.5 m / 2.5 m; ortho 1–2 m)
+
+Landcover: either BEV raster (AT) or a **catalog** of authority codes
+(CORINE for Südtirol) plus ``config/landcover_treatment.yaml`` groups.
+Raw codes stay in ``landcover_codes.tif``; treatment can change without
+re-fetching.
+
+Road pavement (optional, Südtirol only): set ``sources.road_areas`` with
+``authority: suedtirol`` (TrasRoadArea WFS). Terrain asphalt then comes from
+those polygons; Tirol sites without the block keep OSM/GIP stroke asphalt.
+
+Road axes (optional, Südtirol / Provinz Bozen only): set ``sources.road_links``
+with ``authority: suedtirol`` and ``sources.roads.type: suedtirol``
+(LinksSequences-Rendering). Not a Italy-wide service — Veneto/Trentino/… need
+their own portals. Tirol keeps OSM or GIP.
 
 You do **not** need to drop multi-GB GeoTIFFs into chat. `tools/fetch_dgm.py` (and related fetch scripts) download into `data/raw/`.
 
@@ -129,8 +143,8 @@ In QGIS: add WCS → export a crop also works; then set paths under `sources.*.t
 | Dataset | Recommendation for a first test |
 |---------|----------------------------------|
 | Crop | ~0.5–2 km edge length around the road |
-| DGM | 0.5 m if feasible, else 1 m |
+| DGM | set `sources.dgm.resolution_m` to the **native** cell size (0.5 m Tirol, 2.5 m Südtirol). Fetch pads the bbox; cubicspline onto `beamng.meters_per_pixel` is local — never ask WCS for the level resolution |
 | Ortho | 1–2 m first; 0.2 m only if needed |
-| DOM | optional, artefact check only |
+| DOM | same as DGM (native + cubicspline) |
 
 Prefer a small, good crop with a visible **rock / forest ridge** over a whole pass.

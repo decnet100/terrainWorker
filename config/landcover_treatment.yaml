@@ -1,0 +1,104 @@
+# Landcover catalog → treatment groups.
+# Pixel catalogs store raw authority codes (CORINE, later BEV / Tirol).
+# Treatment YAML is the only place that groups codes for materials / biomes.
+# Change groups here without re-fetching.
+
+schema: landcover_treatment_v1
+nodata: 0
+
+# Soft groups used by compose_biomes / terrain masks.
+# Unknown codes stay untreated (terrain default / slope).
+groups:
+  forest_tall:
+    description: Closed forest canopy (tall)
+  forest_scrub:
+    description: Scrub, transitional woodland, open woodland
+  meadow:
+    description: Pasture, grassland, arable used as soft green
+  bare:
+    description: Rock, scree, sparse / no vegetation
+  building:
+    description: Built-up / artificial surfaces
+  water:
+    description: Inland water
+
+catalogs:
+  # INSPIRE / CORINE Land Cover (level-3 numeric CODE as int)
+  corine:
+    label_field: LAND_COVER_OBSERVATION
+    codes:
+      # Artificial
+      111: Continuous urban fabric
+      112: Discontinuous urban fabric
+      121: Industrial or commercial units
+      122: Road and rail networks
+      123: Port areas
+      124: Airports
+      131: Mineral extraction sites
+      132: Dump sites
+      133: Construction sites
+      141: Green urban areas
+      142: Sport and leisure facilities
+      # Agricultural
+      211: Non-irrigated arable land
+      212: Permanently irrigated land
+      213: Rice fields
+      221: Vineyards
+      222: Fruit trees and berry plantations
+      223: Olive groves
+      231: Pastures
+      241: Annual crops associated with permanent crops
+      242: Complex cultivation patterns
+      243: Land principally occupied by agriculture with significant natural vegetation
+      244: Agro-forestry areas
+      # Forest / semi-natural
+      311: Broad-leaved forest
+      312: Coniferous forest
+      313: Mixed forest
+      321: Natural grasslands
+      322: Moors and heathland
+      323: Sclerophyllous vegetation
+      324: Transitional woodland-shrub
+      331: Beaches, dunes, sands
+      332: Bare rocks
+      333: Sparsely vegetated areas
+      334: Burnt areas
+      335: Glaciers and perpetual snow
+      # Wetlands / water
+      411: Inland marshes
+      412: Peat bogs
+      421: Salt marshes
+      422: Salines
+      423: Intertidal flats
+      511: Water courses
+      512: Water bodies
+      521: Coastal lagoons
+      522: Estuaries
+      523: Sea and ocean
+    treatment:
+      forest_tall: [311, 312, 313]
+      forest_scrub: [322, 323, 324]
+      meadow: [141, 211, 212, 213, 221, 222, 223, 231, 241, 242, 243, 244, 321]
+      bare: [131, 132, 133, 331, 332, 333, 334, 335]
+      building: [111, 112, 121, 122, 123, 124, 142]
+      water: [411, 412, 421, 422, 423, 511, 512, 521, 522, 523]
+
+  # BEV INSPIRE LC.LandCoverRaster (legacy 0..5). Adapter so Tirol sites
+  # can move onto the same catalog/treatment path without losing codes.
+  bev:
+    label_field: null
+    codes:
+      1: vegetation_hoch
+      2: vegetation_mittel
+      3: vegetation_niedrig
+      4: bodenflaechen
+      5: gebaeude
+      6: gewaesser
+    # Stored as 1..6 (0 = nodata). Fetch/adapters shift BEV 0..5 → 1..6.
+    treatment:
+      forest_tall: [1]
+      forest_scrub: [2]
+      meadow: [3]
+      bare: [4]
+      building: [5]
+      water: [6]

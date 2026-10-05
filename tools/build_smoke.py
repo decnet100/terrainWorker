@@ -107,6 +107,20 @@ def _uses_gip_axis(site: dict | None = None) -> bool:
     return roads_type == "gip"
 
 
+def _uses_suedtirol_axis(site: dict | None = None) -> bool:
+    """True when this site opts into Südtirol LinksSequences as the road axis."""
+    site = site or SITE
+    roads_type = str(((site.get("sources") or {}).get("roads") or {}).get("type") or "").lower()
+    if roads_type not in {"suedtirol", "alto_adige", "bz", "road_links", "links"}:
+        return False
+    try:
+        from fetch_suedtirol_road_links import road_links_cfg  # noqa: WPS433
+
+        return road_links_cfg(site) is not None
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def fetch_osm_roads() -> list[dict]:
     """Fetch OSM highways in bbox, return list of roads as node lists in local meters."""
     to_wgs = Transformer.from_crs(CRS, "EPSG:4326", always_xy=True)
@@ -114,7 +128,7 @@ def fetch_osm_roads() -> list[dict]:
     east, north = to_wgs.transform(XMAX, YMAX)
     # Overpass expects south,west,north,east
     query = f"""
-    [out:json][timeout:60];
+    [out:json][timeout:90];
     (
       way["highway"~"motorway|trunk|primary|secondary|tertiary|unclassified|residential|service|track|path|living_street"]({south},{west},{north},{east});
     );
@@ -131,27 +145,10 @@ def fetch_osm_roads() -> list[dict]:
         data = json.loads(read_path.read_text(encoding="utf-8"))
     else:
         print("Overpass query…")
-        headers = {
-            "User-Agent": "beamng_autoroad/0.1 (local test)",
-            "Accept": "application/json",
-        }
-        last_err = None
-        data = None
-        for url in (
-            "https://overpass-api.de/api/interpreter",
-            "https://overpass.kumi.systems/api/interpreter",
-        ):
-            try:
-                r = requests.post(url, data={"data": query}, headers=headers, timeout=90)
-                r.raise_for_status()
-                data = r.json()
-                cache.write_text(json.dumps(data), encoding="utf-8")
-                break
-            except Exception as ex:  # noqa: BLE001
-                last_err = ex
-                print(f"Overpass failed at {url}: {ex}")
-        if data is None:
-            raise RuntimeError(f"Overpass failed: {last_err}")
+        from overpass_client import overpass_json  # noqa: WPS433
+
+        data = overpass_json(query, timeout_s=120.0)
+        cache.write_text(json.dumps(data), encoding="utf-8")
     to_local = Transformer.from_crs("EPSG:4326", CRS, always_xy=True)
 
     roads = []
@@ -244,12 +241,24 @@ def roads_to_beamng_json(roads: list[dict]) -> dict:
             "nodes": road["nodes"],
             "highway": road["highway"],
             "name": road["name"],
-            "osm_id": road["id"],
+            "osm_id": road.get("id"),
         }
+        if road.get("objectid") is not None:
+            entry["objectid"] = road["objectid"]
+            entry["osm_id"] = road["objectid"]
         if road.get("lanes") is not None:
             entry["lanes"] = road["lanes"]
         if road.get("width_source"):
             entry["width_source"] = road["width_source"]
+        for key in (
+            "str_code",
+            "objekt",
+            "kunstbauten",
+            "source",
+            "is_main_road",
+        ):
+            if road.get(key) is not None and road.get(key) != "":
+                entry[key] = road[key]
         payload[str(i)] = entry
     return payload
 
@@ -301,6 +310,20 @@ def main() -> None:
         gip_roads = load_gip_road_segments(SITE)
         roads_path.write_text(json.dumps(gip_roads, indent=2), encoding="utf-8")
         print(f"Wrote {roads_path} roads={len(gip_roads)} (gip)")
+    elif _uses_suedtirol_axis(SITE):
+        from fetch_suedtirol_road_links import (  # noqa: WPS433
+            fetch_suedtirol_road_links,
+            load_suedtirol_roads_for_smoke,
+        )
+
+        print("Axis from Südtirol LinksSequences — skipping Overpass")
+        fetch_suedtirol_road_links(SITE, force=False)
+        roads = load_suedtirol_roads_for_smoke(SITE, force=False)
+        roads = fill_road_heights(roads, elev, z0)
+        roads_path.write_text(
+            json.dumps(roads_to_beamng_json(roads), indent=2), encoding="utf-8"
+        )
+        print(f"Wrote {roads_path} roads={len(roads)} (suedtirol_links)")
     else:
         try:
             roads = fetch_osm_roads()

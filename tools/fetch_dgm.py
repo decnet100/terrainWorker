@@ -1,6 +1,10 @@
 """Download DGM via WCS for the active site BBOX (cached).
 
-Default: reuse data/raw/dgm_<site>.tif if present.
+Fetches the **native** cell size from ``sources.dgm.resolution_m`` (padded),
+then cubic-spline resamples onto ``beamng.meters_per_pixel``. Do not set
+``resolution_m`` to the level spacing — that would resample on the server.
+
+Default: reuse data/raw/dgm_<site>.tif if present and meta matches.
 Re-download only with --force.
 """
 from __future__ import annotations

@@ -105,12 +105,22 @@ def resolve_site_for_level(level: str, site_arg: str | None) -> dict | None:
         if bn == level:
             print(f"Matched site config: {p}")
             return site
-    if site_arg:
-        # Explicit site even if level_name differs — use it for import sync
-        p = resolve_site_path(site_arg)
+    # Explicit site (--site or AUTOROAD_SITE) even if level_name differs —
+    # otherwise import/ stays empty after a freely typed Freeroam name.
+    explicit = site_arg or __import__("os").environ.get("AUTOROAD_SITE")
+    if explicit:
+        p = resolve_site_path(explicit)
         if p.is_file():
-            print(f"Using site config (level_name may differ): {p}")
-            return load_site(p)
+            site = load_site(p)
+            bn = ((site.get("beamng") or {}).get("level_name") or "").strip()
+            if bn and bn != level:
+                print(
+                    f"Using site config {p} (beamng.level_name={bn!r} ≠ "
+                    f"folder {level!r}) — syncing import/ anyway"
+                )
+            else:
+                print(f"Using site config (level_name may differ): {p}")
+            return site
     return None
 
 
@@ -293,27 +303,49 @@ def strip_template_props(dst: Path) -> None:
 
 
 def patch_terrain_block(dst: Path, level: str, max_height: float | None) -> None:
-    path = dst / "main" / "MissionGroup" / "level_objects" / "terrain" / "items.level.json"
-    rows = _read_ndjson(path)
-    changed = False
-    for r in rows:
-        if r.get("class") != "TerrainBlock" and r.get("name") != "theTerrain":
+    """Force theTerrain to SW origin and a writable ``theTerrain.ter`` path.
+
+    Newer templates put the TerrainBlock in ``MissionGroup/items.level.json``;
+    older ones use ``level_objects/terrain/items.level.json``. Patch every
+    match — World Editor import often leaves ``position: [-512,-512,…]``.
+    """
+    candidates = [
+        dst / "main" / "MissionGroup" / "level_objects" / "terrain" / "items.level.json",
+        dst / "main" / "MissionGroup" / "items.level.json",
+    ]
+    # Also catch any other NDJSON that still holds a TerrainBlock.
+    mg = dst / "main" / "MissionGroup"
+    if mg.is_dir():
+        for path in mg.rglob("items.level.json"):
+            if path not in candidates:
+                candidates.append(path)
+
+    found = False
+    for path in candidates:
+        if not path.is_file():
             continue
-        r["name"] = "theTerrain"
-        r["class"] = "TerrainBlock"
-        r["terrainFile"] = f"/levels/{level}/theTerrain.ter"
-        r["position"] = [0, 0, 0]
-        if max_height is not None:
-            r["maxHeight"] = float(max_height)
-        changed = True
-        print(
-            f"  theTerrain → terrainFile={r['terrainFile']} "
-            f"position=[0,0,0] maxHeight={r.get('maxHeight')}"
-        )
-    if changed:
-        _write_ndjson(path, rows)
-    else:
-        print("  WARNING: theTerrain TerrainBlock not found in terrain/items.level.json")
+        rows = _read_ndjson(path)
+        changed = False
+        for r in rows:
+            if r.get("class") != "TerrainBlock" and r.get("name") != "theTerrain":
+                continue
+            r["name"] = "theTerrain"
+            r["class"] = "TerrainBlock"
+            r["terrainFile"] = f"/levels/{level}/theTerrain.ter"
+            r["position"] = [0, 0, 0]
+            if max_height is not None:
+                r["maxHeight"] = float(max_height)
+            changed = True
+            found = True
+            print(
+                f"  theTerrain → {path.relative_to(dst)} "
+                f"terrainFile={r['terrainFile']} "
+                f"position=[0,0,0] maxHeight={r.get('maxHeight')}"
+            )
+        if changed:
+            _write_ndjson(path, rows)
+    if not found:
+        print("  WARNING: theTerrain TerrainBlock not found under MissionGroup")
 
     tj = dst / "theTerrain.terrain.json"
     if tj.is_file():

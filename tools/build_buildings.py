@@ -1499,11 +1499,17 @@ def _load_building_features(site: dict, proc: Path, cfg: dict) -> list[dict]:
         data = fetch_osm_buildings(site, proc, force=cfg["force_fetch"])
         feats = buildings_from_osm(data, site, cfg)
         src = "osm"
-    skip = cfg.get("skip_osm_ids") or set()
+    skip = set(cfg.get("skip_osm_ids") or set())
+    from building_filters import load_tiris_exclude  # noqa: WPS433
+
+    shared = load_tiris_exclude()
+    if shared:
+        skip |= shared
+        print(f"Buildings tiris_exclude.json ids={len(shared)}")
     if skip:
         before = len(feats)
         feats = [f for f in feats if _osm_id_int(f.get("osm_id")) not in skip]
-        print(f"Buildings skip_osm_ids={sorted(skip)} dropped={before - len(feats)}")
+        print(f"Buildings skip ids dropped={before - len(feats)} (yaml+shared)")
     print(f"Buildings after filters ({src}): {len(feats)}")
     return feats
 

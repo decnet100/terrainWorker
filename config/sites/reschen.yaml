@@ -18,13 +18,13 @@ sources:
     url: "https://gis.tirol.gv.at/arcgis/services/Service_Public/terrain/MapServer/WCSServer"
     coverage: "Gelaendemodell_50cm_M28"
     version: "1.0.0"
-    resolution_m: 1.0
+    resolution_m: 0.5          # native; cubicspline → beamng.meters_per_pixel
   dom:
     type: wcs
     url: "https://gis.tirol.gv.at/arcgis/services/Service_Public/terrain/MapServer/WCSServer"
     coverage: "Oberflaechenmodell_50cm_M28"
     version: "1.0.0"
-    resolution_m: 1.0
+    resolution_m: 0.5
   twi:
     smooth_m: 10.0
   bev_landcover:

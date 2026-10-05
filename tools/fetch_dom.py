@@ -3,6 +3,9 @@
 Tirol names this digitales Oberflächenmodell (DOM); same as DSM.
 Used later for vegetation height: nDSM ≈ max(0, DOM − DGM).
 
+Same rule as DGM: native ``sources.dom.resolution_m`` + pad, then
+cubicspline onto ``beamng.meters_per_pixel``.
+
 Default: reuse data/raw/dom_<site>.tif if present.
 Re-download only with --force.
 """

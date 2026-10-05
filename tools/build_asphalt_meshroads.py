@@ -34,6 +34,13 @@ _OID = re.compile(r"_(\d+)(?:_r\d+)?(?:_s\d+)?$")
 def _is_main_road(road: dict, site: dict) -> bool:
     if gip_is_tunnel_bore(road, site):
         return False
+    try:
+        from fetch_suedtirol_road_links import axis_is_structure_span  # noqa: WPS433
+
+        if axis_is_structure_span(road):
+            return False
+    except Exception:  # noqa: BLE001
+        pass
     code = str(road.get("str_code") or "").strip()
     objekt = str(road.get("objekt") or "").upper().strip()
     if _CODE.match(code):
@@ -41,9 +48,41 @@ def _is_main_road(road: dict, site: dict) -> bool:
     return objekt == "S-A"
 
 
+def _axis_polylines(site: dict, proc: Path) -> list[dict]:
+    """GIP cache when present for GIP sites; else ``roads_beamng.json`` (OSM/Südtirol)."""
+    bng = site.get("beamng") or {}
+    src = str((bng.get("decal_roads") or {}).get("centerline_source") or "").lower()
+    roads_type = str(((site.get("sources") or {}).get("roads") or {}).get("type") or "").lower()
+    use_gip = (
+        src in ("gip", "verkehrswege", "objectid", "oid")
+        or roads_type == "gip"
+        or (proc / "gip_roads_beamng.json").is_file()
+        and roads_type not in {"osm", "suedtirol", "alto_adige", "bz", "road_links", "links"}
+    )
+    # Prefer explicit OSM/Südtirol over a leftover GIP cache on mixed sites.
+    if roads_type in {"osm", "suedtirol", "alto_adige", "bz", "road_links", "links"}:
+        use_gip = False
+    if use_gip and (proc / "gip_roads_beamng.json").is_file():
+        return _gip_polylines(site, proc)
+    roads = bb.load_road_polylines(proc)
+    print(f"roads_beamng.json: {len(roads)} polylines", flush=True)
+    return roads
+
+
 def _road_ids(site: dict, proc: Path) -> set[str]:
     cfg = _cfg((site.get("beamng") or {}))
-    roads = stitch_abutting_roads(_gip_polylines(site, proc), cfg)
+    roads = _axis_polylines(site, proc)
+    try:
+        from fetch_suedtirol_road_links import axis_is_structure_span  # noqa: WPS433
+
+        before = len(roads)
+        roads = [r for r in roads if not axis_is_structure_span(r)]
+        n = before - len(roads)
+        if n:
+            print(f"span omit before stitch: {n} tunnel/bridge axis segment(s)", flush=True)
+    except Exception:  # noqa: BLE001
+        pass
+    roads = stitch_abutting_roads(roads, cfg)
     ids: set[str] = set()
     n = 0
     km = 0.0
@@ -103,6 +142,12 @@ def _restore_heightmap(proc: Path) -> None:
     live = json.loads(meta_path.read_text(encoding="utf-8"))
     if "clip_absolute_m" not in live:
         print("heightmap already unclipped", flush=True)
+        return
+    if not backup.is_dir():
+        print(
+            f"WARNING: clip_absolute_m set but {BACKUP_NAME}/ missing — skip restore",
+            flush=True,
+        )
         return
     level_import = (
         USER_LEVELS / str((load_site().get("beamng") or {}).get("level_name")) / "import"
@@ -183,6 +228,7 @@ def main() -> None:
         raise SystemExit(f"missing {roads_path}")
     backup_items = proc / BACKUP_NAME / "roads_items.level.json"
     if not backup_items.is_file():
+        backup_items.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(roads_path, backup_items)
         print(f"backup {backup_items.name}", flush=True)
 

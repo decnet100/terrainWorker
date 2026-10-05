@@ -316,6 +316,46 @@ def _tirol_wald_kind(props: dict) -> str | None:
     return None
 
 
+def rasterize_catalog_landcover(
+    size: int, *, force: bool = False
+) -> tuple[np.ndarray, dict[str, np.ndarray], str]:
+    """CORINE (or other catalog) codes → CLASS_* + extras via treatment YAML."""
+    from fetch_suedtirol_landcover import fetch_suedtirol_landcover  # noqa: WPS433
+    from landcover_catalog import (  # noqa: WPS433
+        landuse_from_treatment,
+        load_codes_bundle,
+        load_treatment,
+    )
+
+    fetch_suedtirol_landcover(SITE, force=force)
+    bundle = load_codes_bundle(PROC)
+    if bundle is None:
+        return (
+            np.full((size, size), -1, dtype=np.int8),
+            {},
+            "none",
+        )
+    codes, meta = bundle
+    catalog = str(meta.get("catalog") or "corine")
+    if codes.shape != (size, size):
+        # Nearest resize keeps integer codes.
+        img = Image.fromarray(codes, mode="I;16")
+        img = img.resize((size, size), resample=Image.Resampling.NEAREST)
+        codes = np.asarray(img, dtype=np.uint16)
+    treat = load_treatment()
+    landuse, extras = landuse_from_treatment(codes, catalog=catalog, treatment=treat)
+    note = f"catalog:{catalog}"
+    print(
+        f"Catalog landcover ({catalog}): "
+        f"forest={(landuse == CLASS_FOREST).mean()*100:.2f}% "
+        f"grass={(landuse == CLASS_GRASS).mean()*100:.2f}% "
+        f"dirt={(landuse == CLASS_DIRT).mean()*100:.2f}% "
+        f"water={(landuse == CLASS_WATER).mean()*100:.2f}% "
+        f"concrete={(landuse == CLASS_CONCRETE).mean()*100:.2f}%"
+    )
+    return landuse, extras, note
+
+
 def rasterize_bev_landcover(
     size: int, *, force: bool = False
 ) -> tuple[np.ndarray, dict[str, np.ndarray], str]:
@@ -805,9 +845,13 @@ def _stroke_road_nodes(
 def road_masks(size: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Return (asphalt, shoulder, forest_gravel) along roads (BeamNG metres).
 
-    OSM ``roads_beamng.json`` plus, when Decals use GIP, all GIP segments
-    (named + minor). ``S-F`` / ``S-GW`` / ``S-FRW`` / ``S-STRAIL`` paint gravel
-    at node width, not asphalt.
+    Default (Tirol / no ``sources.road_areas``): OSM ``roads_beamng.json`` plus,
+    when Decals use GIP, all GIP segments. ``S-F`` / ``S-GW`` / ``S-FRW`` /
+    ``S-STRAIL`` paint gravel at node width, not asphalt.
+
+    Südtirol with ``sources.road_areas`` (TrasRoadArea): asphalt comes from
+    official polygons; shoulder is a dilation of that footprint. OSM/GIP
+    strokes are not used for asphalt then (axes stay OSM elsewhere).
     """
     from gip_road_segments import _GRAVEL_NO_BED_OBJEKT, gip_skip_surface_paint
 
@@ -819,6 +863,56 @@ def road_masks(size: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     draw_s = ImageDraw.Draw(shoulder_img)
     draw_g = ImageDraw.Draw(gravel_img)
     n_osm = n_gip = n_path = 0
+
+    # Authority-scoped official pavement (Südtirol TrasRoadArea only).
+    try:
+        from fetch_suedtirol_road_areas import (  # noqa: WPS433
+            fetch_suedtirol_road_areas,
+            load_road_area_masks,
+            road_areas_cfg,
+        )
+
+        ra_cfg = road_areas_cfg(SITE)
+    except Exception:  # noqa: BLE001
+        ra_cfg = None
+
+    if ra_cfg is not None:
+        fetch_suedtirol_road_areas(SITE, force=False)
+        masks = load_road_area_masks(PROC, size)
+        if masks is not None and (
+            masks["asphalt"].any() or masks["tunnel"].any() or masks["bridge"].any()
+        ):
+            # Terrain asphalt = ground pavement only (tunnel/bridge LOC already
+            # excluded in rasterize; subtract again if an older cache mixed them).
+            asphalt = masks["asphalt"] & ~masks["tunnel"] & ~masks["bridge"]
+            # Bankett: dilate pavement by shoulder_m, keep outside the core.
+            m_per_px = TERRAIN_EXTENT / max(size, 1)
+            pad_px = max(1, int(round(float(SHOULDER_M) / m_per_px)))
+            dil = Image.fromarray(asphalt.astype(np.uint8) * 255, mode="L")
+            for _ in range(pad_px):
+                dil = dil.filter(ImageFilter.MaxFilter(3))
+            shoulder = (np.asarray(dil, dtype=np.uint8) > 0) & ~asphalt
+            # Bankett must not creep into span omit zones either.
+            shoulder = shoulder & ~masks["tunnel"] & ~masks["bridge"]
+            gravel = np.zeros((size, size), dtype=bool)
+            # Keep side masks in processed/ for Kunstbauten cross-check.
+            for key, name in (
+                ("tunnel", "mask_road_tunnel.png"),
+                ("bridge", "mask_road_bridge.png"),
+                ("junction", "mask_road_junction.png"),
+            ):
+                Image.fromarray(masks[key].astype(np.uint8) * 255, mode="L").save(
+                    PROC / name
+                )
+            print(
+                f"Road masks: Südtirol TrasRoadArea asphalt="
+                f"{asphalt.mean()*100:.2f}% shoulder={shoulder.mean()*100:.2f}% "
+                f"tunnel={masks['tunnel'].mean()*100:.2f}% "
+                f"bridge={masks['bridge'].mean()*100:.2f}% "
+                f"junction={masks['junction'].mean()*100:.2f}% "
+                f"(span LOC omitted from asphalt; OSM strokes skipped)"
+            )
+            return asphalt, shoulder, gravel
 
     path = PROC / "roads_beamng.json"
     if path.exists():
@@ -1166,6 +1260,11 @@ def main() -> None:
     lu_src = str(((SITE.get("sources") or {}).get("landuse") or {}).get("type") or "osm").lower()
     extras: dict[str, np.ndarray] = {}
     source_note = "osm_landuse"
+    if lu_src in ("corine", "suedtirol", "catalog"):
+        landuse, extras, source_note = rasterize_catalog_landcover(OUT_SIZE, force=force)
+        if source_note == "none" or int((landuse >= 0).sum()) == 0:
+            print("Catalog landcover missing/empty — falling back to OSM")
+            lu_src = "osm"
     if lu_src in ("bev", "bev_wms", "bev_landcover"):
         landuse, extras, source_note = rasterize_bev_landcover(OUT_SIZE, force=force)
         if source_note == "none" or int((landuse >= 0).sum()) == 0:
@@ -1183,7 +1282,7 @@ def main() -> None:
                 print(f"OSM fallback failed: {ex}")
                 landuse = np.full((OUT_SIZE, OUT_SIZE), -1, dtype=np.int8)
                 source_note = "slope_only"
-    elif lu_src not in ("bev", "bev_wms", "bev_landcover"):
+    elif lu_src not in ("bev", "bev_wms", "bev_landcover", "corine", "suedtirol", "catalog"):
         try:
             lu_data = fetch_osm_landuse()
             landuse = rasterize_landuse(lu_data, OUT_SIZE)
@@ -1200,10 +1299,30 @@ def main() -> None:
     # gallery/tunnel bore (incl. terrain_roof none). keep_asphalt is omitted
     # from gallery_span so a surface road above an underpass stays.
     # Bridge/tunnel spans do not overwrite landcover (no forced rock).
-    structure_omit = bridge_under | gallery_span
+    # Südtirol TrasRoadArea LOC masks: same span rule when galleries/bridges
+    # JSON is not built yet.
+    span_loc = np.zeros((OUT_SIZE, OUT_SIZE), dtype=bool)
+    for name in ("mask_road_tunnel.png", "mask_road_bridge.png"):
+        p = PROC / name
+        if not p.is_file():
+            continue
+        arr = np.asarray(Image.open(p).convert("L"))
+        if arr.shape != (OUT_SIZE, OUT_SIZE):
+            arr = np.asarray(
+                Image.fromarray(arr, mode="L").resize(
+                    (OUT_SIZE, OUT_SIZE), resample=Image.Resampling.NEAREST
+                )
+            )
+        span_loc |= arr > 0
+    structure_omit = bridge_under | gallery_span | span_loc
     asphalt_vis = asphalt & ~structure_omit
     shoulder_vis = shoulder & ~structure_omit
     gravel_vis = gravel & ~structure_omit
+    if span_loc.any():
+        print(
+            f"Span LOC omit (TrasRoadArea tunnel/bridge): "
+            f"{span_loc.mean()*100:.2f}%"
+        )
     print(
         f"Road masks: asphalt={(asphalt_vis.mean()*100):.2f}% "
         f"shoulder={(shoulder_vis.mean()*100):.2f}% "
@@ -1298,6 +1417,18 @@ def main() -> None:
     if bev_codes is not None:
         Image.fromarray(np.asarray(bev_codes, dtype=np.uint8), mode="L").save(
             PROC / "mask_biome_bev_codes.png"
+        )
+    lc_codes = extras.get("landcover_codes")
+    if lc_codes is not None:
+        # uint16 → split preview: low byte only for quick look; full codes stay in tif
+        Image.fromarray(
+            np.clip(np.asarray(lc_codes, dtype=np.uint16), 0, 255).astype(np.uint8),
+            mode="L",
+        ).save(PROC / "mask_biome_landcover_codes_lo.png")
+    treat_id = extras.get("treatment_id")
+    if treat_id is not None:
+        Image.fromarray(np.asarray(treat_id, dtype=np.uint8), mode="L").save(
+            PROC / "mask_biome_treatment.png"
         )
 
     meta = {

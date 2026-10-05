@@ -52,7 +52,11 @@ sources:
     # Concrete URL from the tiris catalogue / QGIS layer source
     url: "https://REPLACE/ogd/wcs/gelaende"
     coverage: "DGM_50cm"          # from GetCapabilities
+    # Native cell size of the coverage (not the level mpp). Fetch is always
+    # native + pad; cubicspline onto beamng.meters_per_pixel follows locally.
     resolution_m: 0.5
+    # fetch_pad_cells: 4
+    # grid_origin: [easting, northing]   # optional cell centre of index (0,0)
     # Or local:
     # type: local
     # path: data/raw/dgm.tif
@@ -119,6 +123,26 @@ sources:
   waterways:
     type: featureserver
     url: "https://services3.arcgis.com/hG7UfxX49PQ8XkXh/arcgis/rest/services/Fliessgewaesser/FeatureServer/0/query"
+
+# Optional Südtirol-only pavement polygons (does not affect Tirol sites):
+# road_areas:
+#   authority: suedtirol
+#   type: wfs
+#   url: "https://geoservices3.civis.bz.it/geoserver/ows"
+#   type_name: "gvcc-BasicCore:TrasRoadArea-Polygon"
+#   version: "2.0.0"
+#   srs: EPSG:25832
+#
+# Optional Südtirol-only road axes (Provinz Bozen TransportNetwork; not Veneto/…):
+# road_links:
+#   authority: suedtirol
+#   type: wfs
+#   url: "https://geoservices1.civis.bz.it/geoserver/ows"
+#   type_name: "p_bz-TransportNetwork:LinksSequences-Rendering"
+#   version: "2.0.0"
+#   srs: EPSG:25832
+# roads:
+#   type: suedtirol   # else osm / gip — Tirol unchanged
 
 beamng:
   meters_per_pixel: 1.0          # heightmap resolution in the level (starting value)

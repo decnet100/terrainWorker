@@ -166,10 +166,17 @@ def load_road_polylines(proc: Path) -> list[dict]:
             cum.append(cum[-1] + math.hypot(b[0] - a[0], b[1] - a[1]))
         roads.append(
             {
-                "id": k,
+                "id": road.get("objectid") if road.get("objectid") is not None else k,
+                "objectid": road.get("objectid"),
+                "osm_id": road.get("osm_id") or road.get("objectid"),
                 "name": road.get("name"),
-                "highway": road.get("highway"),
-                "pts": pts,
+        "highway": road.get("highway"),
+        "str_code": road.get("str_code"),
+        "objekt": road.get("objekt"),
+        "kunstbauten": road.get("kunstbauten"),
+        "location": road.get("location"),
+        "source": road.get("source"),
+        "pts": pts,
                 "cum": cum,
                 "length": cum[-1],
             }
@@ -213,12 +220,18 @@ def project_on_road(
 
 
 def pick_road(roads: list[dict], xy_gip: list[tuple[float, float]]) -> dict:
-    """Nearest carriageway centerline to GIP (exclude footpaths)."""
+    """Nearest carriageway centerline to GIP (exclude footpaths and span pieces)."""
     mid = xy_gip[len(xy_gip) // 2]
     best = None
+    try:
+        from fetch_suedtirol_road_links import axis_is_structure_span  # noqa: WPS433
+    except ImportError:
+        axis_is_structure_span = None  # type: ignore[assignment]
     for road in roads:
         hwy = str(road.get("highway") or "")
         if hwy in {"path", "footway", "cycleway", "steps", "track"}:
+            continue
+        if axis_is_structure_span is not None and axis_is_structure_span(road):
             continue
         _s, px, py, _pz, _tx, _ty, _tz, _w = project_on_road(road, mid[0], mid[1])
         d2 = (mid[0] - px) ** 2 + (mid[1] - py) ** 2
@@ -874,6 +887,19 @@ def build_span_on_road(
 
 
 def bridge_features(site: dict, sc: SiteCoords) -> list[dict]:
+    try:
+        from fetch_suedtirol_road_links import (  # noqa: WPS433
+            suedtirol_span_features,
+            uses_suedtirol_structures,
+        )
+
+        if uses_suedtirol_structures(site):
+            feats = suedtirol_span_features(site, kinds={"bridge"})
+            print(f"Bridges from Südtirol LOCATION: {len(feats)}")
+            return feats
+    except ImportError:
+        pass
+
     from gip_bridge_flags import bridge_xy_from_cache  # noqa: WPS433
 
     flagged = bridge_xy_from_cache(site)
@@ -1011,6 +1037,9 @@ def build_bridge_entries_road_spline(
         portal_z_offset_m=portal_z_offsets(cfg),
         abutment_s=abut,
         free_span=str(cfg.get("free_span") or "linear"),
+        crossfall_max=float(
+            cfg["crossfall_max"] if cfg.get("crossfall_max") is not None else 0.12
+        ),
         corner_up_m=float(cfg.get("corner_up_m") if cfg.get("corner_up_m") is not None else 0.25),
         corner_down_m=float(cfg.get("corner_down_m") if cfg.get("corner_down_m") is not None else 0.06),
         corner_band=float(cfg.get("corner_band") if cfg.get("corner_band") is not None else 0.2),
@@ -1140,9 +1169,15 @@ def _load_side_cut_preserve_axes(
         except json.JSONDecodeError:
             roads = {}
     if not roads:
-        from gip_road_segments import load_gip_road_segments
-
-        roads = load_gip_road_segments(site)
+        # Südtirol / OSM sites: no GIP — use roads_beamng if present.
+        osm_path = proc / "roads_beamng.json"
+        if osm_path.is_file():
+            try:
+                roads = json.loads(osm_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                roads = {}
+        if not roads:
+            return [], spec
     return side_cut_preserve_axes(roads, spec), spec
 
 
@@ -1948,7 +1983,8 @@ def main() -> None:
         from gip_road_segments import load_gip_corridors, load_gip_corridor_for_feature
 
         corridors = load_gip_corridors(site)
-    elif use_sn_cl or use_spline:
+    elif use_sn_cl:
+        # Explicit Strassennetz centerline (not implied by road_spline alone).
         net_road = load_strassennetz_road(proc)
         print(
             f"Centerline Strassennetz: {net_road.get('name')!r} "
@@ -1960,7 +1996,10 @@ def main() -> None:
     z_terrain = load_terrain_z(site)
     feats = bridge_features(site, sc)
     if not feats:
-        raise SystemExit("No bridge features in GIP cache for this site")
+        raise SystemExit(
+            "No bridge features for this site "
+            "(Südtirol LOCATION / GIP cache / bridge flags)"
+        )
 
     entries = []
     span_infos = []
@@ -1976,16 +2015,26 @@ def main() -> None:
                 from gip_road_segments import load_gip_corridor_for_feature
 
                 road = load_gip_corridor_for_feature(feat, site, corridors=corridors)
-            elif net_road is None:
-                cl_f = str(cfg.get("centerline") or defaults.get("centerline") or "osm").lower()
+            elif net_road is not None:
+                road = net_road
+            else:
+                # OSM / Südtirol Links: stitch onto roads_beamng (no Strassennetz).
+                cl_f = str(
+                    cfg.get("centerline") or defaults.get("centerline") or "osm"
+                ).lower()
                 if cl_f in ("gip", "verkehrswege", "objectid", "oid"):
                     from gip_road_segments import load_gip_corridor_for_feature
 
-                    road = load_gip_corridor_for_feature(feat, site, corridors=corridors)
-                else:
+                    road = load_gip_corridor_for_feature(
+                        feat, site, corridors=corridors
+                    )
+                elif cl_f in ("strassennetz", "sn", "net", "strasse", "straßennetz"):
                     road = load_strassennetz_road(proc)
-            else:
-                road = net_road
+                else:
+                    if not roads:
+                        raise SystemExit(f"Missing {proc / 'roads_beamng.json'}")
+                    seed = pick_road(roads, feat["xy"])
+                    road = stitch_road_chain(roads, seed)
             strip_entries, info = build_bridge_entries_road_spline(
                 feat, road, z_terrain, cfg
             )

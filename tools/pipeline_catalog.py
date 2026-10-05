@@ -61,7 +61,7 @@ STEPS: tuple[Step, ...] = (
     Step(
         id="fetch_dgm",
         title="Fetch DGM",
-        summary="Terrain height (WCS or local file) into data/raw/.",
+        summary="Native DGM (padded WCS) + cubicspline onto level mpp.",
         script="tools/fetch_dgm.py",
         group="1  Raw data",
         docs="docs/SITE_DATA.md",
@@ -69,9 +69,12 @@ STEPS: tuple[Step, ...] = (
             "sources.dgm.type",
             "sources.dgm.coverage",
             "sources.dgm.resolution_m",
+            "sources.dgm.fetch_pad_cells",
+            "sources.dgm.grid_origin",
             "sources.dgm.path",
+            "beamng.meters_per_pixel",
         ),
-        outputs=("data/raw/dgm_{slug}.tif",),
+        outputs=("data/raw/dgm_{slug}.tif", "data/raw/dgm_{slug}_native.tif"),
         flags=(Flag("force", "--force", "bool", "Re-download, ignore cache"),),
         core=True,
     ),
@@ -97,7 +100,7 @@ STEPS: tuple[Step, ...] = (
     Step(
         id="fetch_dom",
         title="Fetch DOM",
-        summary="Surface model for vegetation height (nDSM = DOM − DGM).",
+        summary="Native DOM (padded) + cubicspline onto level mpp (nDSM = DOM − DGM).",
         script="tools/fetch_dom.py",
         group="1  Raw data",
         docs="docs/SITE_DATA.md",
@@ -131,6 +134,73 @@ STEPS: tuple[Step, ...] = (
         flags=(Flag("force", "--force", "bool", "Re-download, ignore cache"),),
         core=True,
         needs="bev",
+    ),
+    Step(
+        id="fetch_suedtirol_landcover",
+        title="Fetch CORINE land cover",
+        summary="Südtirol INSPIRE LC WFS → catalog codes + treatment groups.",
+        script="tools/fetch_suedtirol_landcover.py",
+        group="1  Raw data",
+        docs="docs/SITE_DATA.md",
+        yaml_keys=(
+            "sources.landcover.type",
+            "sources.landcover.type_name",
+            "sources.landcover.catalog",
+            "sources.landuse.type",
+        ),
+        outputs=(
+            "data/raw/landcover_corine_{slug}.geojson",
+            "data/processed/{slug}/landcover_codes.tif",
+            "data/processed/{slug}/landcover_treatment.tif",
+        ),
+        flags=(Flag("force", "--force", "bool", "Re-download, ignore cache"),),
+        core=True,
+        needs="corine_landcover",
+    ),
+    Step(
+        id="fetch_suedtirol_road_areas",
+        title="Fetch Südtirol road areas",
+        summary="TrasRoadArea polygons → asphalt / tunnel / bridge / junction masks.",
+        script="tools/fetch_suedtirol_road_areas.py",
+        group="1  Raw data",
+        docs="docs/SITE_DATA.md",
+        yaml_keys=(
+            "sources.road_areas.authority",
+            "sources.road_areas.type_name",
+            "sources.road_areas.url",
+        ),
+        outputs=(
+            "data/raw/road_areas_suedtirol_{slug}.geojson",
+            "data/processed/{slug}/mask_road_area.png",
+            "data/processed/{slug}/mask_road_tunnel.png",
+            "data/processed/{slug}/mask_road_bridge.png",
+            "data/processed/{slug}/mask_road_junction.png",
+        ),
+        flags=(Flag("force", "--force", "bool", "Re-download, ignore cache"),),
+        core=True,
+        needs="suedtirol_road_areas",
+    ),
+    Step(
+        id="fetch_suedtirol_road_links",
+        title="Fetch Südtirol road links",
+        summary="TransportNetwork LinksSequences axes (Provinz Bozen only).",
+        script="tools/fetch_suedtirol_road_links.py",
+        group="1  Raw data",
+        docs="docs/SITE_DATA.md",
+        yaml_keys=(
+            "sources.road_links.authority",
+            "sources.road_links.type_name",
+            "sources.road_links.url",
+            "sources.roads.type",
+        ),
+        outputs=(
+            "data/raw/road_links_suedtirol_{slug}.geojson",
+            "data/processed/{slug}/suedtirol_roads_beamng.json",
+            "data/processed/{slug}/preview_road_links.png",
+        ),
+        flags=(Flag("force", "--force", "bool", "Re-download, ignore cache"),),
+        core=True,
+        needs="suedtirol_road_links",
     ),
     Step(
         id="fetch_gip",
@@ -633,12 +703,41 @@ def is_applicable(step: Step, site: dict) -> bool:
             return True
         lu = str(nested_get(site, "sources.landuse.type") or "").lower()
         return lu in ("bev", "bev_wms", "bev_landcover")
+    if need == "corine_landcover":
+        if nested_get(site, "sources.landcover"):
+            cat = str(nested_get(site, "sources.landcover.catalog") or "corine").lower()
+            if cat == "corine":
+                return True
+        lu = str(nested_get(site, "sources.landuse.type") or "").lower()
+        return lu in ("corine", "suedtirol", "catalog")
+    if need == "suedtirol_road_areas":
+        ra = nested_get(site, "sources.road_areas")
+        if not isinstance(ra, dict) or not ra:
+            return False
+        auth = str(ra.get("authority") or ra.get("catalog") or "").lower()
+        return auth in {"suedtirol", "alto_adige", "bz"}
+    if need == "suedtirol_road_links":
+        rl = nested_get(site, "sources.road_links")
+        if not isinstance(rl, dict) or not rl:
+            return False
+        auth = str(rl.get("authority") or rl.get("catalog") or "").lower()
+        return auth in {"suedtirol", "alto_adige", "bz"}
     if need == "beamng.rock_color_clusters":
         rc = nested_get(site, "beamng.rock_color_clusters")
         return bool(isinstance(rc, dict) and rc.get("enabled"))
     if need == "tirol_landcover":
         lu = str(nested_get(site, "sources.landuse.type") or "featureserver").lower()
-        if lu in ("osm", "none", "off"):
+        if lu in (
+            "osm",
+            "none",
+            "off",
+            "corine",
+            "suedtirol",
+            "catalog",
+            "bev",
+            "bev_wms",
+            "bev_landcover",
+        ):
             return False
         return bool(
             nested_get(site, "sources.landuse.layers.landnutzung")

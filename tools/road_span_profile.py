@@ -482,6 +482,7 @@ def build_span_profile(
     portal_z_offset_m: tuple[float, float] | list[float] | None = None,
     abutment_s: tuple[float, float] | list[float] | None = None,
     free_span: str = "linear",  # linear | pchip_ends (no sag default = linear)
+    crossfall_max: float = 0.12,
     corner_up_m: float = 0.25,
     corner_down_m: float = 0.06,
     corner_band: float = 0.2,
@@ -528,7 +529,7 @@ def build_span_profile(
             dz0 = dz1 = float(seq[0])
         else:
             dz0, dz1 = float(seq[0]), float(seq[1])
-    max_cf = 0.12
+    max_cf = float(crossfall_max)
     corner_up = float(corner_up_m)
     corner_down = float(corner_down_m)
     cband = float(corner_band)

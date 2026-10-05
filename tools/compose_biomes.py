@@ -257,33 +257,42 @@ def _load_raster(path: Path, size: int, *, nearest: bool = False) -> np.ndarray:
     return arr
 
 
-def _assign_soft(
-    bev: np.ndarray,
+def _assign_soft_from_masks(
+    masks: dict[str, np.ndarray],
     ndsm: np.ndarray,
     twi: np.ndarray,
     rock: np.ndarray,
     cfg: dict[str, float],
 ) -> np.ndarray:
-    """Biome IDs without snow / kill (water still assigned)."""
-    size = bev.shape[0]
+    """Biome IDs from treatment masks (catalog codes already grouped)."""
+    size = ndsm.shape[0]
     out = np.full((size, size), BIOME_ID["bare_dry"], dtype=np.uint8)
 
     canopy = ndsm >= cfg["ndsm_canopy_m"]
     clearing = ndsm < cfg["ndsm_clearing_m"]
     wet = twi >= cfg["twi_wet"]
 
-    hoch = bev == BEV_HOCH
-    mittel = bev == BEV_MITTEL
-    niedrig = bev == BEV_NIEDRIG
-    bare = bev == BEV_BARE
-    water = bev == BEV_WATER
+    hoch = np.asarray(masks.get("forest_tall"), dtype=bool)
+    mittel = np.asarray(masks.get("forest_scrub"), dtype=bool)
+    niedrig = np.asarray(masks.get("meadow"), dtype=bool)
+    bare = np.asarray(masks.get("bare"), dtype=bool)
+    water = np.asarray(masks.get("water"), dtype=bool)
+    if hoch.shape != (size, size):
+        hoch = np.zeros((size, size), dtype=bool)
+    if mittel.shape != (size, size):
+        mittel = np.zeros((size, size), dtype=bool)
+    if niedrig.shape != (size, size):
+        niedrig = np.zeros((size, size), dtype=bool)
+    if bare.shape != (size, size):
+        bare = np.zeros((size, size), dtype=bool)
+    if water.shape != (size, size):
+        water = np.zeros((size, size), dtype=bool)
     forest_poly = hoch | mittel
 
     out[bare] = BIOME_ID["bare_dry"]
     out[bare & wet] = BIOME_ID["bare_wet"]
     out[niedrig] = BIOME_ID["meadow_dry"]
     out[niedrig & wet] = BIOME_ID["meadow_wet"]
-    # Forest: gap → scrub → tall (mittel never becomes tall canopy)
     out[forest_poly & clearing] = BIOME_ID["forest_gap"]
     out[forest_poly & ~clearing & ~canopy] = BIOME_ID["forest_scrub"]
     out[hoch & canopy] = BIOME_ID["forest_tall"]
@@ -291,6 +300,26 @@ def _assign_soft(
     out[rock] = BIOME_ID["rock"]
     out[water] = BIOME_ID["water"]
     return out
+
+
+def _assign_soft(
+    bev: np.ndarray,
+    ndsm: np.ndarray,
+    twi: np.ndarray,
+    rock: np.ndarray,
+    cfg: dict[str, float],
+) -> np.ndarray:
+    """Biome IDs without snow / kill (water still assigned). Legacy BEV 0..5."""
+    # BEV raster stores 0..5; treatment catalog uses 1..6 with nodata 0.
+    masks = {
+        "forest_tall": bev == BEV_HOCH,
+        "forest_scrub": bev == BEV_MITTEL,
+        "meadow": bev == BEV_NIEDRIG,
+        "bare": bev == BEV_BARE,
+        "water": bev == BEV_WATER,
+        "building": bev == BEV_BUILDING,
+    }
+    return _assign_soft_from_masks(masks, ndsm, twi, rock, cfg)
 
 
 def _apply_snow_kill(
@@ -483,38 +512,66 @@ def main() -> None:
     else:
         print(f"Level folder missing, skip material vendor: {user_level}")
 
-    bev = _load_raster(proc / "landcover_bev.tif", size, nearest=True).astype(np.uint8)
-    try:
-        from fetch_bev_landcover import (  # noqa: WPS433
-            _cfg as _bev_cfg,
-            report_incomplete_landcover,
-        )
-
-        bev_cfg = _bev_cfg(site)
-        report_incomplete_landcover(
-            bev,
-            where=str(proc / "landcover_bev.tif"),
-            max_nodata_frac=float(bev_cfg["max_nodata_frac"]),
-            allow_incomplete=True,  # fetch already gated; here warn only
-        )
-    except Exception as exc:  # noqa: BLE001
-        print(f"BEV nodata check skipped: {exc}")
     ndsm = _load_raster(proc / "ndsm.tif", size).astype(np.float32)
     twi = _load_raster(proc / "twi.tif", size).astype(np.float32)
     snow = _load_raster(proc / "snow_proxy.tif", size).astype(np.float32)
+    rock = _load_u8_mask(proc / "mask_rock.png", size)
+
+    bev = None
+    building_bev = np.zeros((size, size), dtype=bool)
+    catalog_codes = None
+    lc_meta = None
+    soft = None
+
+    from landcover_catalog import (  # noqa: WPS433
+        load_codes_bundle,
+        treatment_masks,
+    )
+
+    bundle = load_codes_bundle(proc)
+    if bundle is not None:
+        catalog_codes, lc_meta = bundle
+        catalog = str(lc_meta.get("catalog") or "corine")
+        if catalog_codes.shape != (size, size):
+            u16 = np.asarray(catalog_codes, dtype=np.uint16)
+            img = Image.fromarray(u16, mode="I;16").resize(
+                (size, size), resample=Image.Resampling.NEAREST
+            )
+            catalog_codes = np.asarray(img, dtype=np.uint16)
+        masks = treatment_masks(catalog_codes, catalog=catalog)
+        building_bev = masks["building"]
+        soft = _assign_soft_from_masks(masks, ndsm, twi, rock, cfg)
+        print(f"Biomes from catalog landcover ({catalog})")
+    else:
+        bev = _load_raster(proc / "landcover_bev.tif", size, nearest=True).astype(np.uint8)
+        try:
+            from fetch_bev_landcover import (  # noqa: WPS433
+                _cfg as _bev_cfg,
+                report_incomplete_landcover,
+            )
+
+            bev_cfg = _bev_cfg(site)
+            report_incomplete_landcover(
+                bev,
+                where=str(proc / "landcover_bev.tif"),
+                max_nodata_frac=float(bev_cfg["max_nodata_frac"]),
+                allow_incomplete=True,
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"BEV nodata check skipped: {exc}")
+        building_bev = bev == BEV_BUILDING
+        soft = _assign_soft(bev, ndsm, twi, rock, cfg)
+        print("Biomes from BEV landcover raster")
 
     asphalt = _load_u8_mask(proc / "mask_asphalt.png", size)
     forest_gravel = _load_u8_mask(proc / "mask_forest_gravel.png", size)
     settlement = _load_u8_mask(proc / "mask_settlement.png", size)
-    building_bev = bev == BEV_BUILDING
-    rock = _load_u8_mask(proc / "mask_rock.png", size)
     gallery = _load_u8_mask(proc / "mask_gallery_roof.png", size)
     # Bridge under-mask is omit-only (asphalt already punched in mask_asphalt).
     # Do not force rock or biome-kill under the deck.
     struct_rock = gallery | rock
     kill = asphalt | forest_gravel | settlement | building_bev | gallery
 
-    soft = _assign_soft(bev, ndsm, twi, rock, cfg)
     biome = _apply_snow_kill(soft, ndsm, snow, kill, cfg)
     mats = _biome_to_materials(
         biome, soft, asphalt, settlement | building_bev, struct_rock
@@ -556,7 +613,18 @@ def main() -> None:
     Image.fromarray((biome == BIOME_ID["water"]).astype(np.uint8) * 255, mode="L").save(
         proc / "mask_biome_water.png"
     )
-    Image.fromarray(bev, mode="L").save(proc / "mask_biome_bev_codes.png")
+    if bev is not None:
+        Image.fromarray(bev, mode="L").save(proc / "mask_biome_bev_codes.png")
+    if catalog_codes is not None:
+        Image.fromarray(
+            np.clip(catalog_codes, 0, 255).astype(np.uint8), mode="L"
+        ).save(proc / "mask_biome_landcover_codes_lo.png")
+        from landcover_catalog import apply_treatment_ids  # noqa: WPS433
+
+        tid = apply_treatment_ids(
+            catalog_codes, catalog=str((lc_meta or {}).get("catalog") or "corine")
+        )
+        Image.fromarray(tid, mode="L").save(proc / "mask_biome_treatment.png")
     Image.fromarray(biome.astype(np.uint8), mode="L").save(proc / "mask_biome_ids.png")
 
     # Forest helpers for scatter

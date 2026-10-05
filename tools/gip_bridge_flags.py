@@ -101,20 +101,75 @@ def _chain(nodes: list) -> tuple[list[float], float]:
     return cum, float(cum[-1] if cum else 0.0)
 
 
-def chord_dip_m(nodes: list) -> float:
-    """How far the heightmap falls below the straight line between the two ends."""
-    if len(nodes) < 3:
+# Sample the corridor DGM this often when the GIP piece has too few vertices
+# to see a gorge (two-node S-LB claims such as Brüggelewaalbachbrücke 7081).
+DIP_SAMPLE_M = 0.5
+
+
+def chord_dip_m(nodes: list, z_at=None) -> float:
+    """How far the ground falls below the straight line between the two ends.
+
+    With only the GIP vertices a two-node piece always reports zero. When
+    ``z_at(bx, by)`` is set, the axis is densified at ``DIP_SAMPLE_M`` and
+    each sample is taken from that height field (corridor DGM).
+    """
+    if len(nodes) < 2:
         return 0.0
-    cum, total = _chain(nodes)
+    if z_at is None and len(nodes) < 3:
+        return 0.0
+    if z_at is None:
+        samples = [(float(n[0]), float(n[1]), float(n[2])) for n in nodes]
+    else:
+        samples = []
+        for a, b in zip(nodes, nodes[1:]):
+            ax, ay = float(a[0]), float(a[1])
+            bx, by = float(b[0]), float(b[1])
+            dist = math.hypot(bx - ax, by - ay)
+            n_step = max(1, int(round(dist / DIP_SAMPLE_M)))
+            for i in range(n_step):
+                t = i / n_step
+                x = ax + t * (bx - ax)
+                y = ay + t * (by - ay)
+                z = float(z_at(x, y))
+                if math.isfinite(z):
+                    samples.append((x, y, z))
+        z_end = float(z_at(float(nodes[-1][0]), float(nodes[-1][1])))
+        if math.isfinite(z_end):
+            samples.append((float(nodes[-1][0]), float(nodes[-1][1]), z_end))
+    if len(samples) < 2:
+        return 0.0
+    cum, total = _chain(samples)
     if total < 1e-6:
         return 0.0
-    z0 = float(nodes[0][2])
-    z1 = float(nodes[-1][2])
+    z0 = float(samples[0][2])
+    z1 = float(samples[-1][2])
     dip = 0.0
-    for s, n in zip(cum, nodes):
+    for s, n in zip(cum, samples):
         chord = z0 + (s / total) * (z1 - z0)
         dip = max(dip, chord - float(n[2]))
     return dip
+
+
+def _corridor_z_at(site: dict | None):
+    """Sample the 0.5 m corridor DGM in BeamNG XY. None when the mosaic is missing."""
+    if site is None:
+        return None
+    path = processed_dir(site) / "corridor50_raw" / "corridor50_raw.tif"
+    if not path.is_file():
+        return None
+    try:
+        from build_road_grid import _load_geotiff
+        from site_coords import SiteCoords
+    except ImportError:
+        return None
+    dgm, spec = _load_geotiff(path)
+    sc = SiteCoords(site)
+
+    def z_at(bx: float, by: float) -> float:
+        x, y = sc.terrain_to_crs(float(bx), float(by))
+        return _sample_cell(dgm, spec, x, y)
+
+    return z_at
 
 
 def _seg_hit(a, b, c, d) -> tuple[float, float] | None:
@@ -362,6 +417,9 @@ def _routing_overpass_oids(site: dict | None) -> set[int]:
 def classify_roads(roads: dict, site: dict | None = None) -> dict[str, dict]:
     buckets = _index_segments(roads)
     routing_over = _routing_overpass_oids(site)
+    # Dense DGM along the axis: a two-node GIP claim cannot see a gorge on its
+    # own vertices. The corridor mosaic is the ground under the chord.
+    z_at = _corridor_z_at(site)
     flags: dict[str, dict] = {}
     for key, road in roads.items():
         obj = gip_objekt(road)
@@ -375,7 +433,7 @@ def classify_roads(roads: dict, site: dict | None = None) -> dict[str, dict]:
         except (TypeError, ValueError):
             continue
         _cum, length = _chain(nodes)
-        dip = chord_dip_m(nodes)
+        dip = chord_dip_m(nodes, z_at=z_at)
         claim = gip_claims_bridge(road)
         named = bool(str(road.get("str_code") or "").strip())
         stem = obj in _ROAD_TO_BRIDGE or obj in _GIP_BRIDGE_OBJEKT or obj in {"S-A", "S-B", "S-L"}

@@ -18,6 +18,7 @@ import argparse
 import json
 import math
 import sys
+import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -27,6 +28,68 @@ import build_bridges as bb  # noqa: E402
 from road_width import smooth_roads_widths  # noqa: E402
 
 USER_LEVELS = bb.USER_LEVELS
+
+# DecalRoad asphalt from the official ETK Test Center (content/levels/Industrial.zip).
+INDUSTRIAL_ROAD_MATS = frozenset(
+    {
+        "AsphaltRoad_variation_01",
+        "AsphaltRoad_variation_02",
+        "AsphaltRoad_damage_large_cracks_decal",
+        "line_white",
+        "line_white_discontinue",
+        "road_invisible",
+    }
+)
+
+
+def _industrial_zip() -> Path | None:
+    roots = [
+        Path(r"C:\Program Files (x86)\Steam\steamapps\common\BeamNG.drive"),
+        Path(r"C:\Program Files\Steam\steamapps\common\BeamNG.drive"),
+        Path(r"D:\SteamLibrary\steamapps\common\BeamNG.drive"),
+    ]
+    for root in roots:
+        hit = root / "content" / "levels" / "Industrial.zip"
+        if hit.is_file():
+            return hit
+    return None
+
+
+def ensure_industrial_road_materials(user_level: Path, names: set[str]) -> None:
+    """Register Industrial DecalRoad materials; keep texture paths in that zip."""
+    want = {n for n in names if n in INDUSTRIAL_ROAD_MATS}
+    if not want:
+        return
+    mats_path = user_level / "art" / "road" / "main.materials.json"
+    mats_path.parent.mkdir(parents=True, exist_ok=True)
+    data: dict = {}
+    if mats_path.is_file() and mats_path.stat().st_size:
+        try:
+            data = json.loads(mats_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            data = {}
+    missing = [n for n in want if n not in data]
+    if not missing:
+        return
+    zpath = _industrial_zip()
+    if zpath is None:
+        raise SystemExit(
+            "Industrial.zip not found under Steam BeamNG.drive/content/levels "
+            "(needed for AsphaltRoad_variation_* textures)"
+        )
+    with zipfile.ZipFile(zpath) as zf:
+        src = json.loads(zf.read("levels/Industrial/art/road/main.materials.json"))
+    for name in missing:
+        rec = src.get(name)
+        if not rec:
+            raise SystemExit(f"Industrial.zip has no material {name}")
+        data[name] = rec
+    mats_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    print(
+        f"Decal materials from Industrial.zip: {', '.join(sorted(missing))} "
+        f"-> {mats_path.relative_to(user_level)}",
+        flush=True,
+    )
 
 
 def _float_band(raw, default: list[float]) -> list[float]:
@@ -1620,7 +1683,7 @@ def build_entries(
                         continue
             tagged.append((run, on_deck))
         slug = bb._slug(str(road.get("name") or hwy or "road"))
-        oid = road.get("id") or road.get("osm_id") or ri
+        oid = road.get("objectid") or road.get("id") or road.get("osm_id") or ri
         max_len = float(cfg.get("max_decal_length_m") or 0.0)
 
         pieces: list[tuple[int, int, list, bool]] = []
@@ -1931,16 +1994,22 @@ def write_level(level_name: str, entries: list[dict], cfg: dict) -> Path | None:
         print(f"Level folder missing: {user_level}")
         return None
     _ensure_line_material(user_level, level_name, cfg["centerline"]["material"])
-    # Ensure asphalt exists (bridges may already have written it)
-    bb.ensure_meshroad_materials(
-        user_level,
-        level_name,
-        {
-            "top": cfg["material"],
-            "texture_length": cfg["texture_length"],
-            "detail_scale": cfg.get("detail_scale") or 4.0,
-        },
-    )
+    asphalt = str(cfg["material"] or "Asphalt")
+    if asphalt in INDUSTRIAL_ROAD_MATS:
+        ensure_industrial_road_materials(
+            user_level,
+            {asphalt, str((cfg.get("centerline") or {}).get("material") or "")},
+        )
+    else:
+        bb.ensure_meshroad_materials(
+            user_level,
+            level_name,
+            {
+                "top": asphalt,
+                "texture_length": cfg["texture_length"],
+                "detail_scale": cfg.get("detail_scale") or 4.0,
+            },
+        )
 
     group_dir = user_level / "main" / "MissionGroup" / "level_objects" / "roads"
     group_dir.mkdir(parents=True, exist_ok=True)
@@ -2944,6 +3013,16 @@ def main() -> None:
         roads = bb.load_road_polylines(proc)
         if not roads:
             raise SystemExit(f"Missing {proc / 'roads_beamng.json'}")
+        from fetch_suedtirol_road_links import axis_is_structure_span  # noqa: WPS433
+
+        before_span = len(roads)
+        roads = [r for r in roads if not axis_is_structure_span(r)]
+        n_span = before_span - len(roads)
+        if n_span:
+            print(
+                f"Span omit (Tunnel/Brücke LOCATION): skipped {n_span} "
+                f"axis segment(s) before stitch/decal/road-bed"
+            )
         roads = stitch_abutting_roads(roads, cfg)
     fill = float(cfg.get("width_fill_dip_m") or 0.0)
     blend = float(cfg.get("width_blend_m") or 0.0)
@@ -2978,6 +3057,15 @@ def main() -> None:
         if n_tun:
             print(f"GIP DecalRoads: skipped {n_tun} tunnel segment(s) (terrain drape)")
         print(f"GIP DecalRoads: Autobahn/S-A kept={n_autobahn}")
+    else:
+        # OSM / Südtirol: also drop any span that survived stitch (belt).
+        from fetch_suedtirol_road_links import axis_is_structure_span  # noqa: WPS433
+
+        before_span = len(decal_roads)
+        decal_roads = [r for r in decal_roads if not axis_is_structure_span(r)]
+        n_span = before_span - len(decal_roads)
+        if n_span:
+            print(f"DecalRoads: skipped {n_span} remaining span segment(s)")
 
     size = int(bng.get("mask_size") or 512)
     meta_path = proc / "heightmap_meta.json"
