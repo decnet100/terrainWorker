@@ -124,6 +124,9 @@ See [STATUS.md](STATUS.md) (current state + prioritized roadmap).
 
 Short list:
 
-1. QGIS: fine-tune guardrail gaps / edges (the build already reads the GPKG)
-2. Fold `road_edge` into terrain masks
-3. Soft cover toward moss / alpine meadow; geology / LISA later
+Finalize mesh-based road generation
+Enter detailled data for biomes (also for garden areas)
+Create instanceable buildings and a few custom ones
+
+Enhance Performance by making use of Instancing and advanced Imposter creation - aim: 1 Mio trees playable.
+
