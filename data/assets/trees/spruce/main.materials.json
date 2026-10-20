@@ -6,7 +6,7 @@
     "Stages": [
       {
         "metallicFactor": 0.0,
-        "baseColorMap": "art/shapes/trees/trees_spruce/bark_spruce.png",
+        "baseColorMap": "art/shapes/trees/trees_spruce/bark_spruce.color.png",
         "roughnessFactor": 0.85
       },
       {},
@@ -24,8 +24,8 @@
     "Stages": [
       {
         "metallicFactor": 0.0,
-        "baseColorMap": "art/shapes/trees/trees_spruce/twig_spruce.png",
-        "opacityMap": "art/shapes/trees/trees_spruce/twig_spruce_o.png",
+        "baseColorMap": "art/shapes/trees/trees_spruce/twig_spruce.color.png",
+        "opacityMap": "art/shapes/trees/trees_spruce/twig_spruce_o.data.png",
         "roughnessFactor": 0.9
       },
       {},
@@ -47,8 +47,8 @@
     "Stages": [
       {
         "metallicFactor": 0.0,
-        "baseColorMap": "art/shapes/trees/trees_spruce/twig_spruce.png",
-        "opacityMap": "art/shapes/trees/trees_spruce/twig_spruce_o.png",
+        "baseColorMap": "art/shapes/trees/trees_spruce/twig_spruce.color.png",
+        "opacityMap": "art/shapes/trees/trees_spruce/twig_spruce_o.data.png",
         "roughnessFactor": 0.9
       },
       {},
@@ -70,8 +70,8 @@
     "Stages": [
       {
         "metallicFactor": 0.0,
-        "baseColorMap": "art/shapes/trees/trees_spruce/spruce_card.png",
-        "opacityMap": "art/shapes/trees/trees_spruce/spruce_card_o.png",
+        "baseColorMap": "art/shapes/trees/trees_spruce/spruce_card.color.png",
+        "opacityMap": "art/shapes/trees/trees_spruce/spruce_card_o.data.png",
         "roughnessFactor": 1.0,
         "specular": [
           0.0,
@@ -102,9 +102,9 @@
     "Stages": [
       {
         "metallicFactor": 0.0,
-        "baseColorMap": "art/shapes/trees/trees_spruce/spruce_mid.png",
-        "opacityMap": "art/shapes/trees/trees_spruce/spruce_mid_o.png",
-        "normalMap": "art/shapes/trees/trees_spruce/spruce_mid_n.png",
+        "baseColorMap": "art/shapes/trees/trees_spruce/spruce_mid.color.png",
+        "opacityMap": "art/shapes/trees/trees_spruce/spruce_mid_o.data.png",
+        "normalMap": "art/shapes/trees/trees_spruce/spruce_mid_n.data.png",
         "normalMapStrength": 1.0,
         "roughnessFactor": 1.0,
         "specular": [

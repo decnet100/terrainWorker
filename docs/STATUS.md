@@ -47,7 +47,7 @@ Multi-map session: [alpine-roadtrip](https://github.com/decnet100/alpine-roadtri
 ### Other tools (present, still evolving)
 
 - Forest, TWI, snow proxy, biome compose: `build_forest.py`, `build_twi.py`, `build_snow_proxy.py`, `compose_biomes.py`
-- Fichte: Nahmesh, acht Ansichtskarten, Billboard ab 25 px — [SPRUCE.md](SPRUCE.md)
+- Fichte: Nahmesh bis 1000 px, vier Ansichtskarten, Billboard ab 25 px. Albedo nur als `.color.png`, sonst zu hell in der Sonne — [SPRUCE.md](SPRUCE.md)
 
 ## Open / next
 

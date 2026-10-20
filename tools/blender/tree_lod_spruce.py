@@ -1,7 +1,7 @@
 """Blender: Nah-LOD der Fichte aus Fichte2 (Bake-Quelle bleibt unangetastet).
 
-Exportiert nur LOD0 als _a2500. install_spruce_far_lod haengt danach
-acht Ansichtskarten (_a80) und den Kamera-Billboard (Groesse 25) an.
+Exportiert nur LOD0 als _a1000. install_spruce_far_lod haengt danach
+vier Ansichtskarten (_a80) und den Kamera-Billboard (Groesse 25) an.
 
   blender C:\\temp\\assets\\trees\\fichte2.blend --background --python C:\\temp\\assets\\trees\\tree_lod_spruce.py
 """
@@ -30,7 +30,7 @@ CFG = {
     "export_dae": True,
     "pack_dir": r"C:\temp\beamng_autoroad\data\assets\trees\spruce",
     "dae_stem": "tree_spruce_large",
-    "lod_pixels": [2500],  # Nahmesh; danach der Kamera-Billboard (Groesse 25)
+    "lod_pixels": [1000],  # Nahmesh bis 1000 px; danach vier Karten, Billboard ab 25
     "autoroad_tools": r"C:\temp\beamng_autoroad\tools",
     "species": "spruce",
     "tex_bark": r"C:\temp\assets\trees\spruce\SpruceBark.color.png",
@@ -428,13 +428,13 @@ def _install_pack_textures(pack):
     os.makedirs(pack, exist_ok=True)
     out = {}
     bark_src = CFG.get("tex_bark")
-    bark_name = "bark_spruce.png"
+    bark_name = "bark_spruce.color.png"
     if bark_src and os.path.isfile(bark_src):
         shutil.copy2(bark_src, os.path.join(pack, bark_name))
         log(f"  Rinde {bark_src} -> {bark_name}")
         out["SpruceBark"] = {"base": bark_name}
-    twig_name = "twig_spruce.png"
-    op_name = "twig_spruce_o.png"
+    twig_name = "twig_spruce.color.png"
+    op_name = "twig_spruce_o.data.png"
     if _composite_twig_png(CFG.get("tex_twig_color"), CFG.get("tex_twig_alpha"), os.path.join(pack, twig_name)):
         log(f"  Nadeln -> {twig_name}")
         twig = {"base": twig_name}
@@ -465,12 +465,12 @@ def _save_mat_images(mat, dest_dir):
         card = f"{CFG['dae_stem']}_lod1_side.png"
         if os.path.isfile(os.path.join(dest_dir, card)):
             return {"base": card}
-    if "bark" in low and os.path.isfile(os.path.join(dest_dir, "bark_spruce.png")):
-        return {"base": "bark_spruce.png"}
+    if "bark" in low and os.path.isfile(os.path.join(dest_dir, "bark_spruce.color.png")):
+        return {"base": "bark_spruce.color.png"}
     if any(h in low for h in ("twig", "leaf", "nadel")) and os.path.isfile(
-        os.path.join(dest_dir, "twig_spruce.png")
+        os.path.join(dest_dir, "twig_spruce.color.png")
     ):
-        return {"base": "twig_spruce.png"}
+        return {"base": "twig_spruce.color.png"}
     if not mat.use_nodes or mat.node_tree is None:
         return out
     os.makedirs(dest_dir, exist_ok=True)
@@ -748,7 +748,7 @@ def step4_export_dae():
 
     install_spruce_far_lod(dae_path)
     names = " + ".join(f"a{p}" for p in pixels)
-    log(f"DAE {dae_path} ({names}, acht Karten a80, Billboard 25).")
+    log(f"DAE {dae_path} ({names}, vier Karten a80, Billboard 25).")
     log("Pack ins Level kopiert build_forest.py. BeamNG ganz beenden.")
 
 

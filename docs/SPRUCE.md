@@ -8,16 +8,30 @@ Stand der Kette: Pack `data/assets/trees/spruce/`. Ins Level kopiert `vendor_spr
 
 | Node | Pixel | Inhalt |
 |------|-------|--------|
-| `tree_spruce_large_a2500` | ab 2500 | Nahmesh, Rinde + Nadeln |
-| `tree_spruce_large_a80` | 80 bis 2500 | acht einseitige Ansichtskarten, je 45° |
+| `tree_spruce_large_a1000` | ab 1000 | Nahmesh, Rinde + Nadeln |
+| `tree_spruce_large_a80` | 80 bis 1000 | vier Ansichtskarten, je 90° |
 | `bb_autobillboard25` | 25 bis 80 | eine Fläche, die zur Kamera zeigt |
 | — | unter 25 | nichts |
 
-Die Pixelgröße ist die Torque-Detailgröße. Die größte Stufe, die noch unter die projizierte Größe passt, wird gezeichnet. Das Mesh ist damit nur nah sichtbar.
+Die Pixelgröße ist die Torque-Detailgröße. Die größte Stufe, die noch unter die projizierte Größe passt, wird gezeichnet. Bei `detailAdjust` 2 liegt 1000 px ungefähr bei 100 m, 2500 px lagen ungefähr bei 40 m.
 
 `tree_spruce_large.dae.asset.json`: `equatorSteps` 16, `polarSteps` 0, `includePoles` false, `dimension` 256, `detailLevel` 0, `size` 25. `detailLevel` 0 ist das einzige Mesh, falls die Engine neu backt. `size` muss kleiner sein als jede andere Stufe. Deshalb gibt es keine Kartenstufe `_a25`.
 
 Die Imposter-DDS muss neuer sein als das DAE. Sonst verwirft die Engine die Datei und fotografiert das Mesh neu (`Rebuilding imposter`).
+
+## Farbraum
+
+Die Aufhellung in der Sonne kam von den Dateinamen. Materialien sind Version 1.5. Dafür muss die Farbe sRGB sein und jede andere Map linear. Die Engine liest das nur aus der Endung, dem Texture Cooker:
+
+| Inhalt | Endung | Dateien |
+|---|---|---|
+| Albedo | `.color.png` | `bark_spruce.color.png`, `twig_spruce.color.png`, `spruce_card.color.png`, `spruce_mid.color.png` |
+| Deckkraft | `.data.png` | `twig_spruce_o.data.png`, `spruce_card_o.data.png`, `spruce_mid_o.data.png` |
+| Karten-Normale | `.data.png` | `spruce_mid_n.data.png` |
+
+Eine PNG ohne diese Endung wird als linear abgetastet. Das Albedo liegt aber als sRGB in der Datei (Blender, View-Transform Standard, 8 Bit). Die Krone wird dann flach und in der Sonne zu hell. Mit `.color.png` ist die Farbe wieder das Grün der Aufnahme.
+
+Die Normal-Map bleibt `.data.png`. `.normal.png` kocht nach BC5: nur X und Y, Z immer nach außen. Wegzeigende Nadeln brauchen das negative Z im Blaukanal. Deckkraft bleibt linear, sonst verschiebt sich `alphaRef`.
 
 ## Erstellung
 
@@ -25,8 +39,8 @@ Die Imposter-DDS muss neuer sein als das DAE. Sonst verwirft die Engine die Date
    - `albedo_00`…`15` — unbeleuchtetes Albedo, 16 Seitenblicke, keine Pole
    - `normal_00`…`15` — Weltraumnormalen
    - `ao_00`…`15` — Verdeckung, nur mit `--ao`. Reichweite 0,45 m, nur das Objekt selbst
-2. Nahmesh, `tools/blender/tree_lod_spruce.py`. Exportiert nur LOD0 als `_a2500` und ruft danach `install_spruce_far_lod` auf.
-3. `install_spruce_far_lod` in `tools/tree_imposter_lib.py` hängt die acht Karten und den Billboard an, packt die DDS und setzt die Materialien.
+2. Nahmesh, `tools/blender/tree_lod_spruce.py`. Exportiert nur LOD0 als `_a1000` und ruft danach `install_spruce_far_lod` auf.
+3. `install_spruce_far_lod` in `tools/tree_imposter_lib.py` hängt die vier Karten und den Billboard an, packt die DDS und setzt die Materialien.
 
 ```powershell
 & "C:\Program Files\Blender Foundation\Blender 5.2\blender.exe" "C:\temp\assets\trees\fichte2.blend" --background --python "C:\temp\beamng_autoroad\tools\blender\tree_imposter_capture.py"
@@ -40,13 +54,15 @@ Die Imposter-DDS muss neuer sein als das DAE. Sonst verwirft die Engine die Date
 & "C:\Program Files\Blender Foundation\Blender 5.2\blender.exe" "C:\temp\assets\trees\fichte2.blend" --background --python "C:\temp\beamng_autoroad\tools\blender\tree_lod_spruce.py"
 ```
 
-## Acht Karten
+## Vier Karten
 
-Eine Aufnahme pro Blick, Atlas `spruce_mid.png`, Deckkraft `spruce_mid_o.png` (RGB, jeder Kanal = Alpha). BeamNG liest beim Alpha-Test die Farbkanäle der Opacity-Map, nicht das PNG-Alpha. `alphaRef` 65.
+Vier Aufnahmen im rechten Winkel, Atlas `spruce_mid.color.png`, Deckkraft `spruce_mid_o.data.png` (RGB, jeder Kanal = Alpha). BeamNG liest beim Alpha-Test die Farbkanäle der Opacity-Map, nicht das PNG-Alpha. `alphaRef` 65. Der letzte Billboard darunter ist schon eine einzige Fläche.
 
-Die Kartenfarbe ist das rohe Albedo, ohne Verdeckung. Die Verdeckung in diesen Karten hat das Kroneninnere fest abgedunkelt, genau dort, wo die acht Ebenen zusammenlaufen. Das soll die Normal Map machen, nicht die Farbe.
+Die Endungen sind der Texture Cooker. `.color.png` ist sRGB, `.data.png` ist linear. Die Normal-Map heißt `spruce_mid_n.data.png` und nicht `.normal.png`: die Normal-Endung kocht nach BC5, das nur X und Y behält und Z immer nach außen setzt. Wegzeigende Nadeln brauchen das negative Z im Blaukanal.
 
-`SpruceMid`: eine Normal Map `spruce_mid_n.png`, Stärke 1, `doubleSided` true, `invertBackFaceNormals` true, `castShadows` false, Specular 0, Rauheit 1, kein Subsurface. Die Karte ist DirectX-Tangentraum der jeweiligen Ansicht. Nadeln, die von der Kamera wegzeigen, bleiben wegzeigend. Sie werden nicht zur Kamera geklappt. Das hat bei seitlicher Sonne die ganze Krone ausgebleicht.
+Die Kartenfarbe ist das rohe Albedo, ohne Verdeckung. Die Verdeckung in diesen Karten hat das Kroneninnere fest abgedunkelt, genau dort, wo die Ebenen zusammenlaufen. Das soll die Normal Map machen, nicht die Farbe.
+
+`SpruceMid`: eine Normal Map `spruce_mid_n.data.png`, Stärke 1, `doubleSided` true, `invertBackFaceNormals` true, `castShadows` false, Specular 0, Rauheit 1, kein Subsurface. Die Karte ist DirectX-Tangentraum der jeweiligen Ansicht. Nadeln, die von der Kamera wegzeigen, bleiben wegzeigend. Sie werden nicht zur Kamera geklappt. Das hat bei seitlicher Sonne die ganze Krone ausgebleicht.
 
 Rückseite: `shaders/common/material/shadergen/defaultMat.hlsl`, nur in der doppelseitigen Variante (`MFT_DoubleSided`). Auf der Rückseite wird die Z-Komponente der Normal Map umgedreht, X und Y bleiben. Eine zweite Normal Map gibt es nicht. Der Materialeditor nennt das „Double Sided“ und „Invert backface normals“. Die Douglasien-Nadeln stehen genauso. Ohne `doubleSided` läuft diese Zeile nicht, die Rückseite behält die Normale der Vorderseite.
 
@@ -70,3 +86,4 @@ Nadeltextur ohne `baseColorFactor`. Der Faktor 0,55 / 1 / 0,4 hat Rot und Blau g
 - Globales Abdunkeln der Albedo-Farbe.
 - Normal Map auf weltfesten Karten, deren Rückseiten-Nadeln zur Kamera geklappt sind.
 - Billboard-DDS älter als das DAE.
+- Albedo ohne `.color.png`. Dieselbe Datei ohne Cooker-Endung hellt die Krone in der Sonne auf.

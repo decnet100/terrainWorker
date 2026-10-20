@@ -227,9 +227,9 @@ def test_spruce_far_cards_face_camera_and_drop_billboard() -> None:
 """
     out = patch_spruce_dae_xml(tiny, quads)
     assert "bb_autobillboard" not in out
-    assert "tree_spruce_large_a1000" not in out
+    assert "tree_spruce_large_a1000" in out
     assert "tree_spruce_large_a500" not in out
-    assert "tree_spruce_large_a2500" in out
+    assert "tree_spruce_large_a2500" not in out
     assert "tree_spruce_large_a25" in out
     assert out.count("SpruceCard-material") >= 1
     assert out.count("<library_visual_scenes>") == 1
@@ -246,15 +246,15 @@ def test_card_normal_is_tangent_space_directx() -> None:
 
 def test_mid_views_face_their_cameras_and_keep_near_mesh() -> None:
     sample = (
-        '    <geometry id="tree_spruce_large_a2500-mesh" name="tree_spruce_large_a2500-mesh">\n'
+        '    <geometry id="tree_spruce_large_a1000-mesh" name="tree_spruce_large_a1000-mesh">\n'
         "      <mesh></mesh>\n    </geometry>\n"
         '    <geometry id="tree_spruce_large_a80-mesh" name="tree_spruce_large_a80-mesh">\n'
         "      <mesh></mesh>\n    </geometry>\n"
     )
     kept = _LOWER_GEOM.sub("", sample)
-    assert "a2500-mesh" in kept
+    assert "a1000-mesh" in kept
     assert "a80-mesh" not in kept
-    for index in (0, 2, 4, 6, 8, 10, 12, 14):
+    for index in (0, 4, 8, 12):
         quad = spruce_view_quad(index, (0.2, 0.1, 0.8, 0.9))
         a, b, c = (np.array(p) for p in quad[:3])
         nrm = np.cross(b - a, c - a)
@@ -294,7 +294,7 @@ def test_mid_views_face_their_cameras_and_keep_near_mesh() -> None:
     mid_quads = [spruce_view_quad(0, (0.2, 0.1, 0.8, 0.9))]
     mid_uvs = [[(0.1, 0.2), (0.3, 0.2), (0.3, 0.8), (0.1, 0.8)]]
     out = patch_spruce_dae_xml(tiny, spruce_far_quads(), mid_quads=mid_quads, mid_uvs=mid_uvs)
-    assert "tree_spruce_large_a2500-mesh" in out
+    assert "tree_spruce_large_a1000-mesh" in out
     assert 'id="tree_spruce_large_a80"' in out
     assert "double_sided" not in out.split('id="SpruceMid-effect"')[1].split("</effect>")[0]
 
@@ -348,7 +348,7 @@ def test_attach_camera_billboard_drops_cards() -> None:
     sample = """
       <node id="base00" name="base00" type="NODE">
         <node id="start01" name="start01" type="NODE">
-          <node id="tree_spruce_large_a2500" name="tree_spruce_large_a2500" type="NODE">
+          <node id="tree_spruce_large_a1000" name="tree_spruce_large_a1000" type="NODE">
           </node>
           <node id="tree_spruce_large_a80" name="tree_spruce_large_a80" type="NODE">
           </node>
@@ -359,7 +359,7 @@ def test_attach_camera_billboard_drops_cards() -> None:
 """
     out = attach_camera_billboard(sample)
     assert "bb_autobillboard25" in out
-    assert "tree_spruce_large_a2500" in out
+    assert "tree_spruce_large_a1000" in out
     assert 'id="tree_spruce_large_a80"' not in out
     assert 'id="tree_spruce_large_a25"' not in out
 
