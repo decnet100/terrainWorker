@@ -45,6 +45,10 @@ SHAPE_FILES = {
     "autoroad_fir_bush": "tree_douglasfir_bush_a.dae",
 }
 
+SPRUCE_PACK = ROOT / "data" / "assets" / "trees" / "spruce"
+SPRUCE_LOCAL_REL = "art/shapes/trees/trees_spruce"
+SPRUCE_SHAPE = "tree_spruce_large.dae"
+
 DRY_GRASS_SHAPES = {
     "autoroad_dry_grass_01": "s_gc_dry_grass_01.dae",
     "autoroad_dry_grass_02": "s_gc_dry_grass_02.dae",
@@ -193,6 +197,117 @@ def vendor_fir_pack(
     }
 
 
+def _rewrite_spruce_material_maps(mat_path: Path, level_name: str) -> None:
+    """Point every texture map at /levels/<level>/art/shapes/trees/trees_spruce/<file>.
+
+    Idempotent: a doubled /levels/.../levels/... prefix from an older vendor
+    pass is collapsed by taking only the filename.
+    """
+    if not mat_path.is_file():
+        return
+    data = json.loads(mat_path.read_text(encoding="utf-8"))
+    vfs = f"/levels/{level_name}/{SPRUCE_LOCAL_REL}"
+    tex_keys = {
+        "baseColorMap",
+        "normalMap",
+        "opacityMap",
+        "roughnessMap",
+        "ambientOcclusionMap",
+        "metallicMap",
+        "emissiveMap",
+    }
+    for block in data.values():
+        if not isinstance(block, dict):
+            continue
+        for stage in block.get("Stages") or []:
+            if not isinstance(stage, dict):
+                continue
+            for key, val in list(stage.items()):
+                if key not in tex_keys or not isinstance(val, str) or not val:
+                    continue
+                fname = Path(val.replace("\\", "/")).name
+                stage[key] = f"{vfs}/{fname}"
+    mat_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+
+def spruce_pack_ready(pack: Path | None = None) -> bool:
+    p = pack or SPRUCE_PACK
+    dae = p / SPRUCE_SHAPE
+    asset = p / f"{SPRUCE_SHAPE}.asset.json"
+    dds = p / f"{SPRUCE_SHAPE}.imposter.dds"
+    return dae.is_file() and asset.is_file() and dds.is_file()
+
+
+def vendor_spruce_pack(
+    user_level: Path, level_name: str, *, cheap: bool = False
+) -> dict[str, dict]:
+    """Copy baked spruce DAE + imposter sidecars into the level."""
+    if not spruce_pack_ready():
+        raise SystemExit(
+            f"Spruce pack incomplete in {SPRUCE_PACK} — "
+            "run Blender tree_imposter_capture.py then tools\\pack_tree_imposters.py"
+        )
+    dest = user_level / SPRUCE_LOCAL_REL
+    dest.mkdir(parents=True, exist_ok=True)
+    n_copied = 0
+    for src in SPRUCE_PACK.iterdir():
+        if not src.is_file():
+            continue
+        if src.suffix.lower() in {".json", ".dae", ".dds", ".png", ".jpg", ".jpeg"}:
+            (dest / src.name).write_bytes(src.read_bytes())
+            n_copied += 1
+    print(f"Vendored spruce pack -> {dest} ({n_copied} files)")
+    _rewrite_spruce_material_maps(dest / "main.materials.json", level_name)
+    vfs = f"/levels/{level_name}/{SPRUCE_LOCAL_REL}/{SPRUCE_SHAPE}"
+    large = _item_template(
+        "autoroad_fir_large",
+        vfs,
+        radius=2.0,
+        collidable=not cheap,
+        wind_scale=0.0 if cheap else 0.35,
+        trunk_bend=0.0 if cheap else 0.03,
+        branch_amp=0.0 if cheap else 0.02,
+        detail_amp=0.0 if cheap else 0.2,
+        detail_freq=1.0 if cheap else 5.0,
+        mass=70.0,
+        rigidity=150.0,
+        annotation="TREE",
+    )
+    if cheap:
+        print("Forest cheap mode: single SPRUCE, no collision, wind off")
+        return {"autoroad_fir_large": large}
+    return {
+        "autoroad_fir_small": _item_template(
+            "autoroad_fir_small",
+            vfs,
+            radius=1.5,
+            collidable=True,
+            wind_scale=0.35,
+            trunk_bend=0.04,
+            branch_amp=0.02,
+            detail_amp=0.2,
+            detail_freq=5.0,
+            mass=10.0,
+            rigidity=20.0,
+        ),
+        "autoroad_fir_large": large,
+        "autoroad_fir_bush": _item_template(
+            "autoroad_fir_bush",
+            vfs,
+            radius=0.8,
+            collidable=False,
+            wind_scale=0.4,
+            trunk_bend=0.08,
+            branch_amp=0.01,
+            detail_amp=0.15,
+            detail_freq=1.5,
+            mass=1.0,
+            rigidity=5.0,
+            annotation="BUSH",
+        ),
+    }
+
+
 def vendor_dry_grass_pack(user_level: Path, level_name: str) -> dict[str, dict]:
     """Copy Johnson Valley dry-grass groundcover into this level."""
     if not JV_ZIP.is_file():
@@ -272,6 +387,8 @@ def _cfg(bng: dict) -> dict:
             raw.get("scrub_fraction") if raw.get("scrub_fraction") is not None else 0.35
         ),
         "seed": int(raw.get("seed") or 13),
+        "shape_pack": str(raw.get("shape_pack") or "douglasfir").strip().lower(),
+        "hull_skip_interior": bool(raw.get("hull_skip_interior", True)),
     }
 
 
@@ -359,6 +476,15 @@ def scatter(site: dict, cfg: dict) -> dict[str, list[dict]]:
     high = high & ~clear
     scrub = scrub & ~high & ~clear
     meadow = meadow & ~clear & ~high & ~scrub
+    if cfg.get("hull_skip_interior"):
+        hull_in = _load_mask(proc / "mask_forest_hull_interior.png", size)
+        if hull_in.any():
+            high = high & ~hull_in
+            scrub = scrub & ~hull_in
+            print(
+                f"Forest: skip hull interior {100.0 * float(hull_in.mean()):.2f}% "
+                "(rim imposters remain)"
+            )
 
     grass_kinds = list(DRY_GRASS_SHAPES.keys())
     cheap = bool(cfg.get("cheap"))
@@ -706,7 +832,22 @@ def main() -> None:
     ensure_forest_object(user_level)
     items: dict[str, dict] = {}
     if cfg["trees"]:
-        items.update(vendor_fir_pack(user_level, level_name, cheap=bool(cfg["cheap"])))
+        pack = str(cfg.get("shape_pack") or "douglasfir")
+        if pack == "spruce":
+            if spruce_pack_ready():
+                items.update(
+                    vendor_spruce_pack(user_level, level_name, cheap=bool(cfg["cheap"]))
+                )
+            else:
+                print(
+                    f"shape_pack=spruce but {SPRUCE_PACK} is incomplete — "
+                    "falling back to douglasfir"
+                )
+                items.update(
+                    vendor_fir_pack(user_level, level_name, cheap=bool(cfg["cheap"]))
+                )
+        else:
+            items.update(vendor_fir_pack(user_level, level_name, cheap=bool(cfg["cheap"])))
     if cfg["dry_grass"]:
         items.update(vendor_dry_grass_pack(user_level, level_name))
     write_managed(user_level, items)

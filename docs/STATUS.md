@@ -1,7 +1,7 @@
 # Status and roadmap
 
 Snapshot after the Hahntennjoch smoke test and Fernpass Mega work (BeamNG 0.39).  
-Details: [BEAMNG_IMPORT.md](BEAMNG_IMPORT.md), [ROADS.md](ROADS.md), [ANNOTATIONS.md](ANNOTATIONS.md), [CONCEPT.md](CONCEPT.md), [GIP.md](GIP.md), [AUTHORITIES.md](AUTHORITIES.md), [STRUCTURES.md](STRUCTURES.md), [HEIGHTMAP_COMPOSE.md](HEIGHTMAP_COMPOSE.md), [BACKDROP.md](BACKDROP.md).  
+Details: [BEAMNG_IMPORT.md](BEAMNG_IMPORT.md), [ROADS.md](ROADS.md), [ANNOTATIONS.md](ANNOTATIONS.md), [CONCEPT.md](CONCEPT.md), [GIP.md](GIP.md), [AUTHORITIES.md](AUTHORITIES.md), [STRUCTURES.md](STRUCTURES.md), [HEIGHTMAP_COMPOSE.md](HEIGHTMAP_COMPOSE.md), [BACKDROP.md](BACKDROP.md), [SPRUCE.md](SPRUCE.md).  
 Multi-map session: [alpine-roadtrip](https://github.com/decnet100/alpine-roadtrip).
 
 ## Done
@@ -47,6 +47,7 @@ Multi-map session: [alpine-roadtrip](https://github.com/decnet100/alpine-roadtri
 ### Other tools (present, still evolving)
 
 - Forest, TWI, snow proxy, biome compose: `build_forest.py`, `build_twi.py`, `build_snow_proxy.py`, `compose_biomes.py`
+- Fichte: Nahmesh, acht Ansichtskarten, Billboard ab 25 px — [SPRUCE.md](SPRUCE.md)
 
 ## Open / next
 

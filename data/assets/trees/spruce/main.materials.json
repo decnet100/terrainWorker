@@ -1,0 +1,132 @@
+{
+  "SpruceBark": {
+    "name": "SpruceBark",
+    "mapTo": "SpruceBark",
+    "class": "Material",
+    "Stages": [
+      {
+        "metallicFactor": 0.0,
+        "baseColorMap": "art/shapes/trees/trees_spruce/bark_spruce.png",
+        "roughnessFactor": 0.85
+      },
+      {},
+      {},
+      {}
+    ],
+    "castShadows": false,
+    "annotation": "TREE",
+    "version": 1.5
+  },
+  "SpruceTwig1": {
+    "name": "SpruceTwig1",
+    "mapTo": "SpruceTwig1",
+    "class": "Material",
+    "Stages": [
+      {
+        "metallicFactor": 0.0,
+        "baseColorMap": "art/shapes/trees/trees_spruce/twig_spruce.png",
+        "opacityMap": "art/shapes/trees/trees_spruce/twig_spruce_o.png",
+        "roughnessFactor": 0.9
+      },
+      {},
+      {},
+      {}
+    ],
+    "castShadows": false,
+    "annotation": "TREE",
+    "version": 1.5,
+    "alphaTest": true,
+    "alphaRef": 75,
+    "doubleSided": true,
+    "invertBackFaceNormals": true
+  },
+  "SpruceTwig.001": {
+    "name": "SpruceTwig.001",
+    "mapTo": "SpruceTwig.001",
+    "class": "Material",
+    "Stages": [
+      {
+        "metallicFactor": 0.0,
+        "baseColorMap": "art/shapes/trees/trees_spruce/twig_spruce.png",
+        "opacityMap": "art/shapes/trees/trees_spruce/twig_spruce_o.png",
+        "roughnessFactor": 0.9
+      },
+      {},
+      {},
+      {}
+    ],
+    "castShadows": false,
+    "annotation": "TREE",
+    "version": 1.5,
+    "alphaTest": true,
+    "alphaRef": 75,
+    "doubleSided": true,
+    "invertBackFaceNormals": true
+  },
+  "SpruceCard": {
+    "name": "SpruceCard",
+    "mapTo": "SpruceCard",
+    "class": "Material",
+    "Stages": [
+      {
+        "metallicFactor": 0.0,
+        "baseColorMap": "art/shapes/trees/trees_spruce/spruce_card.png",
+        "opacityMap": "art/shapes/trees/trees_spruce/spruce_card_o.png",
+        "roughnessFactor": 1.0,
+        "specular": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      },
+      {},
+      {},
+      {}
+    ],
+    "castShadows": false,
+    "annotation": "TREE",
+    "version": 1.5,
+    "alphaTest": true,
+    "alphaRef": 65,
+    "doubleSided": true,
+    "invertBackFaceNormals": true,
+    "pixelSpecular": false,
+    "specularStrength0": "0",
+    "subSurface": false
+  },
+  "SpruceMid": {
+    "name": "SpruceMid",
+    "mapTo": "SpruceMid",
+    "class": "Material",
+    "Stages": [
+      {
+        "metallicFactor": 0.0,
+        "baseColorMap": "art/shapes/trees/trees_spruce/spruce_mid.png",
+        "opacityMap": "art/shapes/trees/trees_spruce/spruce_mid_o.png",
+        "normalMap": "art/shapes/trees/trees_spruce/spruce_mid_n.png",
+        "normalMapStrength": 1.0,
+        "roughnessFactor": 1.0,
+        "specular": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      },
+      {},
+      {},
+      {}
+    ],
+    "castShadows": false,
+    "annotation": "TREE",
+    "version": 1.5,
+    "alphaTest": true,
+    "alphaRef": 65,
+    "doubleSided": true,
+    "invertBackFaceNormals": true,
+    "pixelSpecular": false,
+    "specularStrength0": "0",
+    "subSurface": false
+  }
+}
