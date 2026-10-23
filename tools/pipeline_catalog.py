@@ -492,6 +492,17 @@ STEPS: tuple[Step, ...] = (
         flags=(Flag("force", "--force", "bool", "Replace existing features"),),
     ),
     Step(
+        id="build_hillclimbs",
+        title="Hillclimb time trials",
+        summary="UTM lines for this level become time-trial missions (grid, centerline snap, 16-bit terrain Z).",
+        script="tools/build_hillclimbs.py",
+        group="4  Annotations",
+        docs="docs/HILLCLIMB.md",
+        yaml_keys=("beamng.level_name", "crs"),
+        outputs=("data/processed/{slug}/hillclimbs/",),
+        flags=(Flag("no_inject", "--no-inject", "bool", "Do not write into the user missions folder"),),
+    ),
+    Step(
         id="build_decal_roads",
         title="DecalRoads and road-bed",
         summary="Asphalt decals plus the road_bed heightmap layer (skip under bridge decks).",
