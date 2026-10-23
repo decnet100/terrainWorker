@@ -391,6 +391,19 @@ def _write_mission(folder: Path, info: dict, race: dict, sidecar: dict) -> None:
         (folder / name).write_text(text, encoding="utf-8")
 
 
+def _source_length_m(coords: list[tuple[float, float]], to_site) -> float:
+    """Horizontal length of the digitized line after the datum step into the site CRS."""
+    length = 0.0
+    prev: tuple[float, float] | None = None
+    for x_utm, y_utm in coords:
+        sx, sy = to_site.transform(x_utm, y_utm)
+        here = (float(sx), float(sy))
+        if prev is not None:
+            length += math.hypot(here[0] - prev[0], here[1] - prev[1])
+        prev = here
+    return length
+
+
 def _prepare_nodes(
     coords: list[tuple[float, float]],
     *,
@@ -513,6 +526,7 @@ def main() -> None:
             if geom is None or geom.geom_type != "LineString" or len(geom.coords) < 2:
                 raise SystemExit(f"{stage_id}: need a LineString with at least two vertices")
             coords = [(float(c[0]), float(c[1])) for c in geom.coords]
+            reference_length_m = _source_length_m(coords, to_site)
             nodes, length, max_dist = _prepare_nodes(
                 coords,
                 to_site=to_site,
@@ -525,7 +539,7 @@ def main() -> None:
             race = _build_race(stage_id, display, nodes)
             sidecar = {
                 "version": version,
-                "reference_length_m": round(length, 2),
+                "reference_length_m": round(reference_length_m, 2),
                 "countdown_s": 10,
             }
             _write_mission(out_root / mission_id, info, race, sidecar)
@@ -534,7 +548,7 @@ def main() -> None:
                 dest = user_root / mission_id
                 _write_mission(dest, info, race, sidecar)
             print(
-                f"{mission_id}: nodes={len(nodes)} length={length:.1f} m "
+                f"{mission_id}: nodes={len(nodes)} reference={reference_length_m:.1f} m "
                 f"max_snap={max_dist:.1f} m z={nodes[0]['pos'][2]:.2f}..{nodes[-1]['pos'][2]:.2f} "
                 f"-> {dest}"
             )

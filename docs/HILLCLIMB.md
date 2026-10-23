@@ -67,6 +67,17 @@ Also in the user folder, independent of the loaded map:
 
 The other times come from dry runs driven by a script controller inside the map. It is not the player event, and the player never waits for it. The controller walks the vehicle list and the four weather classes (`sun`, `clouds`, `rain`, `snow`). For each pair it resets the car to the start, applies that weather, and runs for hours. A stage of one to three minutes gives many attempts in that time. After a finish or a crash the car goes back to the start.
 
+The first list is [`hillclimb_dry_run_vehicles.json`](hillclimb_dry_run_vehicles.json). One row is one variant: `model` is the vehicle folder, `config` is the `.pc` stem (`vehicles/<model>/<config>.pc`). Weather stays off the list. The same rows apply to every stage. Keys were read from the installed game (`content/vehicles/*.zip` and `locales/translations/en-US/vehiclesGenerated.translation.json`).
+
+| Menu | `model` | `config` |
+|---|---|---|
+| ETK K-Series, Kc6 360 (M) | `etkc` | `kc6_360_M` |
+| ETK K-Series, Kc6 360 (A) | `etkc` | `kc6_360_A` |
+| Civetta Scintilla, GTs (DCT) | `scintilla` | `gts` |
+| Hirochi SBR4, Hillclimb - Asphalt (DCT) | `sbr` | `hillclimb` |
+
+"Kc6 360" is two factory configs, manual and automatic. The Kc6x is `kc6x_360_M` and `kc6x_360_A` (the model default is `kc6x_360_A`). The SBR4 rally car on asphalt is `rally_am_asphalt`, menu name "NGRC2 - Rally Asphalt (M)".
+
 The loop has two phases.
 
 - **Search.** Race-mode AI drives the path on its own. A finish is kept when the pathnodes were taken in order and the time sits in a band around `reference_time_ms`. Wrecks, shortcuts, and crawls are dropped. The best clean finish of that vehicle and weather becomes the current template.

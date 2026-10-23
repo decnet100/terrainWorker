@@ -1,0 +1,24 @@
+{
+  "vehicles": [
+    {
+      "model": "etkc",
+      "config": "kc6_360_M",
+      "menu": "ETK K-Series — Kc6 360 (M)"
+    },
+    {
+      "model": "etkc",
+      "config": "kc6_360_A",
+      "menu": "ETK K-Series — Kc6 360 (A)"
+    },
+    {
+      "model": "scintilla",
+      "config": "gts",
+      "menu": "Civetta Scintilla — GTs (DCT)"
+    },
+    {
+      "model": "sbr",
+      "config": "hillclimb",
+      "menu": "Hirochi SBR4 — Hillclimb - Asphalt (DCT)"
+    }
+  ]
+}
