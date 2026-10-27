@@ -1,15 +1,19 @@
 """Flat carriageway shelf from the GIP links and the raw 0.5 m terrain.
 
 Stations every 5 m. A sample every 0.5 m across the GIP width is valid when
-its slope is at most the axial grade to the next station, plus 15 percentage
+its slope is at most the axial grade to the next station, plus 20 percentage
 points. The offset with the most valid samples wins. Counts within 1 sample
 of that best count, or within 10 percent of it, are tied, and the tie keeps
 the smaller height difference of the two carriageway edges. The station is
-kept only when the valid samples cover at least 20 percent of the width.
+kept only when the valid samples cover at least 20 percent of the width. On each
+unbroken kept stretch that offset is then averaged with its two neighbours,
+four times. A shift that is the same all along the stretch stays that shift.
+The average stops at a bridge, a structure, or an open end.
 
 The shelf is horizontal across the carriageway at the ground height of the
-shifted centerline. One metre each side is written at the same height. The
-next terrain pixel is left as it is. A gap of 10 m or less whose ground stays
+shifted centerline. The raster writes every cell whose centre lies in the
+carriageway or in a 1 m buffer around it, at that centerline height. The
+next cell outside the buffer is left empty. A gap of 10 m or less whose ground stays
 within 1 m of the chord between the valid stations stays in the road. Any
 longer gap, and any gap whose ground falls 1 m or more below that chord, is
 an unmarked bridge and is not stamped. A failed stretch with no valid station
@@ -65,14 +69,16 @@ from site_coords import load_site, processed_dir  # noqa: E402
 STATION_M = 5.0
 ACROSS_M = 0.5
 OFFSETS = np.round(np.arange(-2.0, 2.0 + 1e-9, 0.1), 2)
-FLAT_ADD = 15.0
+FLAT_ADD = 20.0
+FLAT_ADD_PREV = 15.0
+SMOOTH_PASSES = 4
 MIN_FRACTION = 0.20
 SHOULDER_M = 1.0
 SPAN_KEEP_M = 10.0
 DIP_OPEN_M = 1.0
 STRUCT_SKIP_M = 1.0
-PAINT_M = 0.25
 SIDE_M = (1.0, 2.0, 3.0)
+CHUNK_M = 120.0
 
 
 def _need(width: float) -> int:
@@ -135,10 +141,24 @@ def _normal(line: LineString, station: float) -> tuple[float, float]:
     return -dy / span, dx / span
 
 
-def _search_one(x, y, nx, ny, width, limit, elev, spec):
-    """Best offset, valid count, and edge-height difference. None when the width is empty."""
+def _band_pick(count, edge, width):
+    """Offset with the most samples under the limit. Ties use the smaller edge difference."""
+    need = _need(width)
+    eligible = count >= need
+    best = int(count.max()) if count.size else 0
+    if np.any(eligible):
+        band = eligible & ((best - count <= 1) | ((best - count) < 0.10 * best))
+    else:
+        band = count == best
+    idx = np.flatnonzero(band)
+    pick = int(idx[np.lexsort((np.abs(OFFSETS[idx]), edge[idx]))[0]])
+    return pick, int(count[pick]), need, bool(np.any(eligible))
+
+
+def _search_one(x, y, nx, ny, width, axial, elev, spec):
+    """Best offset at axial plus 20. Also whether axial plus 15 would have kept the station."""
     half = width / 2.0
-    if half < ACROSS_M * 0.5 or limit is None or not np.isfinite(limit):
+    if half < ACROSS_M * 0.5 or axial is None or not np.isfinite(axial):
         return None
     across = _across(half)
     shift = OFFSETS[:, None] + across[None, :]
@@ -148,22 +168,17 @@ def _search_one(x, y, nx, ny, width, limit, elev, spec):
         elev,
         spec,
     ).reshape(shift.shape)
-    count = ((slope <= limit + 1e-6) & np.isfinite(slope)).sum(axis=1)
-    need = _need(width)
-    eligible = count >= need
-    best = int(count.max()) if count.size else 0
-    if np.any(eligible):
-        band = eligible & ((best - count <= 1) | ((best - count) < 0.10 * best))
-    else:
-        band = count == best
+    finite = np.isfinite(slope)
+    count_now = ((slope <= axial + FLAT_ADD + 1e-6) & finite).sum(axis=1)
+    count_prev = ((slope <= axial + FLAT_ADD_PREV + 1e-6) & finite).sum(axis=1)
     left = _z_at(x + nx * (OFFSETS + half), y + ny * (OFFSETS + half), elev, spec)
     right = _z_at(x + nx * (OFFSETS - half), y + ny * (OFFSETS - half), elev, spec)
     edge = np.abs(left - right)
     edge[~np.isfinite(edge)] = 1.0e9
-    idx = np.flatnonzero(band)
-    pick = int(idx[np.lexsort((np.abs(OFFSETS[idx]), edge[idx]))[0]])
+    pick, n_valid, need, ok = _band_pick(count_now, edge, width)
+    _prev_pick, _prev_n, _prev_need, ok_prev = _band_pick(count_prev, edge, width)
     diff = None if edge[pick] >= 1.0e8 else round(float(edge[pick]), 3)
-    return float(OFFSETS[pick]), int(count[pick]), need, diff, bool(np.any(eligible))
+    return float(OFFSETS[pick]), n_valid, need, diff, ok, ok_prev
 
 
 def _ground(x: float, y: float, elev, spec) -> float:
@@ -269,6 +284,30 @@ def _classify(stations, line, elev, spec) -> None:
                     ) * t
                     stations[i]["dip_m"] = round(dip, 2)
                     stations[i]["span_m"] = round(span, 1)
+
+
+def _smooth_offsets(stations: list[dict]) -> None:
+    """Average the sideways offset along a kept stretch. A constant shift stays."""
+    start = 0
+    while start < len(stations):
+        if stations[start]["status"] not in ("kept", "culvert"):
+            start += 1
+            continue
+        end = start + 1
+        while end < len(stations) and stations[end]["status"] in ("kept", "culvert"):
+            end += 1
+        values = [float(stations[i]["offset_m"]) for i in range(start, end)]
+        for _ in range(SMOOTH_PASSES):
+            nxt = values[:]
+            last = len(values) - 1
+            for i in range(len(values)):
+                prev = values[i - 1] if i > 0 else values[i]
+                nxt_value = values[i + 1] if i < last else values[i]
+                nxt[i] = 0.25 * prev + 0.5 * values[i] + 0.25 * nxt_value
+            values = nxt
+        for i, value in enumerate(values):
+            stations[start + i]["offset_m"] = value
+        start = end
 
 
 def _on_structure(station_s: float, spans: list[tuple[float, float]]) -> bool:
@@ -385,6 +424,7 @@ def _stations_for(line, breaks, spans, elev, spec) -> list[dict]:
             "n_need": _need(width),
             "edge_diff_m": None,
             "ok": False,
+            "ok_prev": False,
             "status": "structure" if _on_structure(float(station), cover) else "pending",
             "z": None,
             "dip_m": None,
@@ -394,12 +434,15 @@ def _stations_for(line, breaks, spans, elev, spec) -> list[dict]:
         if row["status"] != "structure" and abs(nx) + abs(ny) > 0:
             found = _search_one(row["x"], row["y"], nx, ny, width, axial, elev, spec)
             if found is not None:
-                offset, n_valid, need, diff, ok = found
+                offset, n_valid, need, diff, ok, ok_prev = found
                 row["trial_offset_m"] = offset
                 row["n_valid"] = n_valid
                 row["n_need"] = need
                 row["edge_diff_m"] = diff
                 row["ok"] = ok
+                row["ok_prev"] = ok_prev
+                row["pass15"] = ok_prev
+                row["pass20"] = ok
                 if ok:
                     row["offset_m"] = offset
                     row["status"] = "kept"
@@ -411,19 +454,18 @@ def _stations_for(line, breaks, spans, elev, spec) -> list[dict]:
         if not np.isfinite(row["z"]):
             row["z"] = None
             row["ok"] = False
+            row["ok_prev"] = False
             if row["status"] == "kept":
                 row["status"] = "pending"
                 row["offset_m"] = 0.0
     _classify(rows, line, elev, spec)
+    _smooth_offsets(rows)
     for row in rows:
-        if row["status"] == "culvert":
+        if row["status"] in ("culvert", "kept"):
             row["x"] = row["x"] + row["nx"] * row["offset_m"]
             row["y"] = row["y"] + row["ny"] * row["offset_m"]
             zg = _ground(row["x"], row["y"], elev, spec)
             row["z"] = None if not np.isfinite(zg) else zg
-        elif row["status"] == "kept":
-            row["x"] = row["x"] + row["nx"] * row["offset_m"]
-            row["y"] = row["y"] + row["ny"] * row["offset_m"]
         sides = _sides(row["x"], row["y"], row["nx"], row["ny"], row["z"] if row["z"] is not None else np.nan, elev, spec)
         row.update(sides)
         if row["z"] is not None:
@@ -545,49 +587,85 @@ def _with_width_steps(run, breaks) -> tuple[list[tuple[float, float]], list[floa
     return xy, widths
 
 
-def _cell(x, y, spec) -> tuple[int, int] | None:
-    col = int(math.floor((x - spec["xmin"]) / spec["resolution_m"]))
-    row = int(math.floor((spec["ymax"] - y) / spec["resolution_m"]))
-    if row < 0 or col < 0 or row >= spec["height"] or col >= spec["width"]:
-        return None
-    return row, col
+def _chunks(run: list[dict]) -> list[list[dict]]:
+    """Short pieces so each corridor has a small cell box. The join point is shared."""
+    chunks: list[list[dict]] = []
+    current = [run[0]]
+    walked = 0.0
+    for point in run[1:]:
+        walked += math.hypot(point["x"] - current[-1]["x"], point["y"] - current[-1]["y"])
+        current.append(point)
+        if walked >= CHUNK_M:
+            chunks.append(current)
+            current = [point]
+            walked = 0.0
+    if len(current) >= 2:
+        chunks.append(current)
+    elif chunks and len(current) == 1:
+        chunks[-1].append(current[0])
+    return chunks
 
 
-def _paint_run(run, spec, grid, r0, c0, blocked) -> int:
-    """Write the carriageway and the 1 m shoulder. The shoulder stops on a carriageway."""
-    written = 0
-    res = spec["resolution_m"]
-    height, width = grid.shape
-    for a, b in zip(run, run[1:]):
-        dx, dy = b["x"] - a["x"], b["y"] - a["y"]
-        span = math.hypot(dx, dy)
-        if span < 1e-4 or a["z"] is None or b["z"] is None:
+def _centerline(run: list[dict]):
+    """Plan line and the shelf height along it. Duplicate points keep the later height."""
+    xy: list[tuple[float, float]] = []
+    zs: list[float] = []
+    ss: list[float] = [0.0]
+    for point in run:
+        if point["z"] is None:
             continue
-        nx, ny = -dy / span, dx / span
-        half = a["w"] / 2.0
-        outer = half + SHOULDER_M
-        steps = max(1, int(math.ceil(span / PAINT_M)))
-        lats = np.arange(-outer, outer + 1e-6, PAINT_M)
-        for step in range(steps + 1):
-            t = step / steps
-            x = a["x"] + dx * t
-            y = a["y"] + dy * t
-            z = a["z"] + (b["z"] - a["z"]) * t
-            for lat in lats:
-                cell = _cell(x + nx * lat, y + ny * lat, spec)
-                if cell is None:
-                    continue
-                row, col = cell
-                rr, cc = row - r0, col - c0
-                if rr < 0 or cc < 0 or rr >= height or cc >= width:
-                    continue
-                if abs(lat) > half + 1e-6 and blocked is not None:
-                    cx = spec["xmin"] + (col + 0.5) * res
-                    cy = spec["ymax"] - (row + 0.5) * res
-                    if blocked.covers(Point(cx, cy)):
-                        continue
-                grid[rr, cc] = z
-                written += 1
+        if xy and math.hypot(point["x"] - xy[-1][0], point["y"] - xy[-1][1]) < 0.05:
+            zs[-1] = float(point["z"])
+            continue
+        if xy:
+            ss.append(ss[-1] + math.hypot(point["x"] - xy[-1][0], point["y"] - xy[-1][1]))
+        xy.append((point["x"], point["y"]))
+        zs.append(float(point["z"]))
+    if len(xy) < 2:
+        return None, None, None
+    return LineString(xy), np.asarray(ss, dtype=np.float64), np.asarray(zs, dtype=np.float64)
+
+
+def _fill_polygon(poly, line, ss, zs, spec, grid, r0, c0) -> int:
+    """Write every cell whose centre lies in `poly`, at the centerline height there."""
+    if poly is None or poly.is_empty or line is None:
+        return 0
+    res = spec["resolution_m"]
+    minx, miny, maxx, maxy = poly.bounds
+    c_lo = max(c0, int(math.floor((minx - spec["xmin"]) / res)))
+    c_hi = min(c0 + grid.shape[1] - 1, int(math.floor((maxx - spec["xmin"]) / res)))
+    r_lo = max(r0, int(math.floor((spec["ymax"] - maxy) / res)))
+    r_hi = min(r0 + grid.shape[0] - 1, int(math.floor((spec["ymax"] - miny) / res)))
+    if c_hi < c_lo or r_hi < r_lo:
+        return 0
+    written = 0
+    for row in range(r_lo, r_hi + 1):
+        cy = spec["ymax"] - (row + 0.5) * res
+        cols = np.arange(c_lo, c_hi + 1, dtype=np.int32)
+        cx = spec["xmin"] + (cols.astype(np.float64) + 0.5) * res
+        inside = shapely.contains_xy(poly, cx, np.full(cx.shape, cy, dtype=np.float64))
+        if not np.any(inside):
+            continue
+        picked = cx[inside]
+        dist = shapely.line_locate_point(line, shapely.points(picked, np.full(picked.shape, cy)))
+        height = np.interp(np.asarray(dist, dtype=np.float64), ss, zs)
+        grid[row - r0, cols[inside] - c0] = height.astype(np.float32)
+        written += int(picked.size)
+    return written
+
+
+def _paint_run(run, spec, grid, r0, c0, shoulder: bool) -> int:
+    """Fill the carriageway. With `shoulder`, also fill the 1 m buffer around it."""
+    written = 0
+    for chunk in _chunks(run):
+        xy, widths = _with_width_steps(chunk, [])
+        line, ss, zs = _centerline(chunk)
+        if line is None:
+            continue
+        for part in _parts(_ribbon(xy, widths)):
+            target = part.buffer(SHOULDER_M) if shoulder else part
+            for piece in _parts(target):
+                written += _fill_polygon(piece, line, ss, zs, spec, grid, r0, c0)
     return written
 
 
@@ -939,31 +1017,35 @@ def main() -> None:
         grid[:] = np.nan
     else:
         grid = np.full((height, width), np.nan, dtype=np.float32)
-    foreign_geoms = unary_union(chain_geoms) if chain_geoms else None
-    foreign = prep(foreign_geoms) if foreign_geoms is not None and not foreign_geoms.is_empty else None
     painted = 0
-    # Shoulder cells that lie on any carriageway are skipped, including this chain's own.
-    # Carriageway cells are the ones with |lat| <= half, so they are not tested.
     for chain in chains:
         for run in _runs(chain["points"]):
-            painted += _paint_run(run, spec, grid, r0, c0, foreign)
+            painted += _paint_run(run, spec, grid, r0, c0, shoulder=True)
+    # The carriageway is painted again so a neighbour's shoulder cannot leave its height there.
+    for chain in chains:
+        for run in _runs(chain["points"]):
+            _paint_run(run, spec, grid, r0, c0, shoulder=False)
     cleared = 0
     for poly in junction_geoms:
         cleared += _clear_polygon(poly, spec, grid, r0, c0)
-    print(f"painted samples {painted}, junction cells cleared {cleared}", flush=True)
+    print(f"painted cells {painted}, junction cells cleared {cleared}", flush=True)
 
     out_dir = proc / "link_surface"
     out_dir.mkdir(parents=True, exist_ok=True)
-    dest = out_dir / "surface_shelf.gpkg"
-    for name in ("surface_shelf.gpkg", "surface_shelf_next.gpkg"):
-        dest = out_dir / name
-        if not dest.exists():
+    dest = None
+    for name in ("surface_shelf.gpkg", "surface_shelf_next.gpkg", "surface_shelf_smooth.gpkg"):
+        candidate = out_dir / name
+        if not candidate.exists():
+            dest = candidate
             break
         try:
-            dest.unlink()
+            candidate.unlink()
+            dest = candidate
             break
         except PermissionError:
             print(f"{name} is open, trying the next file", flush=True)
+    if dest is None:
+        raise SystemExit("close the open shelf geopackages and run again")
     layers = {
         "axis": axis_rows,
         "surface": surface_rows,
@@ -1001,6 +1083,20 @@ def main() -> None:
     print(
         f"stations {len(station_rows)} kept {counts['kept']} culvert {counts['culvert']} "
         f"bridge {counts['bridge']} open_end {counts['open_end']} structure {counts['structure']}",
+        flush=True,
+    )
+    pass_prev = sum(1 for chain in chains for station in chain["stations"] if station.get("pass15"))
+    pass_now = sum(1 for chain in chains for station in chain["stations"] if station.get("pass20"))
+    added_kept = sum(
+        1
+        for chain in chains
+        for station in chain["stations"]
+        if station.get("pass20") and not station.get("pass15") and station.get("ok")
+    )
+    print(
+        f"slope rule: axial+{FLAT_ADD_PREV:.0f} passes {pass_prev}, "
+        f"axial+{FLAT_ADD:.0f} passes {pass_now}, added {pass_now - pass_prev}, "
+        f"of which {added_kept} still have ground height",
         flush=True,
     )
     print(
