@@ -27,9 +27,18 @@ class figures, the tests run again, and the spline is tried once more so a
 link that had no group beside it can use a neighbour that has just been
 recovered.
 
-A line fails when its grade is over 30 percent, or over the median plus three
-standard deviations of its functional class. The class figures use only grades
-of 30 percent and below. An interval fails only when every line has failed.
+A chord between two valid groups that rises faster than the road allows is
+rejected. The limit is 15 percent on S-B and S-L, 20 percent on S-GW and
+Sammelstrasse, and 30 percent on Weg. The shorter group is then invalid,
+with reason steep_chord, but only when that group is 100 m or shorter.
+A longer group stays. Equal lengths of 100 m or less drop both. The chords
+are built again until every remaining chord stays under the limit, or the
+shorter group is too long to drop.
+
+A line fails when its grade is over 30 percent, or over 40 percent on Weg,
+or over the median plus three standard deviations of its functional class.
+The class figures use only grades at or below that cap. An interval fails
+only when every line has failed.
 One passing line keeps it. A line that passed is then checked against its
 neighbours on that same line. With a valid interval on both sides, it fails
 when its grade misses the average of those two by more than the class allows.
@@ -74,10 +83,21 @@ from site_coords import load_site, processed_dir, resolve_site_path  # noqa: E40
 STEP_M = 2.5
 SIDE_M = (1.5,)
 GRADE_CAP_PCT = 30.0
+WEG_GRADE_CAP_PCT = 40.0
 MIN_STEP_M = 1.0
 # Raw BEV mosaic: 5 is water, 6 is nodata. See fetch_bev_landcover.CLASS_NAMES.
 BEV_WATER = 5
 GROUP_MIN = 6
+# A valid group longer than this is a road, not a false flat. It is not dropped.
+GROUP_KEEP_M = 100.0
+# End-to-end chord slope must stay under this percent. Exactly the limit fails.
+SLOPE_LIMIT_PCT = {
+    "S-B": 15.0,
+    "S-L": 15.0,
+    "S-GW": 20.0,
+    "Sammelstrasse": 20.0,
+    "Weg": 30.0,
+}
 SPLINE_MISS_M = 1.0
 SPLINE_RATIO = 0.10
 NODE_MATCH_M = 2.0
@@ -385,12 +405,18 @@ def _on_water(xs: np.ndarray, ys: np.ndarray, grid: dict, swiss) -> np.ndarray:
     return out
 
 
-def _reason(slope: float, limit: float | None, *, water: bool = False) -> str:
+def _grade_cap(code: str) -> float:
+    if code == "Weg":
+        return WEG_GRADE_CAP_PCT
+    return GRADE_CAP_PCT
+
+
+def _reason(slope: float, limit: float | None, *, water: bool = False, cap: float = GRADE_CAP_PCT) -> str:
     if water:
         return "water"
     if not np.isfinite(slope):
         return "no_ground"
-    if slope > GRADE_CAP_PCT:
+    if slope > cap:
         return "slope_30"
     if limit is not None and slope > limit:
         return "slope_class"
@@ -510,7 +536,8 @@ def _grade(z0: float, z1: float, distance: float) -> float:
 def _class_limits(grades: dict[str, list[float]]) -> dict[str, dict]:
     limits = {}
     for code, values in grades.items():
-        kept = np.asarray([v for v in values if np.isfinite(v) and v <= GRADE_CAP_PCT], dtype=np.float64)
+        cap = _grade_cap(code)
+        kept = np.asarray([v for v in values if np.isfinite(v) and v <= cap], dtype=np.float64)
         if kept.size == 0:
             limits[code] = {"n": 0, "median": None, "std": None, "limit": None}
             continue
@@ -585,11 +612,12 @@ def _run_tests(items: dict[str, dict]) -> tuple[dict, dict, dict]:
     for item in items.values():
         included = item["included"]
         limit = (limits.get(item["code"]) or {"limit": None})["limit"]
+        cap = _grade_cap(item["code"])
         state = {}
         for key, slopes in item["grades"].items():
             water = item["water"][key]
             passed = [
-                bool(included[i]) and _reason(slope, limit, water=water[i]) == ""
+                bool(included[i]) and _reason(slope, limit, water=water[i], cap=cap) == ""
                 for i, slope in enumerate(slopes)
             ]
             kind, value = _change_values(slopes, passed)
@@ -611,11 +639,12 @@ def _interval_alive(item: dict, index: int, limits: dict, triple_stats: dict) ->
     if not item["included"][index]:
         return False
     limit = (limits.get(item["code"]) or {"limit": None})["limit"]
+    cap = _grade_cap(item["code"])
     change_limit = triple_stats.get(item["code"], {}).get("limit")
     alive = False
     for key, slopes in item["grades"].items():
         _slopes, _passed, kind, value = item["state"][key]
-        grade = _reason(slopes[index], limit, water=item["water"][key][index])
+        grade = _reason(slopes[index], limit, water=item["water"][key][index], cap=cap)
         change = "slope_change" if _change_fail(kind[index], value[index], change_limit) else ""
         if grade == "" and change == "":
             alive = True
@@ -681,6 +710,70 @@ def _group_spans(rows: list[dict]) -> list[tuple[int, int, float, float, list[tu
                 spans.append((start, i, rows[start]["s0"], rows[i - 1]["s1"], knots))
             start = None
     return spans
+
+
+def _facing_knot(knots: list[tuple[float, float]], *, last: bool) -> tuple[float, float] | None:
+    order = range(len(knots) - 1, -1, -1) if last else range(len(knots))
+    for index in order:
+        station, height = knots[index]
+        if np.isfinite(height):
+            return station, float(height)
+    return None
+
+
+def _drop_steep_groups(chains: list[list[tuple[str, bool]]], items: dict[str, dict], limits: dict, triple_stats: dict) -> tuple[int, int]:
+    """Invalidate the shorter group wherever the chord between two groups is too steep."""
+    chosen: dict[tuple[str, int], None] = {}
+    group_ids: set[tuple[int, float]] = set()
+    for chain_i, chain in enumerate(chains):
+        rows = _chain_rows(chain, items, limits, triple_stats)
+        spans = _group_spans(rows)
+        for left, right in zip(spans, spans[1:]):
+            edge_lo = _facing_knot(left[4], last=True)
+            edge_hi = _facing_knot(right[4], last=False)
+            if edge_lo is None or edge_hi is None:
+                continue
+            span = edge_hi[0] - edge_lo[0]
+            if span <= 1e-3:
+                continue
+            slope = 100.0 * abs(edge_hi[1] - edge_lo[1]) / span
+            codes = set()
+            for index in range(left[0], left[1]):
+                codes.add(items[rows[index]["id"]]["code"])
+            for index in range(right[0], right[1]):
+                codes.add(items[rows[index]["id"]]["code"])
+            known = [SLOPE_LIMIT_PCT[code] for code in codes if code in SLOPE_LIMIT_PCT]
+            if not known or slope < min(known):
+                continue
+            len_lo = left[3] - left[2]
+            len_hi = right[3] - right[2]
+            victims = []
+            if len_lo <= len_hi + 1e-3 and len_lo <= GROUP_KEEP_M:
+                victims.append(left)
+            if len_hi <= len_lo + 1e-3 and len_hi <= GROUP_KEEP_M:
+                victims.append(right)
+            for victim in victims:
+                group_ids.add((chain_i, victim[2]))
+                for row in rows[victim[0] : victim[1]]:
+                    chosen[(row["id"], row["i"])] = None
+    for lid, index in chosen:
+        item = items[lid]
+        item["included"][index] = False
+        item["recovered"][index] = False
+        item["drop_reason"][index] = "steep_chord"
+    return len(chosen), len(group_ids)
+
+
+def _settle(chains, items, limits, triple_stats, pair_stats, label: str):
+    """Drop false groups on steep chords and rebuild the class figures."""
+    for _ in range(24):
+        n_interval, n_group = _drop_steep_groups(chains, items, limits, triple_stats)
+        if n_group == 0:
+            return limits, triple_stats, pair_stats
+        print(f"{label}: steep chord dropped {n_interval} intervals in {n_group} groups", flush=True)
+        limits, triple_stats, pair_stats = _run_tests(items)
+    print(f"{label}: steep chords remain after 24 passes", flush=True)
+    return limits, triple_stats, pair_stats
 
 
 def _group_line(part: list[dict]) -> LineString | None:
@@ -860,6 +953,7 @@ def main() -> None:
             "included": [not flag for flag in structure],
             "recovered": [False] * n_step,
             "spline_reason": [""] * n_step,
+            "drop_reason": [""] * n_step,
             "spline_miss": [None] * n_step,
             "spline_ratio": [None] * n_step,
         }
@@ -867,12 +961,16 @@ def main() -> None:
     ends = _ends(list(items.values()), nodes)
     chains = _chains(list(items.values()), ends)
     limits, triple_stats, pair_stats = _run_tests(items)
+    limits, triple_stats, pair_stats = _settle(chains, items, limits, triple_stats, pair_stats, "pass 1")
     _print_stats("pass 1", limits, triple_stats, pair_stats)
     valid_groups: list[dict] = []
     for number in (1, 2):
         gained, valid_groups = _recover(chains, items, limits, triple_stats)
         print(f"spline {number}: recovered {gained} intervals, groups {len(valid_groups)}", flush=True)
         limits, triple_stats, pair_stats = _run_tests(items)
+        limits, triple_stats, pair_stats = _settle(
+            chains, items, limits, triple_stats, pair_stats, f"pass {number + 1}"
+        )
         _print_stats(f"pass {number + 1}", limits, triple_stats, pair_stats)
 
     interval_rows = []
@@ -888,6 +986,7 @@ def main() -> None:
         state = item["state"]
         water_flags = item["water"]
         grade_limit = (limits.get(code) or {"limit": None})["limit"]
+        cap = _grade_cap(code)
         change_limit = triple_stats.get(code, {}).get("limit")
         center_slopes, _, center_kind, center_value = state["center"]
         left_slopes, _, left_kind, left_value = state[left_key]
@@ -902,15 +1001,20 @@ def main() -> None:
             left = left_slopes[i]
             right = right_slopes[i]
             grade_reason = ""
-            if not item["included"][i]:
+            if item["drop_reason"][i]:
+                held = item["drop_reason"][i]
+                center_reason = left_reason = right_reason = held
+                interval_reason = held
+                center_change = left_change = right_change = ""
+            elif not item["included"][i]:
                 held = item["spline_reason"][i] or "no_group"
                 center_reason = left_reason = right_reason = held
                 interval_reason = held
                 center_change = left_change = right_change = ""
             else:
-                center_reason = _reason(slope, grade_limit, water=water_flags["center"][i])
-                left_reason = _reason(left, grade_limit, water=water_flags[left_key][i])
-                right_reason = _reason(right, grade_limit, water=water_flags[right_key][i])
+                center_reason = _reason(slope, grade_limit, water=water_flags["center"][i], cap=cap)
+                left_reason = _reason(left, grade_limit, water=water_flags[left_key][i], cap=cap)
+                right_reason = _reason(right, grade_limit, water=water_flags[right_key][i], cap=cap)
                 grade_reason = _interval_reason(center_reason, left_reason, right_reason)
                 center_change = "slope_change" if _change_fail(center_kind[i], center_value[i], change_limit) else ""
                 left_change = "slope_change" if _change_fail(left_kind[i], left_value[i], change_limit) else ""

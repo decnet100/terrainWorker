@@ -232,6 +232,7 @@ def main() -> None:
                     "n_tunnel": int((reasons == "tunnel").sum()),
                     "n_gallery": int((reasons == "gallery").sum()),
                     "n_no_group": int((reasons == "no_group").sum()),
+                    "n_steep_chord": int((reasons == "steep_chord").sum()),
                     "n_off_spline_1m": int((reasons == "off_spline_1m").sum()),
                     "n_off_spline_10pct": int((reasons == "off_spline_10pct").sum()),
                     "n_no_ground": int((reasons == "no_ground").sum()),
