@@ -88,3 +88,13 @@ cd C:\temp\beamng_autoroad; python tools\seed_annotations.py
 - [config/site.example.yaml](config/site.example.yaml) — template (`site.yaml` is local, gitignored)
 
 `center_z_m` on a site is the sky-arc target read by alpine-roadtrip when it places portals.
+
+## License
+
+Original contents of this repository are licensed under
+[CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/)
+(attribution, non-commercial), with an additional permission for
+scientific research and academic publications. Commercial or paid use
+is not allowed. See [LICENSE](LICENSE).
+
+Upstream geodata (for example Tyrol WCS/WFS) stays under its own terms.
