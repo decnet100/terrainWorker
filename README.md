@@ -91,10 +91,10 @@ cd C:\temp\beamng_autoroad; python tools\seed_annotations.py
 
 ## License
 
-Original contents of this repository are licensed under
-[CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/)
-(attribution, non-commercial), with an additional permission for
-scientific research and academic publications. Commercial or paid use
-is not allowed. See [LICENSE](LICENSE).
+Original software and documentation in this repository are licensed under the
+[PolyForm Noncommercial License 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0).
+Non-commercial use is allowed (including personal research, hobby projects,
+and use by educational or public research organizations). Commercial or paid
+use is not allowed. See [LICENSE](LICENSE).
 
 Upstream geodata (for example Tyrol WCS/WFS) stays under its own terms.
