@@ -70,13 +70,58 @@ def _weighted(values: np.ndarray, weights: np.ndarray, qs: tuple[float, ...]) ->
 
 
 def _z_at(xs: np.ndarray, ys: np.ndarray, elev: np.ndarray, spec: dict) -> np.ndarray:
-    res = spec["resolution_m"]
-    col = np.floor((xs - spec["xmin"]) / res).astype(np.int32)
-    row = np.floor((spec["ymax"] - ys) / res).astype(np.int32)
-    out = np.full(xs.shape, np.nan, dtype=np.float64)
-    ok = (row >= 0) & (col >= 0) & (row < elev.shape[0]) & (col < elev.shape[1])
-    out[ok] = elev[row[ok], col[ok]]
-    return out
+    """Bilinear height. A cell value sits at the cell centre, half a cell in from the corner.
+
+    A neighbour with weight zero is not required. A neighbour that would
+    actually contribute and is missing leaves the height empty.
+    """
+    res = float(spec["resolution_m"])
+    fc = (np.asarray(xs, dtype=np.float64) - float(spec["xmin"])) / res - 0.5
+    fr = (float(spec["ymax"]) - np.asarray(ys, dtype=np.float64)) / res - 0.5
+    shape = fc.shape
+    fc = np.ravel(fc)
+    fr = np.ravel(fr)
+    c0 = np.floor(fc).astype(np.int32)
+    r0 = np.floor(fr).astype(np.int32)
+    dc = fc - c0
+    dr = fr - r0
+    height, width = elev.shape
+    c1 = c0 + 1
+    r1 = r0 + 1
+    c1 = np.where((dc == 0.0) & (c1 == width), c0, c1)
+    r1 = np.where((dr == 0.0) & (r1 == height), r0, r1)
+    out = np.full(fc.shape, np.nan, dtype=np.float64)
+    inside = (
+        (r0 >= 0) & (c0 >= 0) & (r0 < height) & (c0 < width)
+        & (r1 >= 0) & (c1 >= 0) & (r1 < height) & (c1 < width)
+    )
+    if np.any(inside):
+        rr = r0[inside]
+        cc = c0[inside]
+        tx = dc[inside]
+        ty = dr[inside]
+        z00 = elev[rr, cc].astype(np.float64, copy=False)
+        z10 = elev[rr, c1[inside]].astype(np.float64, copy=False)
+        z01 = elev[r1[inside], cc].astype(np.float64, copy=False)
+        z11 = elev[r1[inside], c1[inside]].astype(np.float64, copy=False)
+        w00 = (1.0 - tx) * (1.0 - ty)
+        w10 = tx * (1.0 - ty)
+        w01 = (1.0 - tx) * ty
+        w11 = tx * ty
+        bad = (
+            ((w00 > 0.0) & ~np.isfinite(z00))
+            | ((w10 > 0.0) & ~np.isfinite(z10))
+            | ((w01 > 0.0) & ~np.isfinite(z01))
+            | ((w11 > 0.0) & ~np.isfinite(z11))
+        )
+        z00 = np.where(np.isfinite(z00), z00, 0.0)
+        z10 = np.where(np.isfinite(z10), z10, 0.0)
+        z01 = np.where(np.isfinite(z01), z01, 0.0)
+        z11 = np.where(np.isfinite(z11), z11, 0.0)
+        mixed = z00 * w00 + z10 * w10 + z01 * w01 + z11 * w11
+        mixed[bad] = np.nan
+        out[np.flatnonzero(inside)] = mixed
+    return out.reshape(shape)
 
 
 def _roughness(xs: np.ndarray, ys: np.ndarray, elev: np.ndarray, spec: dict) -> np.ndarray:
