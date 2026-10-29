@@ -23,12 +23,21 @@ A dynamic programme (Viterbi) picks the offset path with the least data cost plu
 stations, then a Whittaker smoother of the class wavelength (SMOOTH_LC_M) removes the 0.1 m steps.
 Confidence per station is how much worse the best offset more than 0.6 m away scores.
 
+With the centre fixed, each side's half width is searched the same way (DP over the width, capped jump
+price, short smoother): the half band should stay on its own cross line and break away at the edge. Where the
+found edge shows no knee in the terrain (KNEE_MIN) - asphalt beside a flat verge - that side keeps half the
+GIP width; edge_left_seen / edge_right_seen tell which. The carriageway layer is the ribbon of both edges.
+
 Writes data/processed/<site>/lateral_fix/lateral_fix.gpkg (LATFIX_OUT renames it): link (moved geometry),
-station, node, chain. Nothing else reads it yet.
+station, node, chain, carriageway. Nothing else reads it yet.
 
 Pfunds-Spiss, Swiss part, distance to the middle of the cadastral carriageway (AV LCSF Strasse_Weg),
 6194 stations: L median 0.70 -> 0.45 m, p90 1.75 -> 1.15 m, within 1.5 m 86 -> 94 %; B unchanged (0.35-0.40 m).
-Rank Gemeinde and intern have no Swiss stations; in Austria they were only looked at on the orthophoto.
+Width, stations more than 25 m from a swissTLM3D structure: B |error| median 1.00 m (GIP) -> 0.83 m, within 1 m
+46 -> 57 %; L 0.80 -> 0.71 m, within 1 m 62 -> 64 %. Where the cadastral edge has a terrain knee the measured B
+width is within 1 m at 57 % of the stations against 26 % for the GIP width; where it has none, the DGM cannot
+see the edge. Rank Gemeinde and intern have no Swiss stations; in Austria they were only looked at on the
+orthophoto.
 The confidence is not calibrated yet.
 
     cd C:\\temp\\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/pfunds_spiess.yaml"; python tools\\fix_lateral_rank.py
@@ -67,6 +76,15 @@ W_RMS = 1.0 / 0.03       # 3 cm of band RMS costs one unit
 W_EDGE = 2.0 / EDGE_CAP  # a full break on one side earns two units
 W_PRIOR = 1.0            # cost at the edge of the search range
 ANCHOR_TOL_M = 0.3
+CORE_M = 1.5             # centre out to here, on each side, sets the cross line of that side
+KNEE_M = 1.0             # length of the local slopes either side of a candidate edge
+HALF_MIN_M = 1.2         # narrowest half width searched
+HALF_MAX_EXTRA_M = 2.5   # widest half width searched: GIP half width + this
+WIDTH_JUMP_M = 0.10      # jump sigma of a half width between stations
+WIDTH_JUMP_CAP = 3.0     # most a width jump can cost: widenings, lay-bys and junctions stay possible
+WIDTH_LC_M = 12.0        # smoothing wavelength of the half widths
+KNEE_MIN = 0.15          # slope change at a found edge below which the terrain does not show that edge
+W_WIDTH_PRIOR = 1.0      # pull of a half width to half the GIP width, at the edge of the range
 SECOND_APART_M = 0.6
 
 # rank: name, search range (m), jump sigma per station (m), smoothing wavelength (m), pull to the GIP line
@@ -243,9 +261,11 @@ def data_cost(dgm: Dgm, pts, normal, width, search, mask, prior):
     return offs, cost
 
 
-def viterbi(cost, offs, jump_sigma, lock):
+def viterbi(cost, offs, jump_sigma, lock, jump_cap=None):
     n, k = cost.shape
     trans = ((offs[:, None] - offs[None, :]) / jump_sigma) ** 2 * 0.5
+    if jump_cap is not None:
+        trans = np.minimum(trans, jump_cap)   # a real change of width is allowed at a fixed price
     big = 1e9
     acc = cost[0].copy()
     if lock[0] is not None:
@@ -278,6 +298,69 @@ def whittaker(y, w, lc, lock):
     D = sp.diags([1.0, -2.0, 1.0], [0, 1, 2], shape=(n - 2, n))
     A = sp.diags(W) + lam * (D.T @ D)
     return spla.spsolve(A.tocsc(), W * z0)
+
+
+def side_width_cost(dgm: Dgm, pts, normal, off, half_gip, mask, side, prior):
+    """Cost of every half width on one side (+1 left, -1 right), with the centre fixed at `off`.
+
+    A line is fitted over the core of this half of the band (centre out to CORE_M). Going out from the core,
+    the profile should stay on that line up to the edge (RMS of the residual) and break away at it
+    (local slope over KNEE_M just inside against just outside). An eroded edge rounds the knee, so the edge tends to sit at its inner start.
+    """
+    hs = np.arange(HALF_MIN_M, HALF_MAX_EXTRA_M + float(np.max(half_gip)) + 1e-9, OFFSET_STEP_M)
+    reach = float(np.max(np.abs(off))) + hs[-1] + EDGE_M + 0.5
+    tt = np.arange(-reach, reach + 1e-9, 0.25)
+    X = pts[:, 0:1] + normal[:, 0:1] * tt[None, :]
+    Y = pts[:, 1:2] + normal[:, 1:2] * tt[None, :]
+    Z = dgm.sample(X, Y)
+    span = hs[-1] - hs[0]
+    cost = np.zeros((len(pts), len(hs)))
+    knee = np.zeros((len(pts), len(hs)))
+    for i in range(len(pts)):
+        pr = prior * ((hs - half_gip[i]) / span) ** 2
+        z = Z[i]
+        if mask[i] or not np.isfinite(z).any():
+            cost[i] = pr
+            continue
+        u = side * (tt - off[i])                      # distance from the centre towards this side
+        # one line per side: a crowned two-lane road breaks at the centre, a line across both halves would not fit
+        core = (u >= -0.25) & (u <= CORE_M) & np.isfinite(z)
+        if core.sum() < 5:
+            cost[i] = pr
+            continue
+        b, a = np.polyfit(tt[core], z[core], 1)
+        res = z - (a + b * tt)
+        for k, h in enumerate(hs):
+            inside = (u > CORE_M) & (u <= h) & np.isfinite(z)
+            rms = math.sqrt(float(np.mean(res[inside] ** 2))) if inside.sum() >= 2 else 0.0
+            # the knee itself: local slope just inside against just outside, so the edge sits on the break
+            before = (u >= h - KNEE_M) & (u <= h) & np.isfinite(z)
+            beyond = (u >= h) & (u <= h + KNEE_M) & np.isfinite(z)
+            brk = 0.0
+            if beyond.sum() >= 3 and before.sum() >= 3:
+                s_in = np.polyfit(tt[before], z[before], 1)[0]
+                s_out = np.polyfit(tt[beyond], z[beyond], 1)[0]
+                brk = min(abs(s_out - s_in), EDGE_CAP)
+            knee[i, k] = brk
+            cost[i, k] = W_RMS * min(rms, RMS_CAP_M) - W_EDGE * brk + pr[k]
+        cost[i] -= cost[i].min()
+    return hs, cost, knee
+
+
+def measure_widths(dgm, pts, normal, off, half_gip, mask, lc, prior):
+    """Left and right half width per station: DP over the width (capped jump price), then a short smoother."""
+    out, src = [], []
+    for side in (1, -1):
+        hs, cost, knee = side_width_cost(dgm, pts, normal, off, half_gip, mask, side, prior)
+        path = viterbi(cost, hs, WIDTH_JUMP_M, (None, None), jump_cap=WIDTH_JUMP_CAP)
+        k = np.clip(np.searchsorted(hs, path), 0, len(hs) - 1)
+        seen = knee[np.arange(len(path)), k] >= KNEE_MIN
+        # an edge the terrain does not show (asphalt beside a flat verge) keeps half the GIP width
+        h = np.where(seen & ~mask, path, half_gip)
+        w = np.where(mask, 0.0, np.where(seen, 1.0, 0.3))
+        out.append(whittaker(h, w, WIDTH_LC_M, (None, None)))
+        src.append(seen & ~mask)
+    return out[0], out[1], src[0], src[1]
 
 
 def confidence(cost, offs, chosen):
@@ -320,7 +403,7 @@ def main() -> None:
 
     moved: dict = {}                     # node -> new (x, y)
     new_coords: dict[int, np.ndarray] = {}
-    st_rows, ch_rows = [], []
+    st_rows, ch_rows, surf_rows = [], [], []
     for rank in sorted(RANKS):
         name, search, jump, lc, prior = RANKS[rank]
         sub = links[links["rank"] == rank]
@@ -356,7 +439,10 @@ def main() -> None:
             w = np.where(mask, 0.0, 1.0)
             off = whittaker(path, w, lc, lock)
             conf = confidence(cost, offs, off)
+            hl, hr, seen_l, seen_r = measure_widths(dgm, pts, normal, off, width / 2.0, mask, lc, W_WIDTH_PRIOR)
             newp = pts + normal * off[:, None]
+            left = pts + normal * (off + hl)[:, None]
+            right = pts + normal * (off - hr)[:, None]
             for nid, i in ((n_start, 0), (n_end, len(s) - 1)):
                 if nid in moved:
                     newp[i] = moved[nid]
@@ -381,7 +467,15 @@ def main() -> None:
                 st_rows.append({"rank": name, "chain": f"{rank}-{ci}", "link_id": links.at[chain[li[i]][0], "link_id"],
                                 "s": round(float(s[i]), 1), "offset_m": round(float(off[i]), 2),
                                 "dp_offset_m": round(float(path[i]), 2), "confidence": round(float(conf[i]), 2),
+                                "width_gip_m": round(float(width[i]), 2), "half_left_m": round(float(hl[i]), 2),
+                                "half_right_m": round(float(hr[i]), 2), "width_m": round(float(hl[i] + hr[i]), 2),
+                                "edge_left_seen": int(seen_l[i]), "edge_right_seen": int(seen_r[i]),
                                 "structure": int(mask[i]), "geometry": Point(newp[i])})
+            ring = np.vstack([left, right[::-1], left[:1]])
+            surf = shapely.make_valid(shapely.Polygon(ring))
+            surf_rows.append({"rank": name, "chain": f"{rank}-{ci}",
+                              "width_median_m": round(float(np.median((hl + hr)[~mask])) if (~mask).any() else float("nan"), 2),
+                              "width_gip_m": round(float(np.median(width)), 2), "geometry": surf})
             ch_rows.append({"rank": name, "chain": f"{rank}-{ci}", "n_link": len(chain),
                             "length_m": round(line.length, 1),
                             "mean_offset_m": round(float(np.mean(off[~mask])) if (~mask).any() else 0.0, 2),
@@ -414,13 +508,15 @@ def main() -> None:
     out.to_file(dest, layer="link")
     gpd.GeoDataFrame(st_rows, crs=links.crs).to_file(dest, layer="station")
     gpd.GeoDataFrame(ch_rows, crs=links.crs).to_file(dest, layer="chain")
+    gpd.GeoDataFrame(surf_rows, crs=links.crs).to_file(dest, layer="carriageway")
     nd.to_file(dest, layer="node")
     st = gpd.GeoDataFrame(st_rows)
     for name in [RANKS[r][0] for r in sorted(RANKS)]:
         x = st[(st["rank"] == name) & (st.structure == 0)]
         if len(x):
             print(f"{name}: stations {len(x)} |offset| median {x.offset_m.abs().median():.2f} p90 "
-                  f"{x.offset_m.abs().quantile(0.9):.2f} m, low confidence {np.mean(x.confidence < 0.5) * 100:.0f} %")
+                  f"{x.offset_m.abs().quantile(0.9):.2f} m; width median {x.width_m.median():.2f} m "
+                  f"(GIP {x.width_gip_m.median():.2f}), p10-p90 {x.width_m.quantile(0.1):.2f}-{x.width_m.quantile(0.9):.2f} m")
     print(f"(open the following in qgis or similar tool to check: {dest})")
 
 
