@@ -24,7 +24,7 @@ stations, then a Whittaker smoother of the class wavelength (SMOOTH_LC_M) remove
 Confidence per station is how much worse the best offset more than 0.6 m away scores.
 
 With the centre fixed, each side's half width is searched the same way (DP over the width, capped jump
-price, short smoother): the half band should stay on its own cross line and break away at the edge. Where the
+price, robust smoother weighted by how clearly the edge shows): the half band should stay on its own cross line and break away at the edge. Where the
 found edge shows no knee in the terrain (KNEE_MIN) - asphalt beside a flat verge - that side keeps half the
 GIP width; edge_left_seen / edge_right_seen tell which. The carriageway layer is the ribbon of both edges.
 
@@ -33,10 +33,10 @@ station, node, chain, carriageway. Nothing else reads it yet.
 
 Pfunds-Spiss, Swiss part, distance to the middle of the cadastral carriageway (AV LCSF Strasse_Weg),
 6194 stations: L median 0.70 -> 0.45 m, p90 1.75 -> 1.15 m, within 1.5 m 86 -> 94 %; B unchanged (0.35-0.40 m).
-Width, stations more than 25 m from a swissTLM3D structure: B |error| median 1.00 m (GIP) -> 0.83 m, within 1 m
-46 -> 57 %; L 0.80 -> 0.71 m, within 1 m 62 -> 64 %. Where the cadastral edge has a terrain knee the measured B
-width is within 1 m at 57 % of the stations against 26 % for the GIP width; where it has none, the DGM cannot
-see the edge. Rank Gemeinde and intern have no Swiss stations; in Austria they were only looked at on the
+Width, stations more than 25 m from a swissTLM3D structure: B |error| median 1.00 m (GIP) -> 0.89 m, within 1 m
+46 -> 55 %; L 0.80 -> 0.75 m, within 1 m 62 -> 63 %. Where the cadastral edge has no terrain knee the DGM cannot
+see the edge. Bridges (GIP and unlabelled score_gap_chord gaps) take the approach width: no bridge station is now
+narrower than 85 % of the GIP width (12 % were before). Rank Gemeinde and intern have no Swiss stations; in Austria they were only looked at on the
 orthophoto.
 The confidence is not calibrated yet.
 
@@ -82,7 +82,13 @@ HALF_MIN_M = 1.2         # narrowest half width searched
 HALF_MAX_EXTRA_M = 2.5   # widest half width searched: GIP half width + this
 WIDTH_JUMP_M = 0.10      # jump sigma of a half width between stations
 WIDTH_JUMP_CAP = 3.0     # most a width jump can cost: widenings, lay-bys and junctions stay possible
-WIDTH_LC_M = 12.0        # smoothing wavelength of the half widths
+WIDTH_LC_M = 30.0        # smoothing wavelength of the half widths
+KNEE_FULL = 0.4          # slope change at which an edge counts fully in the width smoother
+W_UNSEEN = 0.15          # weight of the GIP half width where the edge is not seen
+TUKEY_WIDTH_M = 0.6      # a half width further than this off the smooth curve stops counting
+ABUT_M = 6.0             # a bridge is widened by this at both ends for the width (wing walls, abutments)
+APPROACH_N = 10          # stations either side of a bridge whose median width the deck takes
+GAP_BRIDGE_M = -1.0      # score_gap_chord gap, no GIP label, ground everywhere this far below the chord: a bridge
 KNEE_MIN = 0.15          # slope change at a found edge below which the terrain does not show that edge
 W_WIDTH_PRIOR = 1.0      # pull of a half width to half the GIP width, at the edge of the range
 SECOND_APART_M = 0.6
@@ -347,20 +353,57 @@ def side_width_cost(dgm: Dgm, pts, normal, off, half_gip, mask, side, prior):
     return hs, cost, knee
 
 
-def measure_widths(dgm, pts, normal, off, half_gip, mask, lc, prior):
-    """Left and right half width per station: DP over the width (capped jump price), then a short smoother."""
+def measure_widths(dgm, pts, normal, off, half_gip, mask, bridge, prior):
+    """Left and right half width per station.
+
+    DP over the width (capped jump price), then a robust smoother of WIDTH_LC_M: each station weighs by how
+    clearly the terrain shows its edge, and Tukey weights drop the stations that stay far off the curve.
+    Bridges (bridge, already widened by ABUT_M over the abutments) take the width of their approaches,
+    never less than the GIP width: the terrain under a deck says nothing about the deck.
+    """
     out, src = [], []
     for side in (1, -1):
         hs, cost, knee = side_width_cost(dgm, pts, normal, off, half_gip, mask, side, prior)
         path = viterbi(cost, hs, WIDTH_JUMP_M, (None, None), jump_cap=WIDTH_JUMP_CAP)
         k = np.clip(np.searchsorted(hs, path), 0, len(hs) - 1)
-        seen = knee[np.arange(len(path)), k] >= KNEE_MIN
+        kv = knee[np.arange(len(path)), k]
+        seen = (kv >= KNEE_MIN) & ~mask
         # an edge the terrain does not show (asphalt beside a flat verge) keeps half the GIP width
-        h = np.where(seen & ~mask, path, half_gip)
-        w = np.where(mask, 0.0, np.where(seen, 1.0, 0.3))
-        out.append(whittaker(h, w, WIDTH_LC_M, (None, None)))
-        src.append(seen & ~mask)
+        h = np.where(seen, path, half_gip)
+        w0 = np.where(mask, 0.0, np.where(seen, np.clip(kv / KNEE_FULL, 0.25, 1.0), W_UNSEEN))
+        w = w0.copy()
+        for _ in range(3):
+            fit = whittaker(h, w, WIDTH_LC_M, (None, None))
+            r = np.abs(h - fit) / TUKEY_WIDTH_M
+            w = w0 * np.where(r < 1.0, (1 - r ** 2) ** 2, 0.0)
+        fit = whittaker(h, np.maximum(w, 1e-6 * (w0 > 0)), WIDTH_LC_M, (None, None))
+        out.append(_bridge_fill(fit, bridge, mask, half_gip))
+        src.append(seen)
     return out[0], out[1], src[0], src[1]
+
+
+def _runs(flag):
+    idx = np.flatnonzero(flag)
+    return np.split(idx, np.flatnonzero(np.diff(idx) > 1) + 1) if len(idx) else []
+
+
+def _bridge_fill(h, bridge, mask, half_gip):
+    """Width across each bridge run: straight between the approach medians, at least the GIP half width."""
+    h = h.copy()
+    n = len(h)
+    for run in _runs(bridge):
+        a, b = run[0], run[-1]
+        before = [i for i in range(max(0, a - APPROACH_N), a) if not mask[i]]
+        after = [i for i in range(b + 1, min(n, b + 1 + APPROACH_N)) if not mask[i]]
+        v0 = np.median(h[before]) if before else np.nan
+        v1 = np.median(h[after]) if after else np.nan
+        if np.isnan(v0) and np.isnan(v1):
+            v0 = v1 = float(np.median(half_gip[run]))
+        v0 = v1 if np.isnan(v0) else v0
+        v1 = v0 if np.isnan(v1) else v1
+        t = np.linspace(0.0, 1.0, len(run))
+        h[run] = np.maximum(v0 + (v1 - v0) * t, half_gip[run])
+    return h
 
 
 def confidence(cost, offs, chosen):
@@ -399,7 +442,18 @@ def main() -> None:
     links["rank"] = [rank_of(r) for r in links.itertuples()]
     struct = defaultdict(list)
     for r in refs.itertuples():
-        struct[str(r.link_id)].append((min(r.from_pct, r.to_pct) / 100.0, max(r.from_pct, r.to_pct) / 100.0))
+        struct[str(r.link_id)].append((min(r.from_pct, r.to_pct) / 100.0, max(r.from_pct, r.to_pct) / 100.0,
+                                       str(r.typ or "") == "Brücke"))
+    # bridges the GIP does not label: gaps of score_gap_chord whose ground lies below the chord all along
+    gap_bridges = None
+    gap_path = proc / "link_surface" / "check_grade" / "todo_gap.gpkg"
+    if gap_path.is_file():
+        gaps = gpd.read_file(gap_path)
+        sel = gaps[(gaps["typ"].fillna("") == "") & (gaps["slope_ok"] == 1) & (gaps["chord_max_m"] < GAP_BRIDGE_M)]
+        if len(sel):
+            gap_bridges = shapely.union_all(list(sel.geometry.buffer(4.0)))
+            shapely.prepare(gap_bridges)
+        print(f"unlabelled bridges from {gap_path.name}: {len(sel)}", flush=True)
 
     moved: dict = {}                     # node -> new (x, y)
     new_coords: dict[int, np.ndarray] = {}
@@ -421,11 +475,24 @@ def main() -> None:
             width = np.array([links.at[chain[j][0], "width_m"] for j in li], dtype=float)
             width = np.where(np.isfinite(width), width, 5.0)
             mask = np.zeros(len(s), bool)
+            bridge = np.zeros(len(s), bool)
             for j, (idx, fwd) in enumerate(chain):
                 L = links.at[idx, "geometry"].length
-                for a, b in struct.get(str(links.at[idx, "link_id"]), []):
+                for a, b, is_bridge in struct.get(str(links.at[idx, "link_id"]), []):
                     lo, hi = (a, b) if fwd else (1 - b, 1 - a)
-                    mask |= (s >= cuts[j] + lo * L - 1.0) & (s <= cuts[j] + hi * L + 1.0)
+                    on = (s >= cuts[j] + lo * L - 1.0) & (s <= cuts[j] + hi * L + 1.0)
+                    mask |= on
+                    if is_bridge:
+                        bridge |= on
+            if gap_bridges is not None:
+                on = shapely.contains_xy(gap_bridges, pts[:, 0], pts[:, 1])
+                mask |= on
+                bridge |= on
+            grow = int(round(ABUT_M / STATION_M))
+            bridge_w = bridge.copy()
+            for d in range(1, grow + 1):
+                bridge_w[d:] |= bridge[:-d]
+                bridge_w[:-d] |= bridge[d:]
             first, last = chain[0], chain[-1]
             n_start = links.at[first[0], "node_from"] if first[1] else links.at[first[0], "node_to"]
             n_end = links.at[last[0], "node_to"] if last[1] else links.at[last[0], "node_from"]
@@ -439,7 +506,8 @@ def main() -> None:
             w = np.where(mask, 0.0, 1.0)
             off = whittaker(path, w, lc, lock)
             conf = confidence(cost, offs, off)
-            hl, hr, seen_l, seen_r = measure_widths(dgm, pts, normal, off, width / 2.0, mask, lc, W_WIDTH_PRIOR)
+            hl, hr, seen_l, seen_r = measure_widths(dgm, pts, normal, off, width / 2.0, mask | bridge_w, bridge_w,
+                                                   W_WIDTH_PRIOR)
             newp = pts + normal * off[:, None]
             left = pts + normal * (off + hl)[:, None]
             right = pts + normal * (off - hr)[:, None]
@@ -470,7 +538,7 @@ def main() -> None:
                                 "width_gip_m": round(float(width[i]), 2), "half_left_m": round(float(hl[i]), 2),
                                 "half_right_m": round(float(hr[i]), 2), "width_m": round(float(hl[i] + hr[i]), 2),
                                 "edge_left_seen": int(seen_l[i]), "edge_right_seen": int(seen_r[i]),
-                                "structure": int(mask[i]), "geometry": Point(newp[i])})
+                                "structure": int(mask[i]), "bridge": int(bridge_w[i]), "geometry": Point(newp[i])})
             ring = np.vstack([left, right[::-1], left[:1]])
             surf = shapely.make_valid(shapely.Polygon(ring))
             surf_rows.append({"rank": name, "chain": f"{rank}-{ci}",
