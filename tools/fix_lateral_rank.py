@@ -18,7 +18,11 @@ range (SEARCH_M) is scored on the 0.5 m mixed DGM:
 * a weak pull towards the GIP line keeps flat valley floors where they are. It is four times as strong
   on B: in the Swiss part of Pfunds-Spiss the GIP B axis already sits within 0.35 m (median) of the cadastral
   carriageway, and a weaker pull moved it away (LATFIX_PRIOR_B overrides the factor).
-Bridge, tunnel and gallery ranges of bridge_ref score nothing; the smoothness carries the line over them.
+Structures score nothing; the smoothness carries the line over them. They are set per station
+(classify_structures): a hand file beside the site yaml (<site>_structures.yaml, example in config/sites) wins;
+else, between ground stations of check_grade on both sides, the DGM against a cubic through those stations:
+more than 1 m below is a bridge, more than 2 m above a tunnel or gallery; else the GIP label (bridge_ref).
+Galleries open to the valley side can show the road in the DGM and are then missed: set them by hand.
 A dynamic programme (Viterbi) picks the offset path with the least data cost plus a jump cost between
 stations, then a Whittaker smoother of the class wavelength (SMOOTH_LC_M) removes the 0.1 m steps.
 Confidence per station is how much worse the best offset more than 0.6 m away scores.
@@ -29,7 +33,8 @@ found edge shows no knee in the terrain (KNEE_MIN) - asphalt beside a flat verge
 GIP width; edge_left_seen / edge_right_seen tell which. The carriageway layer is the ribbon of both edges.
 
 Writes data/processed/<site>/lateral_fix/lateral_fix.gpkg (LATFIX_OUT renames it): link (moved geometry),
-station, node, chain, carriageway. Nothing else reads it yet.
+station, node, chain, carriageway, structures (runs with type, source and DGM minus line). Nothing else
+reads it yet.
 
 Pfunds-Spiss, Swiss part, distance to the middle of the cadastral carriageway (AV LCSF Strasse_Weg),
 6194 stations: L median 0.70 -> 0.45 m, p90 1.75 -> 1.15 m, within 1.5 m 86 -> 94 %; B unchanged (0.35-0.40 m).
@@ -88,7 +93,11 @@ W_UNSEEN = 0.15          # weight of the GIP half width where the edge is not se
 TUKEY_WIDTH_M = 0.6      # a half width further than this off the smooth curve stops counting
 ABUT_M = 6.0             # a bridge is widened by this at both ends for the width (wing walls, abutments)
 APPROACH_N = 10          # stations either side of a bridge whose median width the deck takes
-GAP_BRIDGE_M = -1.0      # score_gap_chord gap, no GIP label, ground everywhere this far below the chord: a bridge
+BRIDGE_DZ_M = -1.0       # DGM this far below the line through the road on both sides: a bridge
+TUBE_DZ_M = 2.0          # DGM this far above it: a tunnel or gallery (the DGM is the slope over the roof)
+SUPPORT_N = 15           # stations on the ground (check_grade ok) each side that carry that line
+SUPPORT_GAP_M = 60.0     # the nearest of them at most this far from the gap
+MIN_STRUCT_N = 2         # shorter structure runs are dropped, shorter ground holes inside a structure filled
 KNEE_MIN = 0.15          # slope change at a found edge below which the terrain does not show that edge
 W_WIDTH_PRIOR = 1.0      # pull of a half width to half the GIP width, at the edge of the range
 SECOND_APART_M = 0.6
@@ -415,6 +424,126 @@ def confidence(cost, offs, chosen):
     return out
 
 
+TYP_NAME = {"bridge": "Brücke", "tunnel": "Tunnel", "gallery": "Galerie", "tube": "Tunnel/Galerie", "": ""}
+
+
+def load_manual_structures(site_path: Path) -> dict[str, list[tuple[float, float, str]]]:
+    """Hand assignments beside the site yaml.
+
+    <site>_structures.yaml:
+        structures:
+          - link_id: <GIP link id>
+            from_pct: 10        # optional, along the link as digitised; whole link without
+            to_pct: 40
+            typ: tunnel         # bridge | tunnel | gallery | ground
+    <site>_manual_invalid.txt (score_check_grade's list) counts as whole-link bridges.
+    """
+    import yaml
+
+    out: dict[str, list[tuple[float, float, str]]] = defaultdict(list)
+    path = site_path.with_name(site_path.stem + "_structures.yaml")
+    if path.is_file():
+        for row in (yaml.safe_load(path.read_text(encoding="utf-8")) or {}).get("structures") or []:
+            typ = str(row.get("typ") or "").strip().lower()
+            if typ not in ("bridge", "tunnel", "gallery", "ground"):
+                raise SystemExit(f"{path.name}: typ must be bridge, tunnel, gallery or ground, got {typ!r}")
+            a = float(row.get("from_pct", 0.0)) / 100.0
+            b = float(row.get("to_pct", 100.0)) / 100.0
+            out[str(row["link_id"])].append((min(a, b), max(a, b), typ))
+        print(f"manual structures {sum(len(v) for v in out.values())} from {path.name}", flush=True)
+    old = site_path.with_name(site_path.stem + "_manual_invalid.txt")
+    if old.is_file():
+        for line in old.read_text(encoding="utf-8").splitlines():
+            lid = line.split("#", 1)[0].strip()
+            if lid:
+                out[lid].append((0.0, 1.0, "bridge"))
+    return out
+
+
+def load_ground(proc: Path) -> dict[str, tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]]:
+    """check_grade intervals per link: s0, s1 (along the link as digitised), ok, recovered."""
+    path = proc / "link_surface" / "check_grade" / "check_grade.gpkg"
+    if not path.is_file():
+        print(f"no {path.name}: structures come from GIP and the manual file only", flush=True)
+        return {}
+    iv = gpd.read_file(path, layer="interval", columns=["link_id", "s0_m", "s1_m", "ok", "recovered"], ignore_geometry=True)
+    out = {}
+    for lid, g in iv.groupby("link_id"):
+        g = g.sort_values("s0_m")
+        out[str(lid)] = (g.s0_m.to_numpy(), g.s1_m.to_numpy(), g.ok.to_numpy() == 1, g.recovered.to_numpy() == 1)
+    return out
+
+
+def classify_structures(dgm, s, pts, chain, cuts, links, gip, manual, ground):
+    """Structure type per station: manual > terrain against the line through the road > GIP label.
+
+    Stations check_grade found on the ground (ok) are road on the ground, except inside a GIP label, where only
+    the intervals check_grade recovered onto its spline count. Between two runs of ground stations, a cubic
+    through up to SUPPORT_N of them on each side is the road; the DGM below it by more than BRIDGE_DZ_M is
+    a bridge, above it by more than TUBE_DZ_M a tunnel or gallery (which one: from the GIP label or the manual
+    file; else "tube"). A gap with ground on one side only keeps the GIP label.
+    """
+    n = len(s)
+    gip_typ = np.array([""] * n, dtype=object)
+    man_typ = np.array([None] * n, dtype=object)
+    ok = np.zeros(n, bool)
+    rec = np.zeros(n, bool)
+    known = np.zeros(n, bool)
+    for j, (idx, fwd) in enumerate(chain):
+        L = links.at[idx, "geometry"].length
+        lid = str(links.at[idx, "link_id"])
+        on_link = (s >= cuts[j] - 1e-6) & (s <= cuts[j + 1] + 1e-6)
+        sl = np.where(fwd, s - cuts[j], L - (s - cuts[j]))           # station along the link as digitised
+        for a, b, typ in gip.get(lid, []):
+            gip_typ[on_link & (sl >= a * L - 1.0) & (sl <= b * L + 1.0)] = typ
+        for a, b, typ in manual.get(lid, []):
+            man_typ[on_link & (sl >= a * L) & (sl <= b * L)] = typ
+        if lid in ground:
+            s0, s1, gok, grec = ground[lid]
+            k = np.clip(np.searchsorted(s0, sl, side="right") - 1, 0, len(s0) - 1)
+            hit = on_link & (sl >= s0[k] - 1e-6) & (sl <= s1[k] + 1e-6)
+            ok[hit] = gok[k[hit]]
+            rec[hit] = grec[k[hit]]
+            known |= hit
+    z = dgm.sample(pts[:, 0], pts[:, 1])
+    support = ok & np.isfinite(z) & ((gip_typ == "") | rec)
+    typ = np.where(support, "", gip_typ).astype(object)
+    src = np.where(support, "dgm", np.where(gip_typ != "", "gip", "")).astype(object)
+    dz = np.full(n, np.nan)
+    for run in _runs(~support & known):
+        a, b = run[0], run[-1]
+        left = np.flatnonzero(support[:a])[-SUPPORT_N:]
+        right = a + 1 + np.flatnonzero(support[a + 1:])
+        right = right[right > b][:SUPPORT_N]
+        if len(left) < 4 or len(right) < 4 or s[a] - s[left[-1]] > SUPPORT_GAP_M or s[right[0]] - s[b] > SUPPORT_GAP_M:
+            continue
+        knots = np.concatenate([left, right])
+        x0 = s[knots].mean()
+        coef = np.polyfit(s[knots] - x0, z[knots], 3 if len(knots) >= 8 else 2)
+        d = z[run] - np.polyval(coef, s[run] - x0)
+        dz[run] = d
+        t = np.where(d < BRIDGE_DZ_M, "bridge", np.where(d > TUBE_DZ_M, "tube", ""))
+        # a tube inside a GIP tunnel or gallery keeps that name
+        g = gip_typ[run]
+        t = np.where((t == "tube") & np.isin(g, ["tunnel", "gallery"]), g, t)
+        typ[run] = t
+        src[run] = "dgm"
+    # tidy: fill short ground holes inside a structure, drop very short structures
+    for kind in ("bridge", "tube", "tunnel", "gallery"):
+        for hole in _runs(typ == ""):
+            if len(hole) < MIN_STRUCT_N + 1 and hole[0] > 0 and hole[-1] < n - 1 \
+                    and typ[hole[0] - 1] == kind and typ[hole[-1] + 1] == kind:
+                typ[hole] = kind
+        for r in _runs(typ == kind):
+            if len(r) < MIN_STRUCT_N:
+                typ[r] = ""
+    has_man = np.array([m is not None for m in man_typ])
+    typ[has_man] = np.where(man_typ[has_man] == "ground", "", man_typ[has_man])
+    src[has_man] = "manual"
+    src[typ == ""] = np.where(src[typ == ""] == "manual", "manual", "")
+    return typ, src, dz
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--dgm", help="0.5 m DGM in the site CRS (default data/raw/dgm_<site>_mixed05.tif)")
@@ -440,20 +569,16 @@ def main() -> None:
     links["node_from"] = [nearest_node(*g.coords[0][:2]) for g in links.geometry]
     links["node_to"] = [nearest_node(*g.coords[-1][:2]) for g in links.geometry]
     links["rank"] = [rank_of(r) for r in links.itertuples()]
-    struct = defaultdict(list)
+    gip_struct: dict[str, list[tuple[float, float, str]]] = defaultdict(list)
+    typ_of = {"Brücke": "bridge", "Tunnel": "tunnel", "Galerie": "gallery"}
     for r in refs.itertuples():
-        struct[str(r.link_id)].append((min(r.from_pct, r.to_pct) / 100.0, max(r.from_pct, r.to_pct) / 100.0,
-                                       str(r.typ or "") == "Brücke"))
-    # bridges the GIP does not label: gaps of score_gap_chord whose ground lies below the chord all along
-    gap_bridges = None
-    gap_path = proc / "link_surface" / "check_grade" / "todo_gap.gpkg"
-    if gap_path.is_file():
-        gaps = gpd.read_file(gap_path)
-        sel = gaps[(gaps["typ"].fillna("") == "") & (gaps["slope_ok"] == 1) & (gaps["chord_max_m"] < GAP_BRIDGE_M)]
-        if len(sel):
-            gap_bridges = shapely.union_all(list(sel.geometry.buffer(4.0)))
-            shapely.prepare(gap_bridges)
-        print(f"unlabelled bridges from {gap_path.name}: {len(sel)}", flush=True)
+        gip_struct[str(r.link_id)].append((min(r.from_pct, r.to_pct) / 100.0, max(r.from_pct, r.to_pct) / 100.0,
+                                           typ_of.get(str(r.typ or ""), "tube")))
+    from site_coords import resolve_site_path
+
+    manual = load_manual_structures(resolve_site_path())
+    ground = load_ground(proc)
+    struct_rows = []
 
     moved: dict = {}                     # node -> new (x, y)
     new_coords: dict[int, np.ndarray] = {}
@@ -474,25 +599,26 @@ def main() -> None:
             li = np.clip(np.searchsorted(cuts, s, side="right") - 1, 0, len(chain) - 1)
             width = np.array([links.at[chain[j][0], "width_m"] for j in li], dtype=float)
             width = np.where(np.isfinite(width), width, 5.0)
-            mask = np.zeros(len(s), bool)
-            bridge = np.zeros(len(s), bool)
-            for j, (idx, fwd) in enumerate(chain):
-                L = links.at[idx, "geometry"].length
-                for a, b, is_bridge in struct.get(str(links.at[idx, "link_id"]), []):
-                    lo, hi = (a, b) if fwd else (1 - b, 1 - a)
-                    on = (s >= cuts[j] + lo * L - 1.0) & (s <= cuts[j] + hi * L + 1.0)
-                    mask |= on
-                    if is_bridge:
-                        bridge |= on
-            if gap_bridges is not None:
-                on = shapely.contains_xy(gap_bridges, pts[:, 0], pts[:, 1])
-                mask |= on
-                bridge |= on
+            styp, ssrc, sdz = classify_structures(dgm, s, pts, chain, cuts, links, gip_struct, manual, ground)
+            mask = styp != ""
+            # widths: every structure, widened over its abutments / portals, takes its approaches' width
             grow = int(round(ABUT_M / STATION_M))
-            bridge_w = bridge.copy()
+            struct_w = mask.copy()
             for d in range(1, grow + 1):
-                bridge_w[d:] |= bridge[:-d]
-                bridge_w[:-d] |= bridge[d:]
+                struct_w[d:] |= mask[:-d]
+                struct_w[:-d] |= mask[d:]
+            for run in _runs(mask):
+                kinds = [k for k in styp[run] if k]
+                kind = max(set(kinds), key=kinds.count)
+                d = sdz[run]
+                struct_rows.append({"rank": name, "chain": f"{rank}-{ci}", "typ": TYP_NAME[kind],
+                                    "src": ",".join(sorted(set(ssrc[run]) - {""})),
+                                    "length_m": round(float(s[run[-1]] - s[run[0]]) + STATION_M, 1),
+                                    "dz_min_m": round(float(np.nanmin(d)), 1) if np.isfinite(d).any() else None,
+                                    "dz_median_m": round(float(np.nanmedian(d)), 1) if np.isfinite(d).any() else None,
+                                    "dz_max_m": round(float(np.nanmax(d)), 1) if np.isfinite(d).any() else None,
+                                    "link_ids": ",".join(dict.fromkeys(str(links.at[chain[li[i]][0], "link_id"]) for i in run)),
+                                    "geometry": LineString(pts[run]) if len(run) > 1 else Point(pts[run[0]]).buffer(1.0)})
             first, last = chain[0], chain[-1]
             n_start = links.at[first[0], "node_from"] if first[1] else links.at[first[0], "node_to"]
             n_end = links.at[last[0], "node_to"] if last[1] else links.at[last[0], "node_from"]
@@ -506,7 +632,7 @@ def main() -> None:
             w = np.where(mask, 0.0, 1.0)
             off = whittaker(path, w, lc, lock)
             conf = confidence(cost, offs, off)
-            hl, hr, seen_l, seen_r = measure_widths(dgm, pts, normal, off, width / 2.0, mask | bridge_w, bridge_w,
+            hl, hr, seen_l, seen_r = measure_widths(dgm, pts, normal, off, width / 2.0, mask | struct_w, struct_w,
                                                    W_WIDTH_PRIOR)
             newp = pts + normal * off[:, None]
             left = pts + normal * (off + hl)[:, None]
@@ -538,7 +664,9 @@ def main() -> None:
                                 "width_gip_m": round(float(width[i]), 2), "half_left_m": round(float(hl[i]), 2),
                                 "half_right_m": round(float(hr[i]), 2), "width_m": round(float(hl[i] + hr[i]), 2),
                                 "edge_left_seen": int(seen_l[i]), "edge_right_seen": int(seen_r[i]),
-                                "structure": int(mask[i]), "bridge": int(bridge_w[i]), "geometry": Point(newp[i])})
+                                "structure": int(mask[i]), "structure_typ": TYP_NAME[styp[i]], "structure_src": ssrc[i],
+                                "dz_m": None if not np.isfinite(sdz[i]) else round(float(sdz[i]), 2),
+                                "geometry": Point(newp[i])})
             ring = np.vstack([left, right[::-1], left[:1]])
             surf = shapely.make_valid(shapely.Polygon(ring))
             surf_rows.append({"rank": name, "chain": f"{rank}-{ci}",
@@ -577,6 +705,9 @@ def main() -> None:
     gpd.GeoDataFrame(st_rows, crs=links.crs).to_file(dest, layer="station")
     gpd.GeoDataFrame(ch_rows, crs=links.crs).to_file(dest, layer="chain")
     gpd.GeoDataFrame(surf_rows, crs=links.crs).to_file(dest, layer="carriageway")
+    sg = gpd.GeoDataFrame(struct_rows, crs=links.crs)
+    sg.to_file(dest, layer="structures")
+    print("structures:", sg.groupby(["typ", "src"]).size().to_dict() if len(sg) else 0)
     nd.to_file(dest, layer="node")
     st = gpd.GeoDataFrame(st_rows)
     for name in [RANKS[r][0] for r in sorted(RANKS)]:

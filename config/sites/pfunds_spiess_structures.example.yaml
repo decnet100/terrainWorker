@@ -1,0 +1,10 @@
+# Hand assignment of bridges, tunnels and galleries for tools/fix_lateral_rank.py.
+# Copy to pfunds_spiess_structures.yaml (beside the site yaml) to use it. It wins over the DGM check and GIP.
+# link_id: GIP routing link (layer link of gip_routing.gpkg, or link_ids of the structures layer).
+# from_pct / to_pct: along the link as digitised; leave both out for the whole link.
+# typ: bridge | tunnel | gallery | ground (ground removes a structure the DGM check or GIP set).
+structures:
+  # - link_id: 00000000-0000-0000-0000-000000000000
+  #   from_pct: 20
+  #   to_pct: 45
+  #   typ: gallery
