@@ -58,6 +58,7 @@ Multi-map session: [alpine-roadtrip](https://github.com/decnet100/alpine-roadtri
 | 3 | Span principle bridge/gallery/tunnel | Heightmap at abutments, not under the slab — [HEIGHTMAP_COMPOSE.md](HEIGHTMAP_COMPOSE.md) |
 | 4 | `road_edge` → asphalt / shoulder masks | same two-step workflow |
 | 5 | Terrain look meadow/moss | `t_moss` |
+| 6 | GIP lateral fix, widths, structures (trial) | Steps 3-5 open — [LATERAL_FIX.md](LATERAL_FIX.md#plan-and-open-work-for-the-next-agent) |
 | — | Alpine Roadtrip product | Segment times, more gates, traffic, damage — [alpine-roadtrip](https://github.com/decnet100/alpine-roadtrip) |
 
 ## Deliberately not automatic
