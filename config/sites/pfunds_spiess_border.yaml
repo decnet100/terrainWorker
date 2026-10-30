@@ -73,3 +73,9 @@ unite:
   - link: b7d228aa-4420-339d-b94a-32d174d0af4f
     cut_m: 26.0
     tlm: "{76B19F83-DC97-4EA7-A32E-E68EFA39848A}"
+
+# TLM lines kept whole, also their part in Austria (see the forest road above: the
+# path otherwise stops at the border).
+keep_tlm:
+  - "{F1DAD864-D4A7-4389-AA8B-3CFC1DB9012E}"  # bridge of the 2m Weg
+  - "{FD612090-02CE-42EA-87EB-E7BD53C92301}"  # Prasirasweg

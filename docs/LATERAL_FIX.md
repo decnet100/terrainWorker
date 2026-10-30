@@ -104,6 +104,36 @@ at 32 %), one of 35 m and three bridges of 16-30 m. Galleries open to the valley
 - **GIP in Switzerland** follows swissTLM3D within ~1 m except at the Samnaun road tunnels (up to 150 m off),
   and carries no structures there.
 
+## Border merge (Austria / Switzerland)
+
+`tools/merge_border_network.py`, after `fix_lateral_rank.py` and `export_kunstbaute.py`, with swissTLM3D roads from
+`tools/fetch_swisstlm3d_roads.py data\raw\swiss\tlm_strasse_<site>.gpkg xmin ymin xmax ymax`.
+
+- **Border:** BEV national boundary (`data/raw/borders/AT_INSPIRE_BEV_AU_AB_epsg3416_20260402.gpkg`, unit "Staat",
+  EPSG:3416 = ETRS89, so the step to 25832 is a projection only). On Pfunds-Spiss it lies 0.40 m (median, max
+  0.74 m) from swissBOUNDARIES3D. Own pieces keep their part in Austria (23 km of GIP in Switzerland go),
+  swissTLM3D and the AV their part outside. Own remnants under 3 m at the border are dropped.
+- **Decisions:** `config/sites/<site>_border.yaml` holds ids only; every position is computed at run time.
+  `join` (shared node where the TLM line crosses the border), `replace` (TLM lines take over up to the own node;
+  the own road ends there, no width transition: the customs lanes are separate roads), `unite` (gravel ways,
+  straight connector instead of a snap), `keep_tlm` (TLM lines kept whole, also in Austria).
+- **Automatic proposal:** loose ends (no other line within 5 cm) within 10 m of the border. One own and one TLM end
+  within 8 m pointing the same way (30°) join automatically; the rest goes to
+  `border_merge/<site>_border_proposal.yaml`. Pfunds: no automatic join left (the file names them all);
+  open own 3 (dead ends at the border), TLM 6 (Swiss ways and two 3m Strassen without an Austrian partner).
+- **Width transition** at a join: own half widths go linearly to the AV half widths over 100 × the difference
+  (5-80 m), per side. The AV width is taken at the first cross-section inside the AV carriageway that is clear
+  of the border, because the AV polygon ends at the Swiss line, at a slant where the road crosses the border
+  obliquely (B184: left 2.82 → 3.10 m over 28 m, right 3.89 → 3.35 m over 54 m).
+- **Polygons:** own ribbons (no polygon on tunnels and galleries) in Austria plus the sliver up to the AV edge;
+  AV `Strasse_Weg` / `Trottoir` / `Verkehrsinsel` outside Austria; TLM branches of a replace as strips of their
+  class width in Austria.
+- **GIP lanes:** GIP stores lanes per direction only; there is no single-lane two-way road. The customs link is
+  1 + 1 lanes, 6.5 m, not split. The split around the container exists only in swissTLM3D.
+
+Output `border_merge/border_merge.gpkg`: `line` (src own / tlm / connector), `node` (join / auto / replace / unite),
+`carriageway` (src own / av / tlm, klass in Magliasina's names), `contact`, `border`.
+
 ## Plan and open work (for the next agent)
 
 The plan agreed with the user, in five steps; 1 and 2 are done, the rest is open.
@@ -130,23 +160,9 @@ Further open points:
   DOM test (roof above the road).
 - **Junction surfaces.** Chains of the same rank meeting at a junction overlap; there is no carriageway partition
   yet. The Magliasina hand-over needs one (see `docs/GIP_MAGLIASINA.md` on branch `gip-magliasina-review`).
-- **Swiss roads at the border.** The joins are written in `config/sites/pfunds_spiess_border.yaml`
-  (`join`, `replace`, `unite`). Nothing reads that file yet. Roads fetched with
-  `tools/fetch_swisstlm3d_roads.py`; the Austrian pieces are `tools/export_kunstbaute.py`.
-  Places: B184 / Via Engiadina (one shared node, width 6.50 m to about 6.4 m); L348 at the customs
-  post (drop the GIP link, keep both TLM branches around the container, snap them to the shifted
-  piece end, not the `gip_routing` node 0.92 m away); two cycle paths and the forest road
-  `b7d228aa` (snap only, terrain gravel, no mesh). A merge script cannot treat these as one blend.
-  The weld is the place named in the file, not the closest point of the two lines (on the B184 the
-  axes are 3 cm apart 23 m inland). The two customs branches must not be averaged into one centre.
-  Effective width differs by source: GIP class on the piece, measured halves on the stations
-  (B184 stations 7.0-8.1 m, unequal sides), Swiss class or the AV polygon, which measures wrong
-  exactly on the border because the polygon ends there. The blend length is not set. `unite` was
-  defined as a snap with the width left as it is, which fights a smooth width; the cycle paths
-  change heading by 58° and 33°. `de674cbe` is in both cycle joins. `666c78ca` still runs 8.2 m
-  from the node to the border. The forest cut is 26 m from the border end, and the bridge
-  `{F1DAD864-…}` plus Prasirasweg have to come along or the path stops in Austria. Our pieces
-  have no Z; at the B184 the TLM height matches the node (1027.75 m).
+- **Swiss roads at the border.** Done as a trial: `tools/merge_border_network.py` (see the section below). Still
+  open: the bridge over the Schalklbach at the customs post has no polygon between the BEV line and the AV
+  carriageway (Magliasina builds bridge decks from the line); same-rank overlaps at junctions stay.
 - **Not committed sandbox fixes:** the axis order in `fetch_bev_landcover.py` (step 4) and a stand-in
   `_to_working` in `export_gip_width_m.py` (the real one exists only locally with the author).
 - **Pipeline wiring.** `fix_lateral_rank.py` is not in `pipeline_catalog.py` / `pipeline_gui.py`, and no build step
