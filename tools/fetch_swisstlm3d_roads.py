@@ -140,13 +140,14 @@ def main() -> None:
     bbox = (min(xs), min(ys), max(xs), max(ys))
     print("LV95 bbox", [round(v) for v in bbox], flush=True)
     archive = zipfile.ZipFile(io.BufferedReader(RangeFile(URL), buffer_size=1 << 22))
-    names = set(archive.namelist())
+    # the package stores paths with backslashes; zipfile turns them into "/" only on Windows
+    names = {name.replace("\\", "/"): name for name in archive.namelist()}
     if STEM + ".shp" not in names:
         raise SystemExit("TLM_STRASSE is not in the package")
-    with archive.open(STEM + ".shp") as handle:
+    with archive.open(names[STEM + ".shp"]) as handle:
         geoms = dict(shp_records(io.BufferedReader(handle, 1 << 22), bbox))
     print(f"roads in the box {len(geoms)}", flush=True)
-    with archive.open(STEM + ".dbf") as handle:
+    with archive.open(names[STEM + ".dbf"]) as handle:
         props = dbf_records(io.BufferedReader(handle, 1 << 22), set(geoms))
     to_work = Transformer.from_crs("EPSG:2056", "EPSG:25832", always_xy=True)
     rows = []
