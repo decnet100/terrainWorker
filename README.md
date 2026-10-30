@@ -82,6 +82,7 @@ cd C:\temp\beamng_autoroad; python tools\seed_annotations.py
 - [docs/GIP.md](docs/GIP.md) — Tyrol road WFS / structures (cache)
 - [docs/STRUCTURES.md](docs/STRUCTURES.md) — Brücken, Tunnel, Galerien, Rampen neben der Platte
 - [docs/ROADS.md](docs/ROADS.md) — width, decals, road-bed
+- [docs/ROAD_SURFACE_DETAIL.md](docs/ROAD_SURFACE_DETAIL.md) — idea: wear and fixtures on the road Collada (not built)
 - [docs/HEIGHTMAP_COMPOSE.md](docs/HEIGHTMAP_COMPOSE.md) — DGM + layers → composed PNG
 - [docs/BEAMNG_IMPORT.md](docs/BEAMNG_IMPORT.md) — create level, import terrain
 - [docs/BACKDROP.md](docs/BACKDROP.md) — far/mid/near horizon meshes (Copernicus + viewshed)

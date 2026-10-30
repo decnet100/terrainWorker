@@ -71,6 +71,8 @@ Heightmap mixer (raw DGM stays untouched): [HEIGHTMAP_COMPOSE.md](HEIGHTMAP_COMP
 
 DecalRoads are often look / navigation; grip usually comes from the terrain material underneath.
 
+Local wear on a road Collada is a later idea. Mesh from a smoothed 0.5 m DGM; visual keeps that surface; collision is angle-decimated (long straights collapse). Fixtures are stamped onto that finished smooth mesh. A matching gap under the road avoids double collision with terrain — [ROAD_SURFACE_DETAIL.md](ROAD_SURFACE_DETAIL.md).
+
 ### Ridge silhouette
 
 - Mask: land use forest vs rock (+ slope)

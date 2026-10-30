@@ -1,7 +1,7 @@
 # Status and roadmap
 
 Snapshot after the Hahntennjoch smoke test and Fernpass Mega work (BeamNG 0.39).  
-Details: [BEAMNG_IMPORT.md](BEAMNG_IMPORT.md), [ROADS.md](ROADS.md), [ANNOTATIONS.md](ANNOTATIONS.md), [CONCEPT.md](CONCEPT.md), [GIP.md](GIP.md), [AUTHORITIES.md](AUTHORITIES.md), [STRUCTURES.md](STRUCTURES.md), [HEIGHTMAP_COMPOSE.md](HEIGHTMAP_COMPOSE.md), [BACKDROP.md](BACKDROP.md).  
+Details: [BEAMNG_IMPORT.md](BEAMNG_IMPORT.md), [ROADS.md](ROADS.md), [ANNOTATIONS.md](ANNOTATIONS.md), [CONCEPT.md](CONCEPT.md), [GIP.md](GIP.md), [AUTHORITIES.md](AUTHORITIES.md), [STRUCTURES.md](STRUCTURES.md), [HEIGHTMAP_COMPOSE.md](HEIGHTMAP_COMPOSE.md), [BACKDROP.md](BACKDROP.md), [ROAD_SURFACE_DETAIL.md](ROAD_SURFACE_DETAIL.md).  
 Multi-map session: [alpine-roadtrip](https://github.com/decnet100/alpine-roadtrip).
 
 ## Done
@@ -58,6 +58,7 @@ Multi-map session: [alpine-roadtrip](https://github.com/decnet100/alpine-roadtri
 | 4 | `road_edge` → asphalt / shoulder masks | same two-step workflow |
 | 5 | Terrain look meadow/moss | `t_moss` |
 | — | Alpine Roadtrip product | Segment times, more gates, traffic, damage — [alpine-roadtrip](https://github.com/decnet100/alpine-roadtrip) |
+| — | Road-mesh wear / fixtures | Idea only: cracks, patches, bitumen, manholes, cattle grids on the Collada — [ROAD_SURFACE_DETAIL.md](ROAD_SURFACE_DETAIL.md) |
 
 ## Deliberately not automatic
 

@@ -2,7 +2,7 @@
 
 State after Fernpass Mega polish (lanes→width, decal transitions, delineators).
 
-Related: [BEAMNG_IMPORT.md](BEAMNG_IMPORT.md), [GIP.md](GIP.md) (**centerline sources**), `tools/road_width.py`.
+Related: [BEAMNG_IMPORT.md](BEAMNG_IMPORT.md), [GIP.md](GIP.md) (**centerline sources**), `tools/road_width.py`. Local cracks / patches / manholes on a future road Collada: [ROAD_SURFACE_DETAIL.md](ROAD_SURFACE_DETAIL.md) (idea only).
 
 **Axis (Fernpass Mega):** decals / guardrails / bridges / galleries → **GIP**, not OSM. Unnamed GIP (Gassen) get terrain asphalt + road-bed only — [GIP.md](GIP.md).
 
@@ -99,6 +99,8 @@ cd C:\temp\beamng_autoroad; python tools\build_decal_roads.py
 ## Road-bed (terrain under the road)
 
 **What:** a smoothed height band under the carriageway in the heightmap — not the decal texture. Goal: damp DGM micro-spikes so decal and terrain share a grade.
+
+A later road Collada would do the opposite under the slab: a gap so terrain does not collide with the mesh — [ROAD_SURFACE_DETAIL.md](ROAD_SURFACE_DETAIL.md).
 
 **When active:** `beamng.decal_roads.road_bed_conform: true` and build **without** `--skip-road-bed`.
 

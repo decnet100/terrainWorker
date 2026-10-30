@@ -1,6 +1,6 @@
 # Kunstbauten: Brücken, Tunnel, Galerien, Rampen
 
-Anleitung zum **Einbauen und Nachziehen** in einer Site-YAML (`config/sites/*.yaml`). Technischer Hintergrund und WFS-Cache: [GIP.md](GIP.md). Heightmap-Schichten: [HEIGHTMAP_COMPOSE.md](HEIGHTMAP_COMPOSE.md). Import ins Spiel: [BEAMNG_IMPORT.md](BEAMNG_IMPORT.md).
+Anleitung zum **Einbauen und Nachziehen** in einer Site-YAML (`config/sites/*.yaml`). Technischer Hintergrund und WFS-Cache: [GIP.md](GIP.md). Heightmap-Schichten: [HEIGHTMAP_COMPOSE.md](HEIGHTMAP_COMPOSE.md). Import ins Spiel: [BEAMNG_IMPORT.md](BEAMNG_IMPORT.md). Abnutzung und Einbauten auf einer späteren Fahrbahn-DAE (Idee): [ROAD_SURFACE_DETAIL.md](ROAD_SURFACE_DETAIL.md).
 
 Die Fahrbahn ist immer die **Oberkante**. MeshRoad-Node-Z, Centerline-Z, Heightmap unter der Platte und Decals beziehen sich auf dieselbe Fläche, nicht auf Plattenmitte oder Unterkante.
 
