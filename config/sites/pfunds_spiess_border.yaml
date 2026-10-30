@@ -1,0 +1,75 @@
+# Joins of the own network (GIP, lateral_fix / kunstbaute.gpkg) to swissTLM3D
+# (data/raw/swiss/tlm_strasse_pfunds-spiess-8192.gpkg) at the national border.
+# Only the source of the road lines is decided here. The border of the mixed
+# DGM stays the national border.
+#
+# join: the own link ends at the border, the TLM line runs on across it along
+# the same axis. The TLM line is cut at the border, both ends get one shared
+# node there, and the width goes over smoothly from the own width to the Swiss
+# width on both sides of that node.
+#
+# replace: swissTLM3D draws the road on the Austrian side better than the GIP.
+# The own links listed under drop are removed; the TLM lines listed under use
+# take their place up to the own node at; their loose ends there are set onto
+# that node. TLM lines not listed (e.g. Swiss copies of Austrian paths) stay out.
+#
+# unite: gravel paths (Rad-/Fussweg, Forstaufschliessung). They get terrain
+# gravel only, no mesh and no decal, so the ends are snapped onto one point
+# and the width is left as it is.
+#
+# Positions EPSG:25832. Node positions are from gip_routing; piece ends in
+# kunstbaute.gpkg are moved by lateral_fix and are given where they differ.
+
+join:
+  # B184 Engadiner Strasse / Via Engiadina. Axis angle 0.1 deg. The TLM line
+  # crosses the border at 613210.1 5198962.3, 0.36 m beside the own end
+  # (piece end 613210.21 5198963.07, 0.75 m before the border).
+  # Width: own 6.50 m; Swiss class 6m Strasse 6.0 m; AV paved area about
+  # 6.4 m at the border, 6.0 m 40 m into Switzerland.
+  - link: b216cfdb-a613-37f5-a24b-4bbfac2877e8
+    node: 5e9bf314-3761-36cd-b723-0b90fa447de0
+    tlm: "{CB0D728C-8BB7-40B3-AB9B-06315C544E35}"
+
+replace:
+  # L348 Spisser Strasse / Talstrasse at the customs post. The road splits
+  # around the customs container under the large roof; the DGM shows flat
+  # ground there (roof filtered out), so the lateral search did not see it.
+  # The GIP axis runs through the container. TLM has both branches and reaches
+  # 21.7 m into Austria. The own node at is 20.0 m from the border; the TLM
+  # branch ends lie 1.7 m and 2.0 m from it (from the piece end 608217.21
+  # 5201756.90; node in gip_routing 0.92 m off that).
+  - drop:
+      - 36235c21-7a09-38c0-9d9e-a2b669adc279
+    use:
+      - "{D82E6595-DB58-47F5-8D2B-6671EC8AFFEB}"  # Talstrasse bridge, branch 1
+      - "{255D1B21-986D-4BC2-8ACB-31AE35840313}"  # branch 1
+      - "{32DE124C-7771-49FB-B2BA-2DCC19D23AA5}"  # Talstrasse bridge, branch 2
+      - "{A56C73FD-62B8-4EE6-89E6-3217C08177A4}"  # branch 2
+      - "{2A66C1A5-E107-41BE-B1E3-83140D36C33A}"  # branch 2
+    at: 33568664-7ebd-3b0d-884f-4b41397c6f1f
+    # stays out: {50EBAC2B-C806-4997-8767-1BECD582EC1B}, 2m Weg, 672 m in
+    # Austria, a Swiss copy of an Austrian path.
+
+unite:
+  # 613093.61 5198431.68. Own ends are the node. The 1m Weg ends 7.11 m away.
+  - node: 3c52580c-4222-3b42-a67f-275e27f0dd7f
+    links:
+      - de674cbe-bc78-323d-b557-01339ff1df41
+      - 39293a73-f949-3a1a-ab2c-aac4870232bf
+    tlm: "{E058B726-A894-4B9A-AA1D-7F5793949505}"
+  # 613166.16 5198356.37. Same node, the 2m Weg ends 1.52 m away.
+  # 666c78ca runs 8.2 m from this node to the border and is not part of the snap.
+  - node: 74effc39-d9af-3689-84b5-0f19bd0a1cfc
+    links:
+      - de674cbe-bc78-323d-b557-01339ff1df41
+      - c70c9f04-6427-358f-87a9-1909da10ca2d
+    tlm: "{9149BED1-6A78-40F1-B02A-F5AF68F4CF40}"
+  # Forstaufschliessung. The 2m Weg lies entirely in Austria and runs beside
+  # the link from 4.5 m to 26.0 m off the border end (lateral 0.1 to 1.3 m).
+  # The link is cut at that far end, 0.10 m beside the axis at
+  # 608581.0 5203205.6; the border-side head is dropped. The Weg is already
+  # noded to the bridge {F1DAD864-D4A7-4389-AA8B-3CFC1DB9012E} and that to
+  # Prasirasweg {FD612090-02CE-42EA-87EB-E7BD53C92301}.
+  - link: b7d228aa-4420-339d-b94a-32d174d0af4f
+    cut_m: 26.0
+    tlm: "{76B19F83-DC97-4EA7-A32E-E68EFA39848A}"

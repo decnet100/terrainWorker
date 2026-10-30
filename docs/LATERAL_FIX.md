@@ -14,7 +14,7 @@ All commands with `$env:AUTOROAD_SITE = "config/sites/pfunds_spiess.yaml"`.
 |------|---------|--------|-------|
 | 1 | `python tools\fetch_dgm.py` | `data/raw/dgm_<site>_native.tif` | Needs `max_nodata_frac: 0.6` and `allow_incomplete: true` under `sources.dgm` (the Swiss part is nodata), and `resolution_m: 0.5`, `version: 1.0.0`. The cubic resample to 1 m afterwards needs more than 12 GB RAM; step 3 does without it. |
 | 2 | `python tools\fetch_swissalti3d.py data\raw\swissalti3d_05 xmin ymin xmax ymax` | swissALTI3D 0.5 m tiles | bbox in the site CRS. |
-| 3 | `python tools\build_mixed_dgm.py --swiss data\raw\swissalti3d_05 --borders data\raw\borders\swissBOUNDARIES3D_1_5_LV95_LN02.gpkg` | `dgm_<site>_mixed05.tif`, `dgm_<site>_mixed.tif` (+ `.aux.xml`) | Swiss model inside Switzerland, Tirol outside. Tirol lifted by the flat-overlap median (Pfunds: 0.06-0.07 m). |
+| 3 | `python tools\build_mixed_dgm.py --swiss data\raw\swissalti3d_05 --borders data\raw\borders\swissBOUNDARIES3D_1_5_LV95_LN02.gpkg` | `dgm_<site>_mixed05.tif`, `dgm_<site>_mixed.tif` (+ `.aux.xml`) | Swiss model inside Switzerland, Tirol outside. Tirol lifted by the flat-overlap median (Pfunds: −0.063 m, so Tirol is raised 6.3 cm). Both products then blend linearly 30 m each side of the border. Set `GDAL_BIN` to `C:\OSGeo4W\bin`; do not put that directory on the parent `PATH` (rasterio then loads the wrong GDAL). |
 | 4 | `python tools\fetch_bev_landcover.py --allow-incomplete` | BEV land cover | Water for `score_check_grade`. **Bug:** the WMS bbox is always sent northing,easting; in EPSG:25832 the server wants easting,northing and returns 100 % nodata. Fixed in the sandbox copy, not committed (see Open). |
 | 5 | AV Graubünden | `data/raw/gr_av_bodenbedeckung_<site>.gpkg`, layer `Bodenbedeckung_ohne_Gebaeude_farbig`, field `art` | geodienste.ch WFS `ms:LCSF`, field `Art` renamed to `art`. Swiss water and the width checks. |
 | 6 | `python tools\fetch_gip.py`, `python tools\gip_routing_load.py` | `gip_routing/gip_routing.gpkg` | Needs `data/raw/gip_routingexport/routingexport_ogd.txt` (open.gip.gv.at `A_routingexport_ogd.zip`). |
@@ -130,8 +130,23 @@ Further open points:
   DOM test (roof above the road).
 - **Junction surfaces.** Chains of the same rank meeting at a junction overlap; there is no carriageway partition
   yet. The Magliasina hand-over needs one (see `docs/GIP_MAGLIASINA.md` on branch `gip-magliasina-review`).
-- **Swiss side.** Use swissTLM3D + AV in Switzerland instead of GIP; `tools/clip_gip_swiss.py` cuts GIP at the
-  border but needs `data/raw/borders/AT_INSPIRE_BEV_AU_AB_epsg3416_20260402.gpkg`, which was not fetched here.
+- **Swiss roads at the border.** The joins are written in `config/sites/pfunds_spiess_border.yaml`
+  (`join`, `replace`, `unite`). Nothing reads that file yet. Roads fetched with
+  `tools/fetch_swisstlm3d_roads.py`; the Austrian pieces are `tools/export_kunstbaute.py`.
+  Places: B184 / Via Engiadina (one shared node, width 6.50 m to about 6.4 m); L348 at the customs
+  post (drop the GIP link, keep both TLM branches around the container, snap them to the shifted
+  piece end, not the `gip_routing` node 0.92 m away); two cycle paths and the forest road
+  `b7d228aa` (snap only, terrain gravel, no mesh). A merge script cannot treat these as one blend.
+  The weld is the place named in the file, not the closest point of the two lines (on the B184 the
+  axes are 3 cm apart 23 m inland). The two customs branches must not be averaged into one centre.
+  Effective width differs by source: GIP class on the piece, measured halves on the stations
+  (B184 stations 7.0-8.1 m, unequal sides), Swiss class or the AV polygon, which measures wrong
+  exactly on the border because the polygon ends there. The blend length is not set. `unite` was
+  defined as a snap with the width left as it is, which fights a smooth width; the cycle paths
+  change heading by 58° and 33°. `de674cbe` is in both cycle joins. `666c78ca` still runs 8.2 m
+  from the node to the border. The forest cut is 26 m from the border end, and the bridge
+  `{F1DAD864-…}` plus Prasirasweg have to come along or the path stops in Austria. Our pieces
+  have no Z; at the B184 the TLM height matches the node (1027.75 m).
 - **Not committed sandbox fixes:** the axis order in `fetch_bev_landcover.py` (step 4) and a stand-in
   `_to_working` in `export_gip_width_m.py` (the real one exists only locally with the author).
 - **Pipeline wiring.** `fix_lateral_rank.py` is not in `pipeline_catalog.py` / `pipeline_gui.py`, and no build step

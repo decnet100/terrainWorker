@@ -4,17 +4,19 @@ Tirol: the native WCS mosaic that fetch_dgm.py wrote (data/raw/dgm_<site>_native
 the WCS's own reprojection sits within about 0.3 m of swissALTI3D). Switzerland: swissALTI3D 0.5 m tiles
 (fetch_swissalti3d.py), warped with GDAL. Inside Switzerland (swissBOUNDARIES3D) the Swiss model is used,
 outside the Tirol one, each filling the other's gaps. Tirol is lifted by the median height difference on
-flat overlap (slope under 10 %); on Pfunds-Spiss that was 0.07 m.
+flat overlap (slope under 10 %). Both products then blend across the border,
+30 m on each side.
 
 Writes data/raw/dgm_<site>_mixed05.tif (0.5 m, for fix_lateral_rank.py) and data/raw/dgm_<site>_mixed.tif
-(1 m, blended over 60 m at the border, with the .aux.xml GeoTransform mask_dgm_by_links.py reads).
+(1 m, with the .aux.xml GeoTransform mask_dgm_by_links.py reads).
 
-    cd C:\\temp\\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/pfunds_spiess.yaml"; python tools\\build_mixed_dgm.py --swiss data\\raw\\swissalti3d_05 --borders data\\raw\\borders\\swissBOUNDARIES3D_1_5_LV95_LN02.gpkg
+    cd C:\\temp\\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/pfunds_spiess.yaml"; $env:GDAL_BIN = "C:\\OSGeo4W\\bin"; python tools\\build_mixed_dgm.py --swiss data\\raw\\swissalti3d_05 --borders data\\raw\\borders\\swissBOUNDARIES3D_1_5_LV95_LN02.gpkg
 """
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -30,7 +32,31 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 from site_coords import load_site, site_slug  # noqa: E402
 
-BLEND_M = 30.0   # each side of the border, 1 m product only
+BLEND_M = 30.0   # each side of the border, both products
+
+
+def gdal_run(cmd: list[str]) -> None:
+    """Run a GDAL tool. GDAL_BIN is prepended only for that process, so this
+    interpreter keeps the GDAL it imported rasterio with."""
+    env = None
+    bindir = os.environ.get("GDAL_BIN")
+    if bindir:
+        root = Path(bindir).parent
+        env = os.environ.copy()
+        env["PATH"] = str(bindir) + os.pathsep + env.get("PATH", "")
+        env.setdefault("OSGEO4W_ROOT", str(root))
+        env.setdefault("GDAL_DATA", str(root / "share" / "gdal"))
+        env.setdefault("PROJ_LIB", str(root / "share" / "proj"))
+        cmd = [str(Path(bindir) / (cmd[0] + ".exe")), *cmd[1:]]
+    subprocess.run(cmd, check=True, env=env)
+
+
+def blend(tirol, swiss, inside, res_m: float):
+    """Linear mix over BLEND_M metres each side of the border. inside is Switzerland."""
+    pixels = np.where(inside, distance_transform_edt(inside), -distance_transform_edt(~inside))
+    w = np.clip((pixels * res_m + BLEND_M) / (2 * BLEND_M), 0, 1)
+    both = np.isfinite(tirol) & np.isfinite(swiss)
+    return np.where(both, w * swiss + (1 - w) * tirol, np.where(np.isfinite(swiss), swiss, tirol)).astype(np.float32)
 
 
 def warp(src: str, dst: Path, crs: str, bounds, res: float, resampling: str, src_crs: str | None = None) -> None:
@@ -39,7 +65,7 @@ def warp(src: str, dst: Path, crs: str, bounds, res: float, resampling: str, src
            "-co", "TILED=YES", "-co", "COMPRESS=DEFLATE", "-co", "PREDICTOR=3"]
     if src_crs:
         cmd[3:3] = ["-s_srs", src_crs]
-    subprocess.run(cmd + [src, str(dst)], check=True)
+    gdal_run(cmd + [src, str(dst)])
 
 
 def main() -> None:
@@ -57,11 +83,11 @@ def main() -> None:
     nx0, ny0, nx1, ny1 = (float(v) for v in meta["bbox"])
     res0 = float(meta["resolution_m"])
     tirol_vrt = work / "tirol_native.vrt"
-    subprocess.run(["gdal_translate", "-q", "-of", "VRT", "-a_srs", crs, "-a_ullr", str(nx0), str(ny1), str(nx1),
-                    str(ny0), "-a_nodata", "nan", str(raw / f"dgm_{slug}_native.tif"), str(tirol_vrt)], check=True)
+    gdal_run(["gdal_translate", "-q", "-of", "VRT", "-a_srs", crs, "-a_ullr", str(nx0), str(ny1), str(nx1),
+              str(ny0), "-a_nodata", "nan", str(raw / f"dgm_{slug}_native.tif"), str(tirol_vrt)])
     tiles = sorted(str(p) for p in Path(args.swiss).glob("*_0.5_2056_5728.tif"))
     swiss_vrt = work / "swissalti.vrt"
-    subprocess.run(["gdalbuildvrt", "-q", "-overwrite", str(swiss_vrt), *tiles], check=True)
+    gdal_run(["gdalbuildvrt", "-q", "-overwrite", str(swiss_vrt), *tiles])
     ch = gpd.read_file(args.borders, layer="tlm_landesgebiet")
     ch = ch[ch["icc"] == "CH"].to_crs(crs)
 
@@ -78,7 +104,7 @@ def main() -> None:
     off = float(np.median((a - s)[flat])) if flat.any() else 0.0
     print(f"height offset Tirol - Swiss on flat overlap: {off:+.3f} m ({int(flat.sum())} cells)", flush=True)
     a = a - np.float32(off)
-    out = np.where(inch, np.where(np.isfinite(s), s, a), np.where(np.isfinite(a), a, s)).astype(np.float32)
+    out = blend(a, s, inch, res0)
     prof = dict(driver="GTiff", height=out.shape[0], width=out.shape[1], count=1, dtype="float32", crs=crs,
                 transform=tf, nodata=np.nan, tiled=True, compress="deflate", predictor=3, BIGTIFF="IF_SAFER")
     with rasterio.open(raw / f"dgm_{slug}_mixed05.tif", "w", **prof) as dst:
@@ -95,9 +121,7 @@ def main() -> None:
         tf, prof = t.transform, t.profile
     s = rasterio.open(s1).read(1).astype(np.float64)
     inch = rasterize([(g, 1) for g in ch.geometry], out_shape=a.shape, transform=tf, fill=0).astype(bool)
-    signed = np.where(inch, distance_transform_edt(inch), -distance_transform_edt(~inch))
-    w = np.clip((signed + BLEND_M) / (2 * BLEND_M), 0, 1)
-    out = np.where(np.isfinite(a) & np.isfinite(s), w * s + (1 - w) * a, np.where(np.isfinite(s), s, a)).astype(np.float32)
+    out = blend(a, s, inch, 1.0)
     prof.update(dtype="float32", nodata=np.nan, compress="deflate", tiled=True)
     dest = raw / f"dgm_{slug}_mixed.tif"
     with rasterio.open(dest, "w", **prof) as dst:
