@@ -389,11 +389,13 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     dest = out_dir / "border_merge.gpkg"
     lines = [{"src": "own", "id": r["piece_id"], "link_id": r["link_id"], "kunstbaute": r["kunstbaute"],
-              "objektart": r["fc_name"], "width_m": r["width_m"], "geometry": r.geometry} for _, r in own.iterrows()]
+              "objektart": r["fc_name"], "width_m": r["width_m"], "belagsart": None, "geometry": r.geometry}
+             for _, r in own.iterrows()]
     lines += [{"src": "tlm", "id": r["UUID"], "link_id": "", "kunstbaute": r["KUNSTBAUTE"], "objektart": r["OBJEKTART"],
-               "width_m": TLM_WIDTH.get(r["OBJEKTART"]), "geometry": shapely.force_2d(r.geometry)} for _, r in sw.iterrows()]
+               "width_m": TLM_WIDTH.get(r["OBJEKTART"]), "belagsart": r.get("BELAGSART"),
+               "geometry": shapely.force_2d(r.geometry)} for _, r in sw.iterrows()]
     lines += [{"src": "connector", "id": c["id"], "link_id": "", "kunstbaute": "Keine", "objektart": "connector",
-               "width_m": None, "geometry": c["geometry"]} for c in connectors]
+               "width_m": None, "belagsart": None, "geometry": c["geometry"]} for c in connectors]
     gpd.GeoDataFrame(lines, crs=crs).to_file(dest, layer="line")
     gpd.GeoDataFrame(nodes, crs=crs).to_file(dest, layer="node")
     gpd.GeoDataFrame(rows, crs=crs).to_file(dest, layer="carriageway")

@@ -162,6 +162,38 @@ of the own road stations (by construction: the polygons are built around those a
 TLM road stations (the rest: farm roads the AV does not draw as road; Magliasina uses the class width there).
 Problem points go to `magliasina/check.gpkg`.
 
+## Magliasina meshes into the level
+
+magliasinaNG (fork decnet100/magliasinaNG, branch `tirol-adapter`, see its `beamng/EXTERNAL_SITE.md`) builds the
+road meshes from the export: `prepare_external.py`, `landcover.py`, `network.py`, `network_surface.py`,
+`roads_only.py`. `tools/import_magliasina_roads.py` brings them into the site's level:
+
+```powershell
+cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/pfunds_spiess.yaml"; python tools\import_magliasina_roads.py --crop 612550 5198250 614050 5199750
+```
+
+```powershell
+cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/pfunds_spiess.yaml"; python tools\compose_heightmap.py
+```
+
+- Reads the chunk triangles (`road_<tx>_<ty>.npz`) and `terrain_override.npz` from the Magliasina work folder
+  (default `magliasina/magliasina_work/work/roads_only`), origin and scale from `magliasina/manifest.json`.
+- Local → site CRS (E0 + x K) → BeamNG terrain metres (`SiteCoords`), z − `z_min_m`. Triangles whose centre lies in
+  `--crop` are taken.
+- One DAE per chunk and material group (Asphalt, magliasina_gravel, magliasina_stone, magliasina_concrete for
+  bridge parapets and slabs), split at 65,535 vertices, collision = visible mesh, SimGroup `magliasina_roads`;
+  the three new materials go to `main.materials.json`. `--replace-road-grid` switches `road_grid` off. A
+  Magliasina material not in `MATERIAL_GROUP` is reported and drawn as concrete.
+- Terrain: replace layer `magliasina_carve` (priority 50, between corridor_dgm and span): the Magliasina carve
+  (0.1 m under the lowest face) and the cap under the bridge decks, only ever lowering the DGM, inside the crop.
+- Without the level folder (or `--no-inject`) it writes `magliasina_import/` only (art, items.level.json, report).
+
+Test crop (1.5 km round the B184 join, the Engadiner Strasse bridge 31 m over the valley, Reschenstrasse), sandbox
+run 2026-10-30, heightmap from `build_smoke.to_heightmap` on the mixed DGM: 111 DAE, 117k triangles (asphalt 98k,
+natural surface 14k, walls 3.7k, parapets 1.1k); 56,952 heightmap px carved, median 0.17 m, p95 1.14 m. Top faces
+against the heightmap: asphalt median +0.004 m over the DGM (the coordinate chain is right); the composed terrain
+stands over no top face (0.0 % asphalt, gravel, decks). Not seen in the game yet.
+
 ## Plan and open work (for the next agent)
 
 The plan agreed with the user, in five steps; 1 and 2 are done, the rest is open.
@@ -198,5 +230,7 @@ Further open points:
   the Strada Cantonale branch off (`cantonale_hold`, the corridor block in `build_level.stage_roads`, `roadheight`,
   the main route in `ai_roads`), no Ticino OSM extract. First run on a ~1.5 km square holding the B184 join, the
   customs post and a bridge; read `drive_test.py`.
+- **Pillow 13** (2026-10-15) dropped `mode=` in `Image.fromarray`: `build_smoke.py` and `heightmap_layers.py` fail
+  with it, and `requirements.txt` only asks for pillow>=10. The sandbox ran on Pillow 11.
 - **Pipeline wiring.** `fix_lateral_rank.py` is not in `pipeline_catalog.py` / `pipeline_gui.py`, and no build step
   reads `lateral_fix.gpkg` yet.

@@ -100,7 +100,9 @@ def main() -> None:
             coords = [[float(x), float(y), math.nan] for x, y, *_ in g.coords]
         else:
             props = {"UUID": r["id"], "OBJEKTART": r["objektart"], "KUNSTBAUTE": r["kunstbaute"] or "Keine",
-                     "BELAGSART": "Hart" if r["objektart"] and "Strasse" in r["objektart"] else "Natur", "STUFE": 0,
+                     # swissTLM3D's own surface; a line without one counts as hard when it is a Strasse
+                     "BELAGSART": r.get("belagsart") or ("Hart" if r["objektart"] and "Strasse" in r["objektart"] else "Natur"),
+                     "STUFE": 0,
                      "RICHTUNGSG": "Falsch", "KREISEL": "Falsch", "BEFAHRBARK": "Wahr", "STRNAME": "", "NAME": "",
                      "SRC": "tlm", "LINK_ID": ""}
             coords = [[float(c[0]), float(c[1]), float(c[2]) if len(c) > 2 else math.nan] for c in g.coords]
