@@ -166,7 +166,10 @@ Problem points go to `magliasina/check.gpkg`.
 
 magliasinaNG (fork decnet100/magliasinaNG, branch `tirol-adapter`, see its `beamng/EXTERNAL_SITE.md`) builds the
 road meshes from the export: `prepare_external.py`, `landcover.py`, `network.py`, `network_surface.py`,
-`roads_only.py`. `tools/import_magliasina_roads.py` brings them into the site's level:
+`roads_only.py`. Since 8c6e6ac `roads_only.py` also ramps the 1.5-30 cm steps between road pieces (road_seams' step,
+unpaved surfaces included): the steps of small ways joining a road, seen in the game on the first import, went from
+2.75 km of seams to 462 m (206 m over 3 cm, at three-piece corners). `tools/import_magliasina_roads.py` brings them
+into the site's level:
 
 ```powershell
 cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/pfunds_spiess.yaml"; python tools\import_magliasina_roads.py --crop 612550 5198250 614050 5199750
