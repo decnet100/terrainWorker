@@ -101,6 +101,7 @@ MIN_STRUCT_N = 2         # shorter structure runs are dropped, shorter ground ho
 KNEE_MIN = 0.15          # slope change at a found edge below which the terrain does not show that edge
 W_WIDTH_PRIOR = 1.0      # pull of a half width to half the GIP width, at the edge of the range
 SECOND_APART_M = 0.6
+END_TAPER_M = 30.0       # a link that is not moved bends its ends onto the moved nodes over this length
 
 # rank: name, search range (m), jump sigma per station (m), smoothing wavelength (m), pull to the GIP line
 RANKS = {
@@ -687,12 +688,16 @@ def main() -> None:
             continue
         c = np.asarray(r.geometry.coords)[:, :2].copy()
         cum = np.concatenate([[0], np.cumsum(np.hypot(*np.diff(c, axis=0).T))])
+        # each end follows its node over at most the link length, so on a short link the far node's shift
+        # does not reach the near end
+        taper = max(min(END_TAPER_M, cum[-1]), 1e-6)
+        shift = np.zeros_like(c)
         for nid, at_start in ((r.node_from, True), (r.node_to, False)):
             if nid in moved:
-                d = np.array(moved[nid]) - np.array(npos[nid])
+                d = np.array(moved[nid]) - np.array(r.geometry.coords[0 if at_start else -1][:2])
                 dist = cum if at_start else cum[-1] - cum
-                c += d[None, :] * np.clip(1 - dist / 30.0, 0, 1)[:, None]
-        out_geom.append(LineString(c))
+                shift += d[None, :] * np.clip(1 - dist / taper, 0, 1)[:, None]
+        out_geom.append(LineString(c + shift))
     out = links.drop(columns=["geometry"]).copy()
     out["corrected"] = [int(i in new_coords) for i in links.index]
     out = gpd.GeoDataFrame(out, geometry=out_geom, crs=links.crs)

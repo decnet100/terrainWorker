@@ -134,6 +134,34 @@ at 32 %), one of 35 m and three bridges of 16-30 m. Galleries open to the valley
 Output `border_merge/border_merge.gpkg`: `line` (src own / tlm / connector), `node` (join / auto / replace / unite),
 `carriageway` (src own / av / tlm, klass in Magliasina's names), `contact`, `border`.
 
+## Export to Magliasina
+
+After the border merge:
+
+```powershell
+cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/pfunds_spiess.yaml"; python tools\export_magliasina.py
+```
+
+```powershell
+cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/pfunds_spiess.yaml"; python tools\check_magliasina_export.py
+```
+
+`export_magliasina.py` writes `data/processed/<site>/magliasina/` in the layout Magliasina reads, but in the site CRS:
+`tlm/TLM_STRASSE.json` (download_tlm format; own pieces get an OBJEKTART from their measured width, KUNSTBAUTE from
+export_kunstbaute, Z NaN; a ground piece GIP puts on level +1 becomes Bruecke), `av/LCSF.geojson` ("Genere":
+one strada_sentiero union of own ribbons, TLM branch strips and AV Strasse_Weg, less the AV marciapiede /
+spartitraffico), empty `av/SOSF|SOLI|SOPT.geojson`, `dati/ponti.json`, `manifest.json` (CRS, origin, scale factor,
+DGM paths, counts). Own ways (FRC >= 10) are left out until step 4; Swiss TLM ways stay in. Bridges need no cut
+in the polygons: `network_mesh._build_polygons` cuts the decks of `Bruecke` lines itself.
+
+`check_magliasina_export.py` reads it the way `network.py` will (ends noded within 0.6 m, tunnels and galleries
+skipped, width rays every 2 m with Magliasina's window and MAX_SHIFT). Pfunds-Spiss, last run: 0 near misses,
+0 un-noded T-junctions, one crossing without a node (bridge over road), 0 m² polygon overlap, 64 ends at tunnel
+portals, 131 dead ends (27 of them only because own ways are left out). Width taken from the polygons on 97-99 %
+of the own road stations (by construction: the polygons are built around those axes) and 82-100 % of the Swiss
+TLM road stations (the rest: farm roads the AV does not draw as road; Magliasina uses the class width there).
+Problem points go to `magliasina/check.gpkg`.
+
 ## Plan and open work (for the next agent)
 
 The plan agreed with the user, in five steps; 1 and 2 are done, the rest is open.
@@ -165,5 +193,10 @@ Further open points:
   carriageway (Magliasina builds bridge decks from the line); same-rank overlaps at junctions stay.
 - **Not committed sandbox fixes:** the axis order in `fetch_bev_landcover.py` (step 4) and a stand-in
   `_to_working` in `export_gip_width_m.py` (the real one exists only locally with the author).
+- **Magliasina side (part B).** Not started: CRS constants in `config.py` / `geo.py` / `terrain.py` (25832, origin and
+  scale from `manifest.json`), `area.py` polygon, `network.load_lines` / `landcover.load_av` on the export folder,
+  the Strada Cantonale branch off (`cantonale_hold`, the corridor block in `build_level.stage_roads`, `roadheight`,
+  the main route in `ai_roads`), no Ticino OSM extract. First run on a ~1.5 km square holding the B184 join, the
+  customs post and a bridge; read `drive_test.py`.
 - **Pipeline wiring.** `fix_lateral_rank.py` is not in `pipeline_catalog.py` / `pipeline_gui.py`, and no build step
   reads `lateral_fix.gpkg` yet.
