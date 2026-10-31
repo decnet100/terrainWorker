@@ -9,8 +9,10 @@ manifest.json (export_magliasina.py), and the site's heightmap_meta.json.
 * Meshes: one DAE per chunk and material group (asphalt, gravel, concrete for bridges, stone for the walls),
   split at COLLADA_MAX_VERTS, collision = the visible mesh, into art/shapes/magliasina_roads/, as TSStatics of the
   SimGroup magliasina_roads. --replace-road-grid switches the road_grid group off.
-* Terrain: a replace layer `magliasina_carve` (priority 50, after corridor_dgm, before span) holds the carve
-  under the meshes and the cap under the bridge decks, on the heightmap lattice inside --crop. Compose the
+* Terrain: a replace layer `magliasina_carve` (priority 50, after corridor_dgm, before span), on the heightmap
+  lattice inside --crop: with terrain_final.npz (roads_only with the edge steps) the site DGM plus the change
+  Magliasina made to its DTM (carve under the meshes, deck caps, ground raised to the road edges); without it the
+  carve and the caps only. Compose the
   heightmap afterwards (compose_heightmap.py) and re-import it.
 Without the level folder (or with --no-inject) only data/processed/<site>/magliasina_import/ is written.
 
@@ -158,19 +160,13 @@ def main() -> None:
     if unknown:
         print(f"materials not in MATERIAL_GROUP (drawn as {DEFAULT_GROUP}): {sorted(unknown)}", flush=True)
 
-    # --- terrain carve layer ----------------------------------------------------------------------
-    ovz = np.load(roads / "terrain_override.npz")
-    ov, capz = ovz["ov"], ovz["cap"]
-    ter_x0, ter_y0 = (float(v) for v in manifest.get("ter_origin", [None, None])) if manifest.get("ter_origin") \
-        else (None, None)
-    if ter_x0 is None:                                       # prepare_external.env's terrain block
-        ter_x0 = (sc.xmin - e0) / k
-        ter_y0 = (sc.ymin - n0) / k
-    sq = 1.0
+    # --- terrain layer ------------------------------------------------------------------------------
+    # terrain_final.npz (roads_only with the edge steps): the change Magliasina made to its DTM, carve and raised
+    # edges alike, added to this site's DGM; else terrain_override.npz: the carve and the deck caps only (lowering)
+    fin = roads / "terrain_final.npz"
     dgm, _ = load_dgm(proc, size)
     target = dgm.copy()
     w = np.zeros_like(dgm)
-    # heightmap pixel c, row r: x = xmin + c / (size - 1) * bw, y = ymin + (size - 1 - r) / (size - 1) * bh
     c0 = max(int(np.floor((crop[0] - sc.xmin) / sc.bw * (size - 1))), 0)
     c1 = min(int(np.ceil((crop[2] - sc.xmin) / sc.bw * (size - 1))), size - 1)
     r0 = max(int(np.floor((sc.ymax - crop[3]) / sc.bh * (size - 1))), 0)
@@ -180,19 +176,37 @@ def main() -> None:
     Y = sc.ymin + (size - 1 - rows) / (size - 1) * sc.bh   # heightmap row 0 = north
     inside = (X >= crop[0]) & (X <= crop[2]) & (Y >= crop[1]) & (Y <= crop[3])
     lx, ly = (X - e0) / k, (Y - n0) / k
-    ci = np.clip(np.rint((lx - ter_x0) / sq).astype(np.int64), 0, ov.shape[1] - 1)
-    ri = np.clip(np.rint((ly - ter_y0) / sq).astype(np.int64), 0, ov.shape[0] - 1)   # Magliasina row 0 = south
-    carve, cap = ov[ri, ci], capz[ri, ci]
     win = target[r0:r1 + 1, c0:c1 + 1]
-    hit_c = inside & np.isfinite(carve)
-    win[hit_c] = np.minimum(win[hit_c], carve[hit_c] - z_min)          # the carve may only lower the ground
-    hit_k = inside & np.isfinite(cap)
-    win[hit_k] = np.minimum(win[hit_k], cap[hit_k] - z_min)
-    w[r0:r1 + 1, c0:c1 + 1] = (hit_c | hit_k).astype(np.float64)
+    if fin.is_file():
+        tf = np.load(fin)
+        z, base = tf["z"].astype(np.float64), tf["dtm"].astype(np.float64)
+        sq, x0t, y0t = float(tf["square"]), float(tf["x0"]), float(tf["y0"])
+        ci = np.clip(np.rint((lx - x0t) / sq).astype(np.int64), 0, z.shape[1] - 1)
+        ri = np.clip(np.rint((ly - y0t) / sq).astype(np.int64), 0, z.shape[0] - 1)   # Magliasina row 0 = south
+        dz = z[ri, ci] - base[ri, ci]
+        hit = inside & np.isfinite(dz) & (np.abs(dz) > 0.005)
+        win[hit] = win[hit] + dz[hit]
+        source = "terrain_final (carve + edge steps)"
+    else:
+        ovz = np.load(roads / "terrain_override.npz")
+        ov, capz = ovz["ov"], ovz["cap"]
+        ter_x0, ter_y0 = (sc.xmin - e0) / k, (sc.ymin - n0) / k      # prepare_external.py's terrain block
+        ci = np.clip(np.rint(lx - ter_x0).astype(np.int64), 0, ov.shape[1] - 1)
+        ri = np.clip(np.rint(ly - ter_y0).astype(np.int64), 0, ov.shape[0] - 1)
+        carve, cap = ov[ri, ci], capz[ri, ci]
+        hit_c = inside & np.isfinite(carve)
+        win[hit_c] = np.minimum(win[hit_c], carve[hit_c] - z_min)      # the carve may only lower the ground
+        hit_k = inside & np.isfinite(cap)
+        win[hit_k] = np.minimum(win[hit_k], cap[hit_k] - z_min)
+        hit = hit_c | hit_k
+        source = "terrain_override (carve only)"
+    w[r0:r1 + 1, c0:c1 + 1] = hit.astype(np.float64)
     write_replace_layer(proc, "magliasina_carve", target, w, max_h=max_h, size=size)
-    lowered = (dgm - target)[w > 0]
-    print(f"carve: {int(w.sum())} heightmap px, lowered median {np.median(lowered):.2f} m, "
-          f"p95 {np.percentile(lowered, 95):.2f} m", flush=True)
+    d = (target - dgm)[w > 0]
+    print(f"terrain from {source}: {int(w.sum())} heightmap px, lowered {int((d < 0).sum())} (median "
+          f"{np.median(d[d < 0]) if (d < 0).any() else 0:.2f} m), raised {int((d > 0).sum())} (median "
+          f"{np.median(d[d > 0]) if (d > 0).any() else 0:.2f} m, p95 {np.percentile(d[d > 0], 95) if (d > 0).any() else 0:.2f} m)",
+          flush=True)
 
     # --- level ------------------------------------------------------------------------------------
     level = args.level or (site.get("beamng") or {}).get("level_name")

@@ -172,6 +172,10 @@ unpaved surfaces included): the steps of small ways joining a road, seen in the 
 into the site's level:
 
 ```powershell
+cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/pfunds_spiess.yaml"; python tools\export_keep_out.py
+```
+
+```powershell
 cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/pfunds_spiess.yaml"; python tools\import_magliasina_roads.py --crop 612550 5198250 614050 5199750
 ```
 
@@ -187,8 +191,16 @@ cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/pfunds_spiess.yam
   bridge parapets and slabs), split at 65,535 vertices, collision = visible mesh, SimGroup `magliasina_roads`;
   the three new materials go to `main.materials.json`. `--replace-road-grid` switches `road_grid` off. A
   Magliasina material not in `MATERIAL_GROUP` is reported and drawn as concrete.
-- Terrain: replace layer `magliasina_carve` (priority 50, between corridor_dgm and span): the Magliasina carve
-  (0.1 m under the lowest face) and the cap under the bridge decks, only ever lowering the DGM, inside the crop.
+- Terrain: replace layer `magliasina_carve` (priority 50, between corridor_dgm and span), inside the crop. With
+  `terrain_final.npz` (roads_only with the edge steps unpaved / paved_edges) it is this DGM plus the change Magliasina
+  made to its own DTM: carve under the meshes, caps under the decks, ground raised to the road edges. Without it the
+  carve and caps only (lowering).
+- Keep-out for the edge steps: `tools/export_keep_out.py` writes `magliasina/keep_out/<kind>.geojson` (tiris
+  buildings, waterways, Swiss AV buildings and water, guardrail annotations) before prepare_external. Pfunds:
+  731 buildings, 74 water features, no guard rails (the annotation is empty), no walls, fences or railway source.
+  Test crop with prepare_external's embankment (1 m at 1:1): 24,850 heightmap px raised (median 0.30 m), 46,289
+  lowered; paved edges 7 cm over the ground in the median (20 cm before). Magliasina's own 3 m at 1:1.5 filled whole
+  slopes 2-3 m deep. This terrain is for the game only.
 - Without the level folder (or `--no-inject`) it writes `magliasina_import/` only (art, items.level.json, report).
 
 Test crop (1.5 km round the B184 join, the Engadiner Strasse bridge 31 m over the valley, Reschenstrasse), sandbox
