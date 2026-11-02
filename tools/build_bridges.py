@@ -2,7 +2,7 @@
 
 Geometry rules (docs/CONCEPT.md):
   - XY follows the OSM/road centerline (straight road), not raw GIP tangents
-  - Z = cubic Hermite along arc length from abutment Z + approach dz/ds
+  - Z = straight line (constant grade) between the abutment heights
   - MeshRoad node Z = driving surface (Oberkante / node_z_is_top)
 
 Per-bridge config in site YAML under beamng.bridges.items[]
@@ -57,7 +57,6 @@ BRIDGE_SCALAR_KEYS = (
     "abut_search_m",  # outward search from gap (default: span_search_m)
     "abut_snap_z",  # portal Z = max(roadZ, terrainZ) so cut abutments meet Decal
     "portal_z_offset_m",  # [dz_s0, dz_s1] add to portal Z; grade adapts between
-    "portal_dz_ds",  # optional [m0, m1] Hermite end slopes; [0,0]=straight grade
     "approach_conform",  # Default on: heightmap to MeshRoad Z at abutments
     "force_deck_z",  # Default on: under slab to deck − sink; gorge stays
     "force_deck_z_sink_m",  # under-slab drop; default = slab depth when force_deck_z
@@ -78,10 +77,9 @@ BRIDGE_SCALAR_KEYS = (
     "terrain_embed_rings",
     "terrain_embed_foundation_m",
     "terrain_embed_max_delta_m",
-    "profile",  # hermite (legacy) | road_spline
+    "profile",  # linear | road_spline
     "centerline",  # osm | strassennetz | gip
     "solid_run_m",
-    "free_span",  # linear | pchip_ends
     "abutment_s",  # optional [s0, s1] override along centerline
     "corner_up_m",
     "corner_down_m",
@@ -387,33 +385,6 @@ def load_terrain_z(site: dict):
     return z_at
 
 
-def hermite_z(t: float, z0: float, z1: float, m0: float, m1: float, length: float) -> float:
-    t2 = t * t
-    t3 = t2 * t
-    h00 = 2 * t3 - 3 * t2 + 1
-    h10 = t3 - 2 * t2 + t
-    h01 = -2 * t3 + 3 * t2
-    h11 = t3 - t2
-    return h00 * z0 + h10 * (m0 * length) + h01 * z1 + h11 * (m1 * length)
-
-
-def hermite_dz_ds(t: float, z0: float, z1: float, m0: float, m1: float, length: float) -> float:
-    """dz/ds for cubic Hermite parameterized by t in [0,1], s = t * length."""
-    # dz/dt then / length
-    t2 = t * t
-    d00 = 6 * t2 - 6 * t
-    d10 = 3 * t2 - 4 * t + 1
-    d01 = -6 * t2 + 6 * t
-    d11 = 3 * t2 - 2 * t
-    dz_dt = d00 * z0 + d10 * (m0 * length) + d01 * z1 + d11 * (m1 * length)
-    return dz_dt / length if length > 1e-9 else 0.0
-
-
-def slope_ds(tx: float, ty: float, tz: float) -> float:
-    horiz = math.hypot(tx, ty)
-    return 0.0 if horiz < 1e-6 else tz / horiz
-
-
 def road_terrain_dip(road: dict, z_terrain, s: float) -> tuple[float, float, float]:
     """(dip_min, road_z, terr_center). dip = road_z − min(terrain at center + edges)."""
     x, y, road_z, tx, ty, _tz, w = sample_road(road, s)
@@ -565,23 +536,6 @@ def portal_z_offsets(cfg: dict) -> tuple[float, float]:
     return float(seq[0]), float(seq[1])
 
 
-def portal_dz_ds_override(cfg: dict) -> tuple[float, float] | None:
-    """Optional Hermite end slopes (dz/ds) at s0 / s1. None → use road tangent."""
-    raw = cfg.get("portal_dz_ds")
-    if raw is None:
-        return None
-    if isinstance(raw, (int, float)):
-        v = float(raw)
-        return v, v
-    seq = list(raw)
-    if not seq:
-        return None
-    if len(seq) == 1:
-        v = float(seq[0])
-        return v, v
-    return float(seq[0]), float(seq[1])
-
-
 def _as_oid_set(val) -> set[int]:
     if val is None:
         return set()
@@ -640,7 +594,7 @@ def build_span_on_road(
 
     - XY follows OSM road centerline
     - Portals: road Z/dz/ds/width + Heightmap Querneigung (planar)
-    - Between: Hermite Z, lerp width + crossfall; normal = pitch + crossfall
+    - Between: straight-line Z, lerp width + crossfall; normal = pitch + crossfall
     Returns xy, center_z, normals, widths, info.
     """
     width_fallback = float(cfg["width_m"])
@@ -762,12 +716,8 @@ def build_span_on_road(
     dz0, dz1 = portal_z_offsets(cfg)
     z0 += dz0
     z1 += dz1
-    m0 = slope_ds(tx0, ty0, tz0)
-    m1 = slope_ds(tx1, ty1, tz1)
-    m_ov = portal_dz_ds_override(cfg)
-    if m_ov is not None:
-        m0, m1 = m_ov
     length = s1 - s0 or 1.0
+    grade = (z1 - z0) / length
 
     cf0, zl0, zc0, zr0 = sample_crossfall(z_terrain, x0, y0, tx0, ty0, 0.5 * w0)
     cf1, zl1, zc1, zr1 = sample_crossfall(z_terrain, x1, y1, tx1, ty1, 0.5 * w1)
@@ -791,14 +741,14 @@ def build_span_on_road(
     for s in s_vals:
         t = (s - s0) / length
         x, y, _zr, tx, ty, _tz, _wr = sample_road(road, s)
-        z_surf = hermite_z(t, z0, z1, m0, m1, length)
-        dz = hermite_dz_ds(t, z0, z1, m0, m1, length)
+        z_surf = z0 + t * (z1 - z0)
+        dz = grade
         cf = cf0 + t * (cf1 - cf0)
         if t <= 1e-9:
-            z_surf, dz, w, cf = z0, m0, w0, cf0
+            z_surf, w, cf = z0, w0, cf0
             tx, ty = tx0, ty0
         elif t >= 1.0 - 1e-9:
-            z_surf, dz, w, cf = z1, m1, w1, cf1
+            z_surf, w, cf = z1, w1, cf1
             tx, ty = tx1, ty1
         else:
             w = w0 + t * (w1 - w0)
@@ -835,7 +785,7 @@ def build_span_on_road(
         "road_id": road["id"],
         "road_name": road.get("name"),
         "auto_span": auto,
-        "profile": "portal_hermite_plus_heightmap_crossfall",
+        "profile": "portal_linear_plus_heightmap_crossfall",
         "node_z_is_top": node_z_is_top,
         "depth_m": depth,
         "deck_lift_m": lift,
@@ -843,7 +793,7 @@ def build_span_on_road(
         "portal_width_m": [round(w0, 2), round(w1, 2)],
         "portal_z": [round(z0, 3), round(z1, 3)],
         "portal_z_offset_m": [round(dz0, 3), round(dz1, 3)],
-        "portal_dz_ds": [round(m0, 4), round(m1, 4)],
+        "grade": round(grade, 4),
         "portal_crossfall": [round(cf0, 4), round(cf1, 4)],
         "portal_crossfall_deg": [
             round(math.degrees(math.atan(cf0)), 2),
@@ -1036,7 +986,6 @@ def build_bridge_entries_road_spline(
         deck_lift_m=float(cfg.get("deck_lift_m") or 0.0),
         portal_z_offset_m=portal_z_offsets(cfg),
         abutment_s=abut,
-        free_span=str(cfg.get("free_span") or "linear"),
         crossfall_max=float(
             cfg["crossfall_max"] if cfg.get("crossfall_max") is not None else 0.12
         ),
@@ -1775,6 +1724,17 @@ def write_level(level_name: str, entries: list[dict], materials: dict) -> Path |
     return items_path
 
 
+BRIDGE_PROFILES = ("linear", "road_spline")
+
+
+def _bridge_profile(raw) -> str:
+    """Deck height profile: ``linear`` (straight grade between the abutments) or ``road_spline``."""
+    p = str(raw or "linear").lower().strip()
+    if p not in BRIDGE_PROFILES:
+        raise SystemExit(f"bridges: unknown profile {p!r} (use one of {', '.join(BRIDGE_PROFILES)})")
+    return p
+
+
 def default_bridge_cfg(bng: dict) -> tuple[dict, list]:
     raw = bng.get("bridges") or {}
     # Back-compat: flat keys become defaults
@@ -1901,12 +1861,10 @@ def default_bridge_cfg(bng: dict) -> tuple[dict, list]:
             if raw.get("terrain_embed_max_delta_m") is not None
             else 12.0
         ),
-        "profile": str(raw.get("profile") or "hermite"),
+        "profile": _bridge_profile(raw.get("profile")),
         "centerline": str(raw.get("centerline") or "osm"),
         "solid_run_m": float(raw.get("solid_run_m") if raw.get("solid_run_m") is not None else 3.0),
-        "free_span": str(raw.get("free_span") or "linear"),
         "abutment_s": raw.get("abutment_s"),
-        "portal_dz_ds": raw.get("portal_dz_ds"),
         "corner_up_m": float(raw.get("corner_up_m") if raw.get("corner_up_m") is not None else 0.25),
         "corner_down_m": float(
             raw.get("corner_down_m") if raw.get("corner_down_m") is not None else 0.06
@@ -1951,6 +1909,15 @@ def default_bridge_cfg(bng: dict) -> tuple[dict, list]:
         if "materials" in d:
             defaults["materials"] = {**defaults["materials"], **d["materials"]}
     items = list(raw.get("items") or [])
+    for where, d in [("bridges", raw), ("bridges.defaults", raw.get("defaults") or {})] + [
+        (f"bridges.items {it.get('objectid') or it.get('name')}", it) for it in items
+    ]:
+        bad = [k for k in ("portal_dz_ds", "free_span") if k in d]
+        if bad:
+            raise SystemExit(f"{where}: options {bad} are removed (decks run in a straight line between the abutments)")
+        if "profile" in d:
+            _bridge_profile(d["profile"])
+    defaults["profile"] = _bridge_profile(defaults.get("profile"))
     return defaults, items
 
 
@@ -1971,7 +1938,7 @@ def main() -> None:
     if args.step is not None:
         defaults["step_m"] = args.step
 
-    use_spline = str(defaults.get("profile") or "hermite") == "road_spline"
+    use_spline = defaults["profile"] == "road_spline"
     cl = str(defaults.get("centerline") or "osm").lower().strip()
     use_gip_cl = cl in ("gip", "verkehrswege", "objectid", "oid")
     use_sn_cl = cl in ("strassennetz", "sn", "net", "strasse", "straßennetz")
@@ -2010,7 +1977,7 @@ def main() -> None:
             print(f"skip oid={feat.get('objectid')} (enabled: false)")
             continue
         bridge_cfgs.append(cfg)
-        if str(cfg.get("profile") or "hermite") == "road_spline":
+        if _bridge_profile(cfg.get("profile")) == "road_spline":
             if use_gip_cl:
                 from gip_road_segments import load_gip_corridor_for_feature
 
@@ -2132,7 +2099,7 @@ def main() -> None:
         "materials": defaults["materials"],
         "spans_detail": span_infos,
         "decks_file": str(decks_path.relative_to(ROOT)).replace("\\", "/"),
-        "note": "profile=road_spline: Strassennetz + 4 MeshRoad strips; hermite: legacy.",
+        "note": "profile=road_spline: Strassennetz + 4 MeshRoad strips; linear: one deck, straight grade between the abutments.",
     }
     (proc / "bridges_meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
     print(f"Wrote {out_json} ({len(entries)} MeshRoads, {len(span_infos)} spans)")

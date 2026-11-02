@@ -8,8 +8,8 @@ Pipeline:
      on any lateral line, projected to centerline s)
   4. Approaches: cross-profile = inner-lane plane + soft corner blend
      to DGM at edges (0 / 1)
-  5. Free span: centerline Z = linear (no sag); lateral offsets lerped
-     from abutment cross-profiles (PCHIP available for multi-knot Z)
+  5. Free span: centerline Z = straight line between the abutments (no sag);
+     lateral offsets lerped from abutment cross-profiles
   6. Emit 4 parallel strip polylines for MeshRoad ribbons
 
 Optional per-structure override: ``abutment_s: [s0, s1]`` (meters along
@@ -22,11 +22,6 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 import numpy as np
-
-try:
-    from scipy.interpolate import PchipInterpolator
-except ImportError:  # pragma: no cover
-    PchipInterpolator = None  # type: ignore
 
 # Lateral sample stations for ditch/abutment heuristics
 LATERAL_FRACS: tuple[float, ...] = (0.1, 0.3, 0.5, 0.7, 0.9)
@@ -449,23 +444,6 @@ def find_abutments(
     }
 
 
-def pchip_or_linear(x: np.ndarray, y: np.ndarray, xq: np.ndarray) -> np.ndarray:
-    """Monotone cubic (PCHIP) if scipy present and enough knots; else linear."""
-    x = np.asarray(x, dtype=float)
-    y = np.asarray(y, dtype=float)
-    xq = np.asarray(xq, dtype=float)
-    order = np.argsort(x)
-    x, y = x[order], y[order]
-    # drop duplicate x
-    ok = np.concatenate([[True], np.diff(x) > 1e-9])
-    x, y = x[ok], y[ok]
-    if len(x) < 2:
-        return np.full_like(xq, float(y[0]) if len(y) else 0.0, dtype=float)
-    if len(x) == 2 or PchipInterpolator is None:
-        return np.interp(xq, x, y)
-    return np.asarray(PchipInterpolator(x, y)(xq), dtype=float)
-
-
 def build_span_profile(
     road: dict,
     z_terrain: ZAt,
@@ -481,7 +459,6 @@ def build_span_profile(
     deck_lift_m: float = 0.0,
     portal_z_offset_m: tuple[float, float] | list[float] | None = None,
     abutment_s: tuple[float, float] | list[float] | None = None,
-    free_span: str = "linear",  # linear | pchip_ends (no sag default = linear)
     crossfall_max: float = 0.12,
     corner_up_m: float = 0.25,
     corner_down_m: float = 0.06,
@@ -559,15 +536,6 @@ def build_span_profile(
     off_a0 = z5_a0 - zc_a0
     off_a1 = z5_a1 - zc_a1
 
-    def slope_at(s_ref: float, sign: float) -> float:
-        ds = max(step, solid_run_m)
-        z_here = float(profile_at(s_ref)[1])
-        z_out = float(profile_at(s_ref + sign * ds)[1])
-        return (z_here - z_out) / ds if sign < 0 else (z_out - z_here) / ds
-
-    m0 = slope_at(abut0, -1.0)
-    m1 = slope_at(abut1, +1.0)
-
     xy: list[tuple[float, float]] = []
     z_center: list[float] = []
     z_lateral: list[list[float]] = []
@@ -591,18 +559,7 @@ def build_span_profile(
             crossfalls.append(cf)
         else:
             t = (s - abut0) / span_len
-            if free_span == "pchip_ends" and PchipInterpolator is not None:
-                t2 = t * t
-                t3 = t2 * t
-                h00 = 2 * t3 - 3 * t2 + 1
-                h10 = t3 - 2 * t2 + t
-                h01 = -2 * t3 + 3 * t2
-                h11 = t3 - t2
-                z_h = h00 * zc_a0 + h10 * (m0 * span_len) + h01 * zc_a1 + h11 * (m1 * span_len)
-                z_lin = zc_a0 + t * (zc_a1 - zc_a0)
-                zc = max(float(z_h), float(z_lin)) + lift
-            else:
-                zc = float(zc_a0 + t * (zc_a1 - zc_a0) + lift)
+            zc = float(zc_a0 + t * (zc_a1 - zc_a0) + lift)
             off = off_a0 + t * (off_a1 - off_a0)
             cf = float(cf_a0 + t * (cf_a1 - cf_a0))
             z5 = [float(zc + off[i]) for i in range(n_prof)]
@@ -648,7 +605,6 @@ def build_span_profile(
 
     info = {
         "profile": "road_spline",
-        "free_span": free_span,
         "lateral_fracs": list(LATERAL_FRACS),
         "profile_fracs": list(PROFILE_FRACS),
         "strip_pairs": [list(p) for p in STRIP_PAIRS],

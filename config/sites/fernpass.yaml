@@ -110,9 +110,7 @@ beamng:
       deck_width_extra_m: 0.5
       deck_open_extra_m: 0.8
       deck_extend_m: 12.0
-      approach_mode: marry
       approach_lift_m: 0.015
-      portal_ease_m: 4.0
       portal_frame: block
       portal_block_m: 0.7
       portal_depth_m: 1.0

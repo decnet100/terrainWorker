@@ -155,7 +155,6 @@ beamng:
       span_dip_m: 0.45
       span_search_m: 40.0
       solid_run_m: 3.0
-      free_span: linear             # no Hermite sag
       corner_up_m: 0.25
       corner_down_m: 0.06
       corner_band: 0.2
@@ -231,7 +230,6 @@ beamng:
         # Deck muss über die Schwellen-Zone vor der Kerbe reichen
         extend_before_m: 25.0
         extend_after_m: 12.0
-        free_span: linear
         approach_conform: true
         approach_conform_max_cut_m: 12.0
         approach_conform_max_raise_m: 0.8
@@ -258,10 +256,7 @@ beamng:
       deck_open_extra_m: 0.8
       deck_extend_m: 12.0
       z_profile: linear
-      free_span: linear
-      approach_mode: marry
       approach_lift_m: 0.015
-      portal_ease_m: 0.0
       portal_frame: block
       portal_block_m: 0.7
       portal_depth_m: 1.0
@@ -304,7 +299,6 @@ beamng:
         one_ended: true
         fake_end_drop_m: 10
         z_profile: linear
-        portal_ease_m: 0.0
         daylight_near_objectid: 3844   # welches Ende (Brücke), nicht Kartenrand
         # 3690 = S-BT am OSM-Portalbau; Tür 10 m längs GIP nach außen / tiefer.
         portal_shift_from_objectid: 3690
