@@ -21,7 +21,7 @@ So:
 - Carriageway as its **own road** (spline + width / profile)
 - Terrain beside it with limited terraforming
 - Vertical features and structures as annotation + props / meshes
-- Tunnels: human XY path + **cubic-Hermite Z** from portal heights and approach grades
+- Tunnels: human XY path + **straight-line Z** between the portal heights (no curves)
 
 ---
 
@@ -82,7 +82,7 @@ DecalRoads are often look / navigation; grip usually comes from the terrain mate
 ### Tunnels / galleries
 
 Input: horizontal centerline between portals.  
-Height: cubic Hermite along arc length from portal Z + approach grade \(dz/ds\).  
+Height: straight line (constant grade) between the two portal heights; no curve between knots.  
 Mesh loft + terrain holes at portals. Galleries: mix DGM where the side is open. Site YAML: [GIP.md](GIP.md).
 
 ### Buildings (later)

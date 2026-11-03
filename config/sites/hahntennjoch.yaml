@@ -134,7 +134,6 @@ beamng:
       step_m: 2.0
       open_side: left
       deck_enabled: true
-      approach_mode: marry
       style:
         shell: gallery
         columns: rect

@@ -3,15 +3,15 @@
 Outputs under data/processed/<site>/:
   - galleries_centerlines.json / galleries_meta.json
   - gallery_meshes/*.dae
-  - heightmap_*_gallery.png (portals carved to Hermite road Z)
+  - heightmap_*_gallery.png (portals carved to the road Z of the axis)
   - empty theTerrain_holemap.png (holemap cannot cut a height band)
 
-Clearance model: sweep width x clear_height along Hermite CL; lower colliding
+Clearance model: sweep width x clear_height along the axis; lower colliding
 heightmap cells to road Z. Re-import terrainPreset.json after build.
 
 Pipeline (bridge-style config):
   - XY on OSM road centerline + extend_before/after
-  - Z Hermite from portal road heights; clear_height_m -> roof
+  - Z straight line between the portal road heights; clear_height_m -> roof
   - open_side left|right|both|none -> omit that wall (lookout)
   - Collada loft -> TSStatic under SimGroup galleries
 
@@ -39,6 +39,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 from site_coords import SiteCoords, load_site, processed_dir  # noqa: E402
 import build_bridges as bb  # noqa: E402
+import terrain_holes as th  # noqa: E402
 from road_width import default_carriageway_width_m  # noqa: E402
 
 USER_LEVELS = bb.USER_LEVELS
@@ -57,10 +58,9 @@ GALLERY_SCALAR_KEYS = (
     "step_m",
     "crossfall_max",
     "open_side",
-    "z_profile",  # linear (default) | road | road_spline | hermite (legacy)
-    "profile",  # alias: road_spline | hermite (bridges naming)
+    "z_profile",  # linear (default) | road | road_spline
+    "profile",  # alias: road_spline (bridges naming)
     "centerline",  # osm | strassennetz | gip
-    "free_span",  # linear | pchip_ends
     "solid_run_m",
     "span_dip_m",
     "span_search_m",
@@ -85,10 +85,11 @@ GALLERY_SCALAR_KEYS = (
     "hole_mode",  # portals | corridor | none
     "hole_pad_m",
     "hole_portal_length_m",
-    "hole_out_bite_m",  # meters outside Hermite portal to start the strip
-    "hole_above_road_m",  # punch if DGM > hermite_z + this (face lip)
-    "hole_max_above_m",  # skip if DGM > hermite_z + this (no sky-shaft through mountain)
+    "hole_out_bite_m",  # meters outside the portal to start the strip
+    "hole_above_road_m",  # punch if DGM > axis Z + this (face lip)
+    "hole_max_above_m",  # skip if DGM > axis Z + this (no sky-shaft through mountain)
     "hole_width_scale",  # 1.0 = full road width; <1 keeps mountain side out of strip
+    "intrusion_fix_in_m",  # hole terrain squares inside the clearance box this far from a daylight portal (0 = report)
     "portal_seat",  # bake 2 m apron + roof force + door hole at daylight portals
     "portal_apron_m",  # meters toward the exit: terrain → deck Z
     "portal_roof_force_m",  # meters inside the portal where roof Z is enforced
@@ -105,7 +106,7 @@ GALLERY_SCALAR_KEYS = (
     "deck_depth_m",
     "deck_width_extra_m",
     "deck_open_extra_m",  # extend asphalt only toward open side
-    "deck_extend_m",  # meters past Hermite portals for approach blend
+    "deck_extend_m",  # meters past the portals for the approach deck
     "parapet_height_m",
     "parapet_thickness_m",
     "parapet_out_m",  # grow parapet outward past open deck edge (keep inner face)
@@ -113,9 +114,7 @@ GALLERY_SCALAR_KEYS = (
     "column_along_m",
     "column_lat_m",
     "column_out_m",  # clear outside deck: inner face this far past open deck edge
-    "approach_blend_m",  # marry: unused for Z float; legacy hermite_blend length
-    "approach_mode",  # marry (DGM outside) | hermite_blend (float C1 outside)
-    "portal_ease_m",  # marry: short C1 just inside portals
+    "approach_blend_m",  # approach band past the portals (heightmap conform, deck extension)
     "approach_lift_m",  # MeshRoad slightly above DGM on approaches (anti z-fight)
     "approach_conform",  # Default on: seat Auflage to deck Z (bore never)
     "approach_conform_pad_m",
@@ -222,11 +221,10 @@ def default_gallery_cfg(bng: dict) -> tuple[dict, list]:
         "crossfall_max": float(raw.get("crossfall_max") or 0.12),
         "open_side": str(raw.get("open_side") or "left"),
         # linear: straight Z between portals (approaches stay on DGM).
-        # road / road_spline: follow the road axis. hermite = legacy, do not use.
-        "z_profile": str(raw.get("z_profile") or "linear"),
-        "profile": str(raw.get("profile") or ""),
+        # road / road_spline: follow the road axis.
+        "z_profile": _gallery_z_profile(raw.get("z_profile")),
+        "profile": _gallery_alias_profile(raw.get("profile")),
         "centerline": str(raw.get("centerline") or "osm"),
-        "free_span": str(raw.get("free_span") or "linear"),
         "solid_run_m": float(raw.get("solid_run_m") or 3.0),
         "span_dip_m": float(raw.get("span_dip_m") or 0.45),
         "span_search_m": float(raw.get("span_search_m") or 40.0),
@@ -279,6 +277,9 @@ def default_gallery_cfg(bng: dict) -> tuple[dict, list]:
             if raw.get("hole_width_scale") is not None
             else 1.0
         ),
+        "intrusion_fix_in_m": float(
+            raw["intrusion_fix_in_m"] if raw.get("intrusion_fix_in_m") is not None else 6.0
+        ),
         "portal_seat": bool(raw.get("portal_seat", True)),
         "portal_apron_m": float(
             raw["portal_apron_m"] if raw.get("portal_apron_m") is not None else 8.0
@@ -330,11 +331,8 @@ def default_gallery_cfg(bng: dict) -> tuple[dict, list]:
         "column_out_m": float(
             raw["column_out_m"] if raw.get("column_out_m") is not None else 0.0
         ),
-        # Outside portals: C1 blend DGM approach → Hermite knot (kills grade slam)
+        # Approach band past the portals: heightmap conform and deck extension length.
         "approach_blend_m": float(raw.get("approach_blend_m") or 12.0),
-        # marry = MeshRoad follows DGM outside (skin to terrain); hermite_blend = old float C1
-        "approach_mode": str(raw.get("approach_mode") or "marry").lower(),
-        "portal_ease_m": float(raw.get("portal_ease_m") or 4.0),
         "approach_lift_m": float(raw.get("approach_lift_m") or 0.015),
         "approach_conform": bool(raw.get("approach_conform", True)),
         "approach_conform_pad_m": float(raw.get("approach_conform_pad_m") or 0.5),
@@ -520,7 +518,17 @@ def default_gallery_cfg(bng: dict) -> tuple[dict, list]:
         )
     else:
         defaults["hole_max_above_m"] = float(defaults["hole_max_above_m"])
-    return defaults, list(raw.get("items") or [])
+    items = list(raw.get("items") or [])
+    _reject_removed_keys("galleries", raw)
+    _reject_removed_keys("galleries.defaults", raw.get("defaults") or {})
+    for it in items:
+        _reject_removed_keys(f"galleries.items {it.get('match_id') or it.get('objectid') or it.get('name')}", it)
+        for k in ("z_profile", "profile"):
+            if k in it:
+                (_gallery_z_profile if k == "z_profile" else _gallery_alias_profile)(it[k])
+    defaults["z_profile"] = _gallery_z_profile(defaults.get("z_profile"))
+    defaults["profile"] = _gallery_alias_profile(defaults.get("profile"))
+    return defaults, items
 
 
 
@@ -719,7 +727,7 @@ def merge_abutting_gallery_features(
     """Merge GIP gallery/tunnel segments that form one physical structure.
 
     GIP often splits one gallery into abutting OBJECTIDs (e.g. Mugkögele
-    7236+10099). Building them separately puts a Hermite portal at the
+    7236+10099). Building them separately puts a portal at the
     joint. Merge first → one centerline, portals only at true outer ends.
 
     ``groups``: optional explicit OBJECTID lists from site YAML. Otherwise
@@ -1214,7 +1222,7 @@ def find_secured_portal(
             s_sec = min(s_max, float(s_jump) + out_extra_m)
         n_b = min(baseline_n, len(baseline_grades)) or 1
         base_g = sum(baseline_grades[-n_b:]) / float(n_b) if baseline_grades else 0.0
-        # Store approach grade along +chainage for Hermite
+        # Store approach grade along +chainage
         base_g = walk_sign * base_g
 
     x, y, _zr, tx, ty, tz, w = bb.sample_road(road, s_sec)
@@ -1235,6 +1243,33 @@ def find_secured_portal(
         "ty": round(ty, 5),
         "tz": round(tz, 5),
     }
+
+
+GALLERY_Z_PROFILES = ("linear", "road", "road_spline")
+# Options of the removed curved profiles: a site that still sets one stops here.
+GALLERY_REMOVED_KEYS = ("approach_mode", "portal_ease_m", "portal_dz_ds", "free_span")
+
+
+def _gallery_z_profile(raw) -> str:
+    p = str(raw or "linear").lower().strip()
+    if p in ("line", "grade", "straight"):
+        p = "linear"
+    if p not in GALLERY_Z_PROFILES:
+        raise SystemExit(f"galleries: unknown z_profile {p!r} (use one of {', '.join(GALLERY_Z_PROFILES)})")
+    return p
+
+
+def _gallery_alias_profile(raw) -> str:
+    p = str(raw or "").lower().strip()
+    if p not in ("", "road_spline"):
+        raise SystemExit(f"galleries: unknown profile {p!r} (only road_spline, or z_profile)")
+    return p
+
+
+def _reject_removed_keys(where: str, raw: dict) -> None:
+    bad = [k for k in GALLERY_REMOVED_KEYS if k in (raw or {})]
+    if bad:
+        raise SystemExit(f"{where}: options {bad} are removed (heights are a straight line between the portals)")
 
 
 def _gallery_uses_road_spline(cfg: dict) -> bool:
@@ -1346,7 +1381,6 @@ def build_gallery_road_spline(
         extend_after_m=ext_a,
         deck_lift_m=float(cfg.get("deck_lift_m") or 0.0),
         abutment_s=(s_p0, s_p1),
-        free_span=str(cfg.get("free_span") or "linear"),
         crossfall_max=float(
             cfg["crossfall_max"] if cfg.get("crossfall_max") is not None else 0.12
         ),
@@ -1370,7 +1404,7 @@ def build_gallery_road_spline(
                 "x": round(x, 3),
                 "y": round(y, 3),
                 "z_road": round(z, 3),
-                "z_hermite": round(z, 3),
+                "z_axis": round(z, 3),
                 "z_roof_inner": round(z + clear_h, 3),
                 "z_roof_outer": round(z + clear_h + roof_t, 3),
                 "width": round(width_base + w_extra, 2),
@@ -1661,7 +1695,7 @@ def build_gallery_centerline(
     *,
     z_terrain=None,
 ) -> tuple[list[dict], dict]:
-    """XY on OSM road; Z = Hermite between secured flat portals only.
+    """XY on OSM road; Z = straight line between secured flat portals only.
 
     Portals: relative DGM grade jump outside→inside, then ``portal_out_extra_m``
     further out. No mid-gallery DGM knots (that is the roof).
@@ -1673,9 +1707,7 @@ def build_gallery_centerline(
     step = float(cfg.get("step_m") or 2.0)
     clear_h = float(cfg["clear_height_m"])
     roof_t = float(cfg["roof_thickness_m"])
-    z_profile = str(cfg.get("z_profile") or "linear").lower()
-    if z_profile in ("line", "grade", "straight"):
-        z_profile = "linear"
+    z_profile = _gallery_z_profile(cfg.get("z_profile"))
 
     s_ends = [bb.project_on_road(road, x, y)[0] for x, y in (xy_gip[0], xy_gip[-1])]
     s_g0, s_g1 = min(s_ends), max(s_ends)
@@ -1741,18 +1773,6 @@ def build_gallery_centerline(
     w0 = float(p0["width"]) if width_from_road else width_fallback
     w1 = float(p1["width"]) if width_from_road else width_fallback
 
-    approach_mode = str(cfg.get("approach_mode") or "marry").lower()
-    if approach_mode in ("hermite", "float", "c1"):
-        approach_mode = "hermite_blend"
-    blend_m = float(cfg.get("approach_blend_m") or 12.0)
-    blend_m = max(0.0, blend_m)
-    ease_m = float(cfg.get("portal_ease_m") or 4.0)
-    if z_profile == "linear":
-        # Chord slopes only — no cubic ease at the door.
-        m0 = m_mean
-        m1 = m_mean
-        ease_m = 0.0
-    ease_m = max(0.0, min(ease_m, 0.45 * length_p))
     lift_m = float(cfg.get("approach_lift_m") or 0.0)
     s_max_r = float(road["length"])
     grade_span = float(cfg.get("portal_grade_span_m") or 3.0)
@@ -1768,8 +1788,9 @@ def build_gallery_centerline(
         half = 0.5 * max(1.0, grade_span)
         return (_dgm_z(s_q + half) - _dgm_z(s_q - half)) / max(2.0 * half, 1e-3)
 
-    # Marry: portal grades must match local DGM so MeshRoad C1-skins to terrain
-    if approach_mode == "marry" and z_terrain is not None:
+    # Outside the portals the axis line runs on with the local DGM grade
+    # (z_axis there = portal Z + grade * distance; the deck itself follows the DGM).
+    if z_terrain is not None:
         if str(p0.get("method") or "") != "one_ended_fake":
             m0 = _dgm_grade(s_p0)
         if str(p1.get("method") or "") != "one_ended_fake":
@@ -1779,21 +1800,9 @@ def build_gallery_centerline(
         if abs(m1) > max_approach:
             m1 = m_mean
 
-    s_out0 = s_p0 - blend_m
-    s_out1 = s_p1 + blend_m
-    z_out0 = _dgm_z(s_out0) if blend_m > 1e-6 else z0
-    z_out1 = _dgm_z(s_out1) if blend_m > 1e-6 else z1
-    m_out0 = _dgm_grade(s_out0) if blend_m > 1e-6 else m0
-    m_out1 = _dgm_grade(s_out1) if blend_m > 1e-6 else m1
-    max_g = 0.25
-    if abs(m_out0) > max_g:
-        m_out0 = math.copysign(max_g, m_out0) if m_out0 != 0 else 0.0
-    if abs(m_out1) > max_g:
-        m_out1 = math.copysign(max_g, m_out1) if m_out1 != 0 else 0.0
-
-    # Span: deck follows terrain past portals (marry) or covers float blend
-    cover_out = max(ext_b, blend_m if approach_mode == "hermite_blend" else 0.0, 8.0)
-    cover_in = max(ext_a, blend_m if approach_mode == "hermite_blend" else 0.0, 8.0)
+    # Span: deck follows terrain past portals
+    cover_out = max(ext_b, 8.0)
+    cover_in = max(ext_a, 8.0)
     if one_meta.get("one_ended"):
         if one_meta.get("fake_end") == "s1":
             cover_in = 0.0
@@ -1811,43 +1820,15 @@ def build_gallery_centerline(
     x0, y0, _zr0, tx0, ty0, _tz0, _w0r = bb.sample_road(road, s0)
     x1, y1, _zr1, tx1, ty1, _tz1, _w1r = bb.sample_road(road, s1)
 
-    # Dense samples near portals / ease / (legacy) outside blend
-    step_near = min(step, 1.0)
     s_set: set[float] = set()
     s = s0
     while s <= s1 + 1e-9:
         s_set.add(round(s, 6))
         s += step
     s_set.add(round(s1, 6))
-    dense_spans: list[tuple[float, float]] = []
-    if approach_mode == "hermite_blend" and blend_m > 1e-6:
-        dense_spans.extend(((s_p0 - blend_m, s_p0), (s_p1, s_p1 + blend_m)))
-    if approach_mode == "marry" and ease_m > 1e-6:
-        dense_spans.extend(((s_p0, s_p0 + ease_m), (s_p1 - ease_m, s_p1)))
-        dense_spans.extend(((s_p0 - ease_m, s_p0), (s_p1, s_p1 + ease_m)))
-        # also densify approaches so MeshRoad tracks DGM waves
-        dense_spans.extend(((s0, s_p0), (s_p1, s1)))
-    for s_lo, s_hi in dense_spans:
-        s = max(s0, s_lo)
-        s_end = min(s1, s_hi)
-        while s <= s_end + 1e-9:
-            s_set.add(round(s, 6))
-            s += step_near
-        s_set.add(round(s_end, 6))
-    s_vals = sorted(s_set)
-
-    # Precompute interior Hermite end slopes for portal ease (marry)
-    m_ease0 = m0
-    m_ease1 = m1
-    z_ease0 = z0
-    z_ease1 = z1
-    if approach_mode == "marry" and ease_m > 1e-6:
-        t_e0 = ease_m / length_p
-        t_e1 = 1.0 - ease_m / length_p
-        z_ease0 = bb.hermite_z(t_e0, z0, z1, m0, m1, length_p)
-        z_ease1 = bb.hermite_z(t_e1, z0, z1, m0, m1, length_p)
-        m_ease0 = bb.hermite_dz_ds(t_e0, z0, z1, m0, m1, length_p)
-        m_ease1 = bb.hermite_dz_ds(t_e1, z0, z1, m0, m1, length_p)
+    s_set.add(round(s_p0, 6))
+    s_set.add(round(s_p1, 6))
+    s_vals = sorted(v for v in s_set if s0 - 1e-9 <= v <= s1 + 1e-9)
 
     nodes: list[dict] = []
     for s in s_vals:
@@ -1855,69 +1836,21 @@ def build_gallery_centerline(
         t_mesh = 0.0 if (s1 - s0) < 1e-9 else (s - s0) / (s1 - s0)
         if z_profile == "road":
             z_surf = z_rib
-            z_herm = z_rib
+            z_axis = z_rib
         else:
             z_dgm = float(z_terrain(x, y)) if z_terrain is not None else float(z_rib)
-            if s < s_p0 - 1e-9:
-                z_herm = z0 + m0 * (s - s_p0)
-                if approach_mode == "hermite_blend" and blend_m > 1e-6 and s >= s_out0 - 1e-9:
-                    t = max(0.0, min(1.0, (s - s_out0) / blend_m))
-                    z_surf = bb.hermite_z(t, z_out0, z0, m_out0, m0, blend_m)
-                elif approach_mode == "marry" and ease_m > 1e-6 and s >= s_p0 - ease_m - 1e-9:
-                    # short C1 just outside: DGM skin → portal (kills grade slam)
-                    s_a = s_p0 - ease_m
-                    z_a = _dgm_z(s_a) + lift_m
-                    m_a = _dgm_grade(s_a)
-                    if abs(m_a) > max_g:
-                        m_a = math.copysign(max_g, m_a) if m_a != 0 else 0.0
-                    te = (s - s_a) / ease_m
-                    te = max(0.0, min(1.0, te))
-                    z_surf = bb.hermite_z(te, z_a, z0, m_a, m0, ease_m)
-                else:
-                    dist = s_p0 - s
-                    taper = 2.0
-                    lift_eff = (
-                        lift_m * min(1.0, dist / taper) if taper > 1e-6 else lift_m
-                    )
-                    z_surf = z_dgm + lift_eff
-            elif s > s_p1 + 1e-9:
-                z_herm = z1 + m1 * (s - s_p1)
-                if approach_mode == "hermite_blend" and blend_m > 1e-6 and s <= s_out1 + 1e-9:
-                    t = max(0.0, min(1.0, (s - s_p1) / blend_m))
-                    z_surf = bb.hermite_z(t, z1, z_out1, m1, m_out1, blend_m)
-                elif approach_mode == "marry" and ease_m > 1e-6 and s <= s_p1 + ease_m + 1e-9:
-                    s_b = s_p1 + ease_m
-                    z_b = _dgm_z(s_b) + lift_m
-                    m_b = _dgm_grade(s_b)
-                    if abs(m_b) > max_g:
-                        m_b = math.copysign(max_g, m_b) if m_b != 0 else 0.0
-                    te = (s - s_p1) / ease_m
-                    te = max(0.0, min(1.0, te))
-                    z_surf = bb.hermite_z(te, z1, z_b, m1, m_b, ease_m)
-                else:
-                    dist = s - s_p1
-                    taper = 2.0
-                    lift_eff = (
-                        lift_m * min(1.0, dist / taper) if taper > 1e-6 else lift_m
-                    )
-                    z_surf = z_dgm + lift_eff
+            if s < s_p0 - 1e-9 or s > s_p1 + 1e-9:
+                outside0 = s < s_p0
+                z_axis = z0 + m0 * (s - s_p0) if outside0 else z1 + m1 * (s - s_p1)
+                dist = (s_p0 - s) if outside0 else (s - s_p1)
+                taper = 2.0
+                lift_eff = lift_m * min(1.0, dist / taper) if taper > 1e-6 else lift_m
+                z_surf = z_dgm + lift_eff
             else:
+                # straight line between the two portal heights
                 t = (s - s_p0) / length_p
-                if z_profile == "linear":
-                    z_herm = z0 + t * (z1 - z0)
-                    z_surf = z_herm
-                else:
-                    z_herm = bb.hermite_z(t, z0, z1, m0, m1, length_p)
-                    if approach_mode == "marry" and ease_m > 1e-6 and s <= s_p0 + ease_m + 1e-9:
-                        te = (s - s_p0) / ease_m
-                        te = max(0.0, min(1.0, te))
-                        z_surf = bb.hermite_z(te, z0, z_ease0, m0, m_ease0, ease_m)
-                    elif approach_mode == "marry" and ease_m > 1e-6 and s >= s_p1 - ease_m - 1e-9:
-                        te = (s - (s_p1 - ease_m)) / ease_m
-                        te = max(0.0, min(1.0, te))
-                        z_surf = bb.hermite_z(te, z_ease1, z1, m_ease1, m1, ease_m)
-                    else:
-                        z_surf = z_herm
+                z_axis = z0 + t * (z1 - z0)
+                z_surf = z_axis
         w = w_rib if width_from_road else (w0 + t_mesh * (w1 - w0))
         if t_mesh <= 1e-9:
             tx, ty = tx0, ty0
@@ -1928,7 +1861,7 @@ def build_gallery_centerline(
                 "x": round(x, 3),
                 "y": round(y, 3),
                 "z_road": round(z_surf, 3),
-                "z_hermite": round(z_herm, 3),
+                "z_axis": round(z_axis, 3),
                 "z_roof_inner": round(z_surf + clear_h, 3),
                 "z_roof_outer": round(z_surf + clear_h + roof_t, 3),
                 "width": round(w, 2),
@@ -1947,18 +1880,11 @@ def build_gallery_centerline(
         "gip_s1": round(s_g1, 2),
         "extend_before_m": ext_b,
         "extend_after_m": ext_a,
-        "approach_mode": approach_mode,
-        "approach_blend_m": round(blend_m, 2),
-        "portal_ease_m": round(ease_m, 2),
         "approach_lift_m": round(lift_m, 4),
-        "approach_outer": {
-            "s0": [round(s_out0, 3), round(z_out0, 3), round(m_out0, 5)],
-            "s1": [round(s_out1, 3), round(z_out1, 3), round(m_out1, 5)],
-        },
         "span_len_m": round(s1 - s0, 2),
         "gip_len_on_road_m": round(s_g1 - s_g0, 2),
         "z_profile": z_profile,
-        "portal_dz_ds": [round(m0, 5), round(m1, 5)],
+        "approach_grade": [round(m0, 5), round(m1, 5)],
         "portal_z": [round(z0, 3), round(z1, 3)],
         "portal_s": [round(s_p0, 3), round(s_p1, 3)],
         "portal_width_m": [round(w0, 2), round(w1, 2)],
@@ -2789,7 +2715,7 @@ def loft_portal_frame(
     """
     ox = float(node["x"])
     oy = float(node["y"])
-    oz = float(node.get("z_hermite") if node.get("z_hermite") is not None else node["z_road"])
+    oz = float(node.get("z_axis") if node.get("z_axis") is not None else node["z_road"])
     origin = (ox, oy, oz)
     tx = float(node.get("tx") or 1.0)
     ty = float(node.get("ty") or 0.0)
@@ -2901,7 +2827,7 @@ def loft_portal_collar(
     """
     ox = float(node["x"])
     oy = float(node["y"])
-    oz = float(node.get("z_hermite") if node.get("z_hermite") is not None else node["z_road"])
+    oz = float(node.get("z_axis") if node.get("z_axis") is not None else node["z_road"])
     origin = (ox, oy, oz)
     tx = float(node.get("tx") or 1.0)
     ty = float(node.get("ty") or 0.0)
@@ -3132,7 +3058,7 @@ def make_gallery_deck_meshroad(
 ) -> dict:
     """Asphalt MeshRoad with bridge-style pitch + Querneigung.
 
-    Crossfall is sampled from the heightmap at the Hermite portals (solid road),
+    Crossfall is sampled from the heightmap at the portals (solid road),
     then lerped along the gallery — mid-gallery DGM is roof/polluted and must
     not drive banking. Approaches outside portals sample local heightmap CF.
 
@@ -4211,12 +4137,12 @@ def _project_point_to_nodes(
     by: float,
     nodes: list[dict],
     *,
-    z_key: str = "hermite",
+    z_key: str = "axis",
 ) -> tuple[float, float, float, float] | None:
     """Nearest point on polyline → (dist_m, z, half_width, s).
 
     z_key:
-      hermite — ``z_hermite`` when present (portal carve / hole compare)
+      axis — ``z_axis`` when present (portal carve / hole compare)
       road — ``z_road`` (MeshRoad surface; approach conform)
       roof — ``z_roof_outer`` (top of tube, portal lintel)
     """
@@ -4242,8 +4168,8 @@ def _project_point_to_nodes(
             if n.get("z_roof_inner") is not None:
                 return float(n["z_roof_inner"])
             return float(n["z_road"])
-        if n.get("z_hermite") is not None:
-            return float(n["z_hermite"])
+        if n.get("z_axis") is not None:
+            return float(n["z_axis"])
         return float(n["z_road"])
 
     best: tuple[float, float, float, float] | None = None
@@ -4524,7 +4450,7 @@ def conform_approach_heightmap(
             if g.get("deck_width_extra_m") is not None
             else defaults.get("deck_width_extra_m") or 0.0
         )
-        # Approach ribbons only (outside Hermite portals)
+        # Approach ribbons only (outside the portals)
         bands: list[list[dict]] = []
         lo = [
             n
@@ -4754,7 +4680,7 @@ def append_daylight_deck_approach(
             if along < -1e-6 or along > extend_m + 1e-6:
                 continue
             n["z_road"] = round(_z_along(along, float(n["x"]), float(n["y"])), 3)
-            n["z_hermite"] = n["z_road"]
+            n["z_axis"] = n["z_road"]
         have = max(
             ((float(n["s"]) - s_p) * out_s for n in out),
             default=0.0,
@@ -4783,7 +4709,7 @@ def append_daylight_deck_approach(
                     "x": round(px, 3),
                     "y": round(py, 3),
                     "z_road": round(z, 3),
-                    "z_hermite": round(z, 3),
+                    "z_axis": round(z, 3),
                     "z_roof_inner": round(z + 4.0, 3),
                     "z_roof_outer": round(z + 4.5, 3),
                     "width": round(width, 2),
@@ -4958,7 +4884,7 @@ def append_one_ended_abutment(
                 "x": round(x, 3),
                 "y": round(y, 3),
                 "z_road": round(z, 3),
-                "z_hermite": round(z, 3),
+                "z_axis": round(z, 3),
                 "z_roof_inner": round(z + clear_h, 3),
                 "z_roof_outer": round(z + clear_h + roof_t, 3),
                 "width": round(width, 2),
@@ -5046,13 +4972,40 @@ def _extend_portal_apron_nodes(
                 "x": float(portal["x"]) + ox * d,
                 "y": float(portal["y"]) + oy * d,
                 "z_road": z,
-                "z_hermite": z,
+                "z_axis": z,
                 "z_roof_outer": z_roof,
                 "width": width,
                 "s": s_p + out_s * d,
             }
         )
     return out
+
+
+def _band_polygon(nodes: list[dict], half_m: float, *, s_lo: float | None = None, s_hi: float | None = None):
+    """Footprint of a centerline band (BeamNG metres): the axis between s_lo and s_hi, +/- half_m, flat ends."""
+    from shapely import LineString
+
+    pts = sorted(nodes, key=lambda n: float(n.get("s", 0.0)))
+    if s_lo is not None and s_hi is not None:
+        pts = [n for n in pts if s_lo - 1e-6 <= float(n.get("s", 0.0)) <= s_hi + 1e-6] or pts
+    xy = [(float(n["x"]), float(n["y"])) for n in pts]
+    if len(xy) >= 2 and s_lo is not None and s_hi is not None:
+        # the window's own nodes may stop short of s_lo / s_hi (one node step): run the ends on straight
+        for end, s_end, k0, k1 in ((0, s_lo, 0, 1), (-1, s_hi, -1, -2)):
+            short = abs(float(pts[end].get("s", s_end)) - s_end)
+            if short > 1e-3:
+                (x0, y0), (x1, y1) = xy[k0], xy[k1]
+                L = math.hypot(x0 - x1, y0 - y1) or 1.0
+                p = (x0 + (x0 - x1) / L * short, y0 + (y0 - y1) / L * short)
+                if end == 0:
+                    xy.insert(0, p)
+                else:
+                    xy.append(p)
+    if len(xy) == 1:
+        from shapely import Point
+
+        return Point(xy[0]).buffer(half_m)
+    return LineString(xy).buffer(half_m, cap_style="flat")
 
 
 def _raster_portal_band(
@@ -5081,6 +5034,14 @@ def _raster_portal_band(
     """
     if len(nodes) < 1:
         return 0, 0, 0.0
+    if mode == "hole":
+        # Hole whole terrain squares that overlap the band (terrain_holes: a pixel is a vertex
+        # and removes the square north-east of it), not the pixels whose position is inside.
+        if hole is None:
+            return 0, 0, 0.0
+        poly = _band_polygon(nodes, half_m + pad_m, s_lo=s_lo, s_hi=s_hi)
+        n_new = th.stamp_polygon(hole, poly, size=size, pitch=extent / size)
+        return n_new, n_new, 0.0
     tested = 0
     changed = 0
     max_abs = 0.0
@@ -6171,70 +6132,23 @@ def _stamp_embed_strip_holes(
     up_n: list[tuple[float, float, float, float, float]],
     inset_m: float = 0.0,
 ) -> int:
-    """Mark holemap cells whose *centers* lie strictly between lower/upper lips.
+    """Hole the terrain squares that overlap the strip between the lower and upper lips.
 
-    No expansion past the lips — ``inset_m`` shrinks the strip from both edges
-    so lip-touching neighbour cells stay solid (Stirn and open flank).
+    ``inset_m`` shrinks the strip from its edges first. A hole-map pixel is a vertex and removes the
+    square north-east of it (terrain_holes), so whole squares are tested, not pixel positions.
     """
     n = min(len(lo_n), len(up_n))
     if n < 2 or hole is None:
         return 0
-    inset = max(0.0, float(inset_m))
-    xs = [float(lo_n[i][0]) for i in range(n)] + [float(up_n[i][0]) for i in range(n)]
-    ys = [float(lo_n[i][1]) for i in range(n)] + [float(up_n[i][1]) for i in range(n)]
-    # Tight bbox — no pad (neighbour spill was the bug)
-    px0, py0 = _to_px_beamng(min(xs), max(ys), size, extent)
-    px1, py1 = _to_px_beamng(max(xs), min(ys), size, extent)
-    c0 = max(0, int(math.floor(min(px0, px1))))
-    c1 = min(size - 1, int(math.ceil(max(px0, px1))))
-    r0 = max(0, int(math.floor(min(py0, py1))))
-    r1 = min(size - 1, int(math.ceil(max(py0, py1))))
-    if c1 < c0 or r1 < r0:
-        return 0
+    from shapely import Polygon
 
-    before = int((hole > 0).sum())
-    for py in range(r0, r1 + 1):
-        for px in range(c0, c1 + 1):
-            if hole[py, px] > 0:
-                continue
-            bx, by = _from_px_beamng(float(px), float(py), size, extent)
-            inside = False
-            for i in range(n - 1):
-                lx0, ly0 = float(lo_n[i][0]), float(lo_n[i][1])
-                lx1, ly1 = float(lo_n[i + 1][0]), float(lo_n[i + 1][1])
-                ux0, uy0 = float(up_n[i][0]), float(up_n[i][1])
-                ux1, uy1 = float(up_n[i + 1][0]), float(up_n[i + 1][1])
-                mx0 = 0.5 * (lx0 + ux0)
-                my0 = 0.5 * (ly0 + uy0)
-                mx1 = 0.5 * (lx1 + ux1)
-                my1 = 0.5 * (ly1 + uy1)
-                mdx, mdy = mx1 - mx0, my1 - my0
-                mseg2 = mdx * mdx + mdy * mdy
-                if mseg2 < 1e-12:
-                    t = 0.0
-                    tb = 0.0
-                else:
-                    tb = ((bx - mx0) * mdx + (by - my0) * mdy) / mseg2
-                    if tb < -1e-3 or tb > 1.0 + 1e-3:
-                        continue
-                    t = max(0.0, min(1.0, tb))
-                lx = lx0 + t * (lx1 - lx0)
-                ly = ly0 + t * (ly1 - ly0)
-                ux = ux0 + t * (ux1 - ux0)
-                uy = uy0 + t * (uy1 - uy0)
-                sx, sy = lx - ux, ly - uy
-                sep = math.hypot(sx, sy)
-                if sep < 1e-6:
-                    continue
-                # Distance from upper lip toward lower along the connector
-                along = ((bx - ux) * sx + (by - uy) * sy) / sep
-                if along <= inset or along >= sep - inset:
-                    continue
-                inside = True
-                break
-            if inside:
-                hole[py, px] = 255
-    return int((hole > 0).sum()) - before
+    ring = [(float(lo_n[i][0]), float(lo_n[i][1])) for i in range(n)]
+    ring += [(float(up_n[i][0]), float(up_n[i][1])) for i in reversed(range(n))]
+    poly = Polygon(ring).buffer(0)
+    inset = max(0.0, float(inset_m))
+    if inset > 0:
+        poly = poly.buffer(-inset)
+    return th.stamp_polygon(hole, poly, size=size, pitch=extent / size)
 
 
 # Back-compat alias
@@ -6746,12 +6660,12 @@ def carve_gallery_clearance(
     elev: np.ndarray,
     max_height_m: float,
 ) -> tuple[np.ndarray, np.ndarray, dict]:
-    """Sweep a width×height rectangle along Hermite CL; lower colliding terrain.
+    """Sweep a width×height rectangle along the axis; lower colliding terrain.
 
     Mental model: push a box (road width × clear_height) along the centerline
     and remove rock that intersects it. BeamNG holemaps cannot cut a height
     band (white = delete whole XY column → sky shafts). So we *carve* the
-    heightmap: set surface Z to Hermite road Z inside the footprint. That
+    heightmap: set surface Z to the axis road Z inside the footprint. That
     clears the portal face without punching holes through the mountain peak.
 
     Returns (carved_elev_m, empty_hole_u8, stats).
@@ -6834,21 +6748,21 @@ def carve_gallery_clearance(
                     proj = _project_point_to_nodes(bx, by, band)
                     if proj is None:
                         continue
-                    dist, z_herm, _hw = proj[0], proj[1], proj[2]
+                    dist, z_axis, _hw = proj[0], proj[1], proj[2]
                     if dist > half_ref + pad:
                         continue
                     tested += 1
-                    z_herm = float(z_herm)
+                    z_axis = float(z_axis)
                     z_terr = float(carved[py, px])
-                    # Solid-below-heightmap intersects box [z_herm, z_herm+clear_h]
+                    # Solid-below-heightmap intersects box [z_axis, z_axis+clear_h]
                     # iff surface is above the floor.
-                    if z_terr <= z_herm + above:
+                    if z_terr <= z_axis + above:
                         skip_ok += 1
                         continue
                     # Carve surface down to road (clears the box). Do NOT hole —
                     # hole would delete the whole column and open sky above.
-                    drop = z_terr - z_herm
-                    carved[py, px] = z_herm
+                    drop = z_terr - z_axis
+                    carved[py, px] = z_axis
                     carved_n += 1
                     if drop > max_drop:
                         max_drop = drop
@@ -6883,6 +6797,72 @@ def paint_gallery_holes(
     """Deprecated path: holemap punch. Prefer ``carve_gallery_clearance``."""
     _ = (galleries, span_infos, extent, defaults, z_terrain, slope_at)
     return np.zeros((size, size), dtype=np.uint8)
+
+
+def check_tube_intrusion(
+    centerlines: list[dict],
+    span_infos: list[dict],
+    *,
+    elev: np.ndarray,
+    hole: np.ndarray | None,
+    size: int,
+    extent: float,
+    defaults: dict,
+) -> dict:
+    """Find terrain triangles inside the clearance box of every tube; hole those near a daylight portal.
+
+    The box: deck width x clear_height_m over the road, from portal to portal. A terrain triangle is the
+    terrain's own (terrain_holes.square_triangles), so a square half at road level and half up the face
+    is found even when all four of its vertices lie outside the box. Squares within ``intrusion_fix_in_m``
+    (default 6 m) of a daylight portal are holed (the shell is there above them); the rest is reported.
+    """
+    pitch = extent / size
+    info_by_oid = {info.get("objectid"): info for info in span_infos}
+    per: list[dict] = []
+    tot = {"before": 0, "holed": 0, "left": 0}
+    for g in centerlines:
+        nodes = g.get("nodes") or []
+        info = info_by_oid.get(g.get("objectid")) or {}
+        portal_s = info.get("portal_s") or g.get("portal_s")
+        if len(nodes) < 2 or not portal_s or len(portal_s) < 2:
+            continue
+        s_p0, s_p1 = sorted(float(v) for v in portal_s)
+        clear_h = float(
+            g["clear_height_m"] if g.get("clear_height_m") is not None else defaults.get("clear_height_m") or 4.0
+        )
+        fix_in = float(_gallery_num(g, defaults, "intrusion_fix_in_m", 6.0))
+        found = th.intruding_squares(
+            elev, hole, nodes, size=size, pitch=pitch, s_lo=s_p0, s_hi=s_p1, clear_h=clear_h
+        )
+        doors = [float(sp["s"]) for sp in _daylight_portal_specs(g, info)]
+        holed, left = [], []
+        for q in found:
+            near = any(abs(q["s"] - sd) <= fix_in for sd in doors)
+            if near and hole is not None:
+                hole[q["py"], q["px"]] = 255
+                holed.append(q)
+            else:
+                left.append(q)
+        tot["before"] += len(found)
+        tot["holed"] += len(holed)
+        tot["left"] += len(left)
+        if found:
+            per.append(
+                {
+                    "objectid": g.get("objectid"),
+                    "name": g.get("name"),
+                    "before": len(found),
+                    "holed": len(holed),
+                    "left": [{k: q[k] for k in ("s", "into_m", "px", "py")} for q in left[:20]],
+                    "left_count": len(left),
+                    "max_into_m": max(q["into_m"] for q in found),
+                }
+            )
+        print(
+            f"intrusion {g.get('name') or g.get('objectid')}: {len(found)} squares into the clearance box, "
+            f"{len(holed)} holed at the portals, {len(left)} left"
+        )
+    return {**tot, "fix_in_m_default": float(defaults.get("intrusion_fix_in_m") or 6.0), "tubes": per}
 
 
 def write_terrain_clear_assets(
@@ -7823,7 +7803,7 @@ def main() -> None:
             else:
                 if not roads:
                     raise SystemExit(
-                        f"Missing {proc / 'roads_beamng.json'} (needed for hermite galleries)"
+                        f"Missing {proc / 'roads_beamng.json'} (needed for galleries on the OSM axis)"
                     )
                 seed = bb.pick_road(roads, feat["xy"], site)
                 pad = float(cfg.get("portal_search_out_m") or 25.0) + float(
@@ -7951,7 +7931,7 @@ def main() -> None:
                 }
             )
 
-            # --- Fahrbahn (MeshRoad): road_spline = 4 strips; else single Hermite deck ---
+            # --- Fahrbahn (MeshRoad): road_spline = 4 strips; else single straight-grade deck ---
             if cfg.get("deck_enabled", True):
                 if spline and strip_entries:
                     ts_entries.extend(strip_entries)
@@ -8195,8 +8175,6 @@ def main() -> None:
                 "deck_width_extra_m": cfg.get("deck_width_extra_m"),
                 "portal_frame": cfg.get("portal_frame"),
                 "approach_blend_m": cfg.get("approach_blend_m"),
-                "approach_mode": cfg.get("approach_mode"),
-                "portal_ease_m": cfg.get("portal_ease_m"),
                 "approach_lift_m": cfg.get("approach_lift_m"),
                 "approach_conform": cfg.get("approach_conform"),
                 "approach_conform_pad_m": cfg.get("approach_conform_pad_m"),
@@ -8369,6 +8347,9 @@ def main() -> None:
             else:
                 clear_embed_foundation_debug(level_name)
             embed_stats["debug_foundation_line_count"] = len(dbg_lines)
+            want_portal_holes = any(
+                _gallery_flag(g, defaults, "terrain_embed_portal_holes", False) for g in centerlines
+            )
             if hole is not None and want_portal_holes:
                 hole_path = write_hole_assets(proc, level_name, hole)
                 n_h = int((hole > 0).sum())
@@ -8404,6 +8385,19 @@ def main() -> None:
             )
             hml.compose(proc, size=size, max_h=max_h, level_name=level_name)
         clear_embed_foundation_debug(level_name)
+    intrusion = None
+    import heightmap_layers as hml_c
+
+    hml_composed = hml_c.composed_path(proc, size)
+    if hml_composed.is_file() and centerlines:
+        max_h_c = float(json.loads((proc / "heightmap_meta.json").read_text(encoding="utf-8"))["max_height_m"])
+        comp = np.asarray(Image.open(hml_composed), dtype=np.float64) / 65535.0 * max_h_c
+        n_before = None if hole is None else int((hole > 0).sum())
+        intrusion = check_tube_intrusion(
+            centerlines, span_infos, elev=comp, hole=hole, size=size, extent=extent, defaults=defaults
+        )
+        if hole is not None and int((hole > 0).sum()) != n_before:
+            hole_path = write_hole_assets(proc, level_name, hole)
     if hole is not None:
         coverage = float(hole.mean()) / 255.0 * 100.0
         print(f"Wrote {hole_path} coverage={coverage:.3f}% (manual/preserve workflow)")
@@ -8429,6 +8423,7 @@ def main() -> None:
         "approach_conform": conf_stats,
         "terrain_embed": embed_stats,
         "portal_seat": seat_stats,
+        "intrusion": intrusion,
         "note": (
             "portal_seat: deck apron toward the exit (default 8 m). "
             "Roof force and door hole stay off unless YAML sets them. "

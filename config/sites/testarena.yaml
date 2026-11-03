@@ -44,7 +44,6 @@ beamng:
       span_dip_m: 0.45
       span_search_m: 40.0
       solid_run_m: 3.0
-      free_span: linear
       corner_up_m: 0.25
       corner_down_m: 0.06
       corner_band: 0.2

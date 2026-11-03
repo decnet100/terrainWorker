@@ -146,7 +146,6 @@ beamng:
       span_dip_m: 0.45
       span_search_m: 40.0
       solid_run_m: 3.0
-      free_span: linear
       corner_up_m: 0.25
       corner_down_m: 0.06
       corner_band: 0.2
@@ -196,9 +195,7 @@ beamng:
       deck_width_extra_m: 0.5
       deck_open_extra_m: 0.8
       deck_extend_m: 12.0
-      approach_mode: marry
       approach_lift_m: 0.015
-      portal_ease_m: 4.0
       portal_frame: block
       portal_block_m: 0.7
       portal_depth_m: 1.0

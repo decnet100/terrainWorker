@@ -77,7 +77,6 @@ beamng:
       span_dip_m: 0.45
       span_search_m: 40.0
       solid_run_m: 3.0
-      free_span: linear             # no sag
       # Soft-match deck corners to DGM (up more than down — avoid ditch dive)
       corner_up_m: 0.25
       corner_down_m: 0.06
@@ -114,7 +113,6 @@ beamng:
       step_m: 1.0
       crossfall_max: 0.12
       open_side: left
-      free_span: linear
       deck_lift_m: 0.02
       corner_up_m: 0.25
       corner_down_m: 0.06

@@ -577,7 +577,7 @@ def road_from_unify_feature(
     width_m: float,
     z_at=None,
 ) -> dict:
-    """Hermite/spline road dict whose axis *is* the unified polyline."""
+    """Road dict whose axis *is* the unified polyline (for the straight-line and spline profiles)."""
     pts: list[tuple[float, float, float, float]] = []
     for x, y in feat.get("xy") or []:
         z = float(z_at(x, y)) if z_at else 0.0

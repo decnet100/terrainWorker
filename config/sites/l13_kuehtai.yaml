@@ -116,7 +116,6 @@ beamng:
       crossfall_max: 0.12
       open_side: left          # left | right | both | none — Blickrichtung
       # Holemap: manuell (Build erhält theTerrain_holemap_manual.png falls vorhanden).
-      z_profile: hermite
       portal_grade_step_m: 1.0
       portal_grade_jump: 0.04
       portal_grade_baseline_n: 3
@@ -147,10 +146,8 @@ beamng:
       # 0 = mittig auf Brüstung; >0 Richtung Außenkante (wird aufs Band geklemmt)
       column_out_m: 0.0
       deck_extend_m: 12.0         # MeshRoad folgt Terrain über die Portale hinaus
-      approach_mode: marry        # Auffahrt = DGM (an Terrain anbinden); Galerie = Hermite
-      portal_ease_m: 4.0          # kurzer C1-Übergang knapp innerhalb der Portale
       approach_lift_m: 0.015      # MeshRoad knapp über Terrain (kein Z-Fight)
-      approach_blend_m: 12.0      # nur für approach_mode: hermite_blend
+      approach_blend_m: 12.0      # Zufahrtsband hinter den Portalen (Heightmap-Anpassung, Deckverlängerung)
       portal_frame: block
       portal_block_m: 0.7
       portal_depth_m: 1.0
@@ -189,7 +186,6 @@ beamng:
         deck_open_extra_m: 0.8
         overhang_m: 1.0
         parapet_height_m: 1.0
-        approach_mode: marry
         style:
           columns: rect
       - match: { objectid: 8276, name: Rauheneck }
@@ -206,8 +202,6 @@ beamng:
         parapet_thickness_m: 0.35
         column_spacing_m: 4.0
         deck_extend_m: 12.0
-        approach_mode: marry
-        portal_ease_m: 4.0
         approach_lift_m: 0.015
         portal_frame: block
         portal_block_m: 0.7

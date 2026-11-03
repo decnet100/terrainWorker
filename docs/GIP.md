@@ -101,7 +101,7 @@ Normal builds (`build_smoke` / masks / guardrails) do **not** call the WFS.
 | Decals | `decal_roads.centerline_source: gip` | `load_gip_polylines_for_decals` — **DecalRoads only for pieces with `STR_CODE`** (`gip_decals: named`). Minor GIP still gets road-bed + terrain asphalt. |
 | Guardrails | `guardrails.centerline: gip` | `load_gip_road_segments` — **one decision unit = GIP OBJECTID** |
 | Bridges (`road_spline`) | `bridges.defaults.centerline: gip` | `load_gip_corridor_for_feature` — corridor that contains the OBJECTID |
-| Galleries | `galleries.defaults.centerline: gip` | Hermite: GIP segments; spline: the same per-feature corridor |
+| Galleries | `galleries.defaults.centerline: gip` | linear: GIP segments; spline: the same per-feature corridor |
 
 ### Why not OSM / road network?
 
@@ -291,7 +291,7 @@ Hand correction in QGIS stays possible (open gallery side, portals).
 
 `beamng.bridges.defaults` + `beamng.bridges.items[]` (match via `objectid` / `name`):
 
-- **`profile: road_spline`** + **`centerline: gip`** (Fernpass Mega): deck = 4 MeshRoad strips from `road_span_profile` along the **GIP corridor of the structure**. Alternative `centerline: strassennetz`. Legacy: `hermite` + OSM.
+- **`profile: road_spline`** + **`centerline: gip`** (Fernpass Mega): deck = 4 MeshRoad strips from `road_span_profile` along the **GIP corridor of the structure**. Alternative `centerline: strassennetz`. `profile: linear` (default): one deck, straight grade between the abutments.
 - `extend_before_m` / `extend_after_m`: extend past the abutments (mesh + conform band only)
 - `under_inset_m`: rock mask under the bridge = gap **without** extends, shortened further inward
 - `portal_z_offset_m: [dz_s0, dz_s1]`: one side higher/lower; grade in between follows
@@ -308,7 +308,6 @@ If the **original DGM** under the GIP bridge has a notch/gorge (road Z stays hig
 ```yaml
 - match: { objectid: 3852, name: Brücke 3852 }
   abutment_s: [13408.0, 13425.0]   # s0/s1 from bridges_meta / DGM-vs-network check
-  free_span: linear
   approach_conform_max_raise_m: 0.8   # do not fill the notch
   approach_conform_max_cut_m: 12.0    # cliff lips only
 ```
@@ -399,7 +398,7 @@ Then: `build_galleries` (writes the flag into `galleries_centerlines.json`) → 
 
 L13 items: Mugkögele **7236** + **10099** (map edge, currently `enabled: false`), focus **Rauheneckgalerie 8276**.
 
-- Axis: OSM XY; **`z_profile: road`** follows the road band (not DGM on the gallery roof). `hermite` optional.
+- Axis: OSM XY; **`z_profile: road`** follows the road band (not DGM on the gallery roof). Default `linear`: straight line between the portals.
 - Portal anchors: search `terrain≈road` outside the GIP ends (`portal_search_*`); hole `z_ref` only from there.
 
 ```powershell
@@ -412,8 +411,10 @@ Writes `galleries_meta.json` + `galleries_centerlines.json`, DAE under
 
 `open_side: left|right` = omit a wall (look out). Wrong way → flip in `items[]`.
 
-**Hole map:** portals with distance ≤ half-width + pad;  
-`road+hole_min_above < z ≤ road+clear_height`; slope ≥ `hole_min_slope_deg` (45°).  
-Inner portals at abutting GIP OIDs (e.g. Mugkögele 7236↔10099) are dropped.
+**Hole map:** a hole-map pixel is a terrain vertex and removes the square north-east of it; holes are set per
+square that overlaps the opening (`tools/terrain_holes.py`, details in [STRUCTURES.md](STRUCTURES.md#lochkarte-holemap)).
+After the heightmap is composed, every terrain triangle inside the clearance box (deck width × `clear_height_m`,
+portal to portal) is found; those within `intrusion_fix_in_m` (6 m) of a daylight portal are holed, the rest is
+listed in `galleries_meta.json` → `intrusion`. Inner portals at abutting GIP OIDs (e.g. Mugkögele 7236↔10099) are dropped.
 
 After build: reload the level, **re-import terrainPreset.json with the hole map**.
