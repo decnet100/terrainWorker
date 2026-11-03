@@ -414,7 +414,8 @@ Writes `galleries_meta.json` + `galleries_centerlines.json`, DAE under
 **Hole map:** a hole-map pixel is a terrain vertex and removes the square north-east of it; holes are set per
 square that overlaps the opening (`tools/terrain_holes.py`, details in [STRUCTURES.md](STRUCTURES.md#lochkarte-holemap)).
 After the heightmap is composed, every terrain triangle inside the clearance box (deck width × `clear_height_m`,
-portal to portal) is found; those within `intrusion_fix_in_m` (6 m) of a daylight portal are holed, the rest is
+portal to portal) is found; those in a portal's face zone (from the mesh portal inward to where the terrain covers the
+roof, 6–80 m: `intrusion_fix_in_m`, `intrusion_fix_max_m`) are holed, the rest is
 listed in `galleries_meta.json` → `intrusion`. Inner portals at abutting GIP OIDs (e.g. Mugkögele 7236↔10099) are dropped.
 
 After build: reload the level, **re-import terrainPreset.json with the hole map**.

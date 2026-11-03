@@ -194,3 +194,67 @@ def intruding_squares(
             {"i": i, "j": j, "py": py, "px": px, "s": round(float(s[a]), 2), "into_m": round(float(depth[a]), 3)}
         )
     return out
+
+
+def _bilinear(elev: np.ndarray, x: np.ndarray, y: np.ndarray, size: int, pitch: float) -> np.ndarray:
+    px = np.clip(x / pitch, 0, size - 1.001)
+    gy = np.clip(y / pitch, 0, size - 1.001)
+    i = np.floor(px).astype(int)
+    j = np.floor(gy).astype(int)
+    tx, ty = px - i, gy - j
+    r0, r1 = size - 1 - j, size - 1 - (j + 1)
+    return (
+        elev[r0, i] * (1 - tx) * (1 - ty)
+        + elev[r0, i + 1] * tx * (1 - ty)
+        + elev[r1, i] * (1 - tx) * ty
+        + elev[r1, i + 1] * tx * ty
+    )
+
+
+def buried_from(
+    elev: np.ndarray,
+    nodes: list[dict],
+    *,
+    s_door: float,
+    inward: float,
+    size: int,
+    pitch: float,
+    top_h: float,
+    max_m: float = 80.0,
+    run_m: float = 3.0,
+    step: float = 1.0,
+) -> float | None:
+    """First station inward from a portal where the tube is under the mountain.
+
+    Walks from ``s_door`` in direction ``inward`` (+1 / -1) and returns the s where the terrain across the whole
+    tube (half width + 1 m either side) has stood above z_road + ``top_h`` (roof top) for ``run_m``. Up to there
+    the terrain is the portal face or the cut in front of it. None if that never happens within ``max_m``.
+    """
+    ns = sorted(nodes, key=lambda n: float(n["s"]))
+    s = np.array([float(n["s"]) for n in ns])
+    xs = np.array([float(n["x"]) for n in ns])
+    ys = np.array([float(n["y"]) for n in ns])
+    zs = np.array([float(n["z_road"]) for n in ns])
+    ws = np.array([float(n.get("width") or 7.5) for n in ns])
+    run = 0.0
+    k = 0
+    while k * step <= max_m + 1e-9:
+        sq = s_door + inward * k * step
+        if sq < s[0] or sq > s[-1]:
+            break
+        x, y, z, w = (np.interp(sq, s, a) for a in (xs, ys, zs, ws))
+        x1, y1 = np.interp(sq + 0.5, s, xs), np.interp(sq + 0.5, s, ys)
+        x0, y0 = np.interp(sq - 0.5, s, xs), np.interp(sq - 0.5, s, ys)
+        tx, ty = x1 - x0, y1 - y0
+        L = math.hypot(tx, ty) or 1.0
+        nx, ny = -ty / L, tx / L
+        d = np.linspace(-(0.5 * w + 1.0), 0.5 * w + 1.0, 9)
+        terr = _bilinear(elev, x + nx * d, y + ny * d, size, pitch)
+        if float(terr.min()) >= z + top_h:
+            run += step
+            if run >= run_m - 1e-9:
+                return sq - inward * (run - step)
+        else:
+            run = 0.0
+        k += 1
+    return None

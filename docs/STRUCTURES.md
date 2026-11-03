@@ -124,8 +124,11 @@ außerhalb der Öffnung, die der Portalkragen abdecken muss.
 
 Nach dem Compose prüft `check_tube_intrusion` jedes Gelände-Dreieck gegen den Fahrraum der Röhre (Deckbreite ×
 `clear_height_m` über der Fahrbahn, Portal bis Portal). Ein Quadrat, halb auf Fahrbahnhöhe abgesenkt und halb an der
-Portalfläche hoch, fällt so auf, auch wenn keiner seiner Eckpunkte im Fahrraum liegt. Treffer bis
-`intrusion_fix_in_m` (Default 6 m) hinter einem Tagportal werden gelocht, dort liegt die Schale darüber. Treffer tiefer
+Portalfläche hoch, fällt so auf, auch wenn keiner seiner Eckpunkte im Fahrraum liegt. Gelocht wird in der
+Portalzone jedes Tagportals: vom Mesh-Portal nach innen bis dorthin, wo das Gelände über die ganze Röhrenbreite über
+dem Dach steht (Portalfläche und Einschnitt davor), mindestens `intrusion_fix_in_m` (6 m), höchstens
+`intrusion_fix_max_m` (80 m). Dort liegt die Schale darüber. Die Länge steht als `face_m` im Meta. Ein fester 6-m-Streifen
+reichte am Klammlecktunnel nicht: Das Mesh-Portal lag etwa 10 m vor der echten Portalfläche, im Einschnitt. Treffer tiefer
 in der Röhre werden nur gemeldet: `galleries_meta.json` → `intrusion` (`before`, `holed`, `left`, je Röhre die Stellen).
 `left` > 0 heißt meist, dass das Gelände über der Röhre unter das Dach fällt, oder die Achse liegt falsch.
 Mit `--skip-holemap` wird nur gemeldet.

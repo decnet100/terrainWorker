@@ -89,7 +89,8 @@ GALLERY_SCALAR_KEYS = (
     "hole_above_road_m",  # punch if DGM > axis Z + this (face lip)
     "hole_max_above_m",  # skip if DGM > axis Z + this (no sky-shaft through mountain)
     "hole_width_scale",  # 1.0 = full road width; <1 keeps mountain side out of strip
-    "intrusion_fix_in_m",  # hole terrain squares inside the clearance box this far from a daylight portal (0 = report)
+    "intrusion_fix_in_m",  # hole terrain squares inside the clearance box at least this far from a daylight portal
+    "intrusion_fix_max_m",  # ... and up to where the mountain closes over the roof, at most this far (default 80)
     "portal_seat",  # bake 2 m apron + roof force + door hole at daylight portals
     "portal_apron_m",  # meters toward the exit: terrain → deck Z
     "portal_roof_force_m",  # meters inside the portal where roof Z is enforced
@@ -279,6 +280,9 @@ def default_gallery_cfg(bng: dict) -> tuple[dict, list]:
         ),
         "intrusion_fix_in_m": float(
             raw["intrusion_fix_in_m"] if raw.get("intrusion_fix_in_m") is not None else 6.0
+        ),
+        "intrusion_fix_max_m": float(
+            raw["intrusion_fix_max_m"] if raw.get("intrusion_fix_max_m") is not None else 80.0
         ),
         "portal_seat": bool(raw.get("portal_seat", True)),
         "portal_apron_m": float(
@@ -6813,8 +6817,10 @@ def check_tube_intrusion(
 
     The box: deck width x clear_height_m over the road, from portal to portal. A terrain triangle is the
     terrain's own (terrain_holes.square_triangles), so a square half at road level and half up the face
-    is found even when all four of its vertices lie outside the box. Squares within ``intrusion_fix_in_m``
-    (default 6 m) of a daylight portal are holed (the shell is there above them); the rest is reported.
+    is found even when all four of its vertices lie outside the box. Squares in the face zone of a daylight
+    portal are holed (the shell is there above them): from the mesh portal inward to where the terrain stands
+    over the roof across the whole tube (terrain_holes.buried_from), at least ``intrusion_fix_in_m`` (6 m), at
+    most ``intrusion_fix_max_m`` (80 m). The rest (terrain dipping into the bore further in) is reported.
     """
     pitch = extent / size
     info_by_oid = {info.get("objectid"): info for info in span_infos}
@@ -6831,13 +6837,27 @@ def check_tube_intrusion(
             g["clear_height_m"] if g.get("clear_height_m") is not None else defaults.get("clear_height_m") or 4.0
         )
         fix_in = float(_gallery_num(g, defaults, "intrusion_fix_in_m", 6.0))
+        fix_max = float(_gallery_num(g, defaults, "intrusion_fix_max_m", 80.0))
+        roof_t = float(_gallery_num(g, defaults, "roof_thickness_m", 0.5))
         found = th.intruding_squares(
             elev, hole, nodes, size=size, pitch=pitch, s_lo=s_p0, s_hi=s_p1, clear_h=clear_h
         )
-        doors = [float(sp["s"]) for sp in _daylight_portal_specs(g, info)]
+        # Face zone of each daylight portal: from the mesh portal inward to where the mountain closes over the
+        # roof (the portal face and any cut in front of it), at least fix_in, at most fix_max.
+        zones = []
+        for sp in _daylight_portal_specs(g, info):
+            sd = float(sp["s"])
+            inward = -float(sp["out"])
+            s_in = th.buried_from(
+                elev, nodes, s_door=sd, inward=inward, size=size, pitch=pitch,
+                top_h=clear_h + roof_t, max_m=fix_max,
+            )
+            reach = fix_max if s_in is None else max(fix_in, abs(s_in - sd) + 2.0)
+            zones.append({"end": sp["end"], "s": round(sd, 2), "face_m": None if s_in is None else round(abs(s_in - sd), 1),
+                          "lo": min(sd, sd + inward * reach), "hi": max(sd, sd + inward * reach)})
         holed, left = [], []
         for q in found:
-            near = any(abs(q["s"] - sd) <= fix_in for sd in doors)
+            near = any(z["lo"] - 1e-6 <= q["s"] <= z["hi"] + 1e-6 for z in zones)
             if near and hole is not None:
                 hole[q["py"], q["px"]] = 255
                 holed.append(q)
@@ -6856,11 +6876,13 @@ def check_tube_intrusion(
                     "left": [{k: q[k] for k in ("s", "into_m", "px", "py")} for q in left[:20]],
                     "left_count": len(left),
                     "max_into_m": max(q["into_m"] for q in found),
+                    "face_zones": [{k: z[k] for k in ("end", "s", "face_m")} for z in zones],
                 }
             )
         print(
             f"intrusion {g.get('name') or g.get('objectid')}: {len(found)} squares into the clearance box, "
-            f"{len(holed)} holed at the portals, {len(left)} left"
+            f"{len(holed)} holed at the portals, {len(left)} left; portal faces "
+            + ", ".join(f"{z['end']} {z['face_m'] if z['face_m'] is not None else 'open'} m" for z in zones)
         )
     return {**tot, "fix_in_m_default": float(defaults.get("intrusion_fix_in_m") or 6.0), "tubes": per}
 
