@@ -1,14 +1,19 @@
-# Centerline shift by DGM roughness
+# Centerline shift
+
+The script now scores the height difference of the two outer edges across the
+whole ±2 m window. Each piece keeps the placement inside its 0.50 m window
+that is closest to the mean of what its two neighbours themselves need.
+The sections below describe the earlier roughness runs.
 
 Trial for the Imst main route. It does not write into a BeamNG level.
 
 The question is where a measured carriageway width sits flattest on the raw
 0.5 m DGM, and, where it never does, how much that width has to shrink.
 
-Script: `tools/shift_centerline_by_roughness.py`.
+Script: `tools/shift_centerline_by_edge.py`.
 
 ```powershell
-cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/imst.yaml"; python tools\shift_centerline_by_roughness.py
+cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/imst.yaml"; python tools\shift_centerline_by_edge.py
 ```
 
 | Run | Folder |
@@ -89,13 +94,15 @@ The carriageway is a ribbon along that centerline. Width is the accepted width o
 
 ## Knobs
 
-In `tools/shift_centerline_by_roughness.py`:
+In `tools/shift_centerline_by_edge.py`:
 
 | Constant | Value | Meaning |
 |----------|------:|---------|
 | `SEG_MAX_M` | 20 m | Longest piece |
 | `STEP_M` | 0.10 m | Lateral step |
-| `MAX_SHIFT_M` | 1.0 m | Lateral search limit |
+| `INNER_SHIFT_M` | 1.0 m | Lateral search before the outer range is tried |
+| `MAX_SHIFT_M` | 2.0 m | Lateral search limit, used only when 1 m has no acceptable placement |
+| `EDGE_DIFF_M` | 0.50 m | Acceptable median difference of the two outer edge heights |
 | `GOOD_MEAN_M` | 0.008 m | Acceptable mean roughness, on the clipped scale |
 | `CLEAR_GAP_M` | 0.002 m | Gap required before one offset is "the" best |
 | `WIDTH_STEP_M` | 0.10 m | Narrowing step |

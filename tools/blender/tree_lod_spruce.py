@@ -1,7 +1,7 @@
 """Blender: Nah-LOD der Fichte aus Fichte2 (Bake-Quelle bleibt unangetastet).
 
 Exportiert nur LOD0 als _a1000. install_spruce_far_lod haengt danach
-vier Ansichtskarten (_a80) und den Kamera-Billboard (Groesse 25) an.
+vier Ansichtskarten (_a150) und den Kamera-Billboard (Groesse 25) an.
 
   blender C:\\temp\\assets\\trees\\fichte2.blend --background --python C:\\temp\\assets\\trees\\tree_lod_spruce.py
 """
@@ -428,23 +428,25 @@ def _install_pack_textures(pack):
     os.makedirs(pack, exist_ok=True)
     out = {}
     bark_src = CFG.get("tex_bark")
-    bark_name = "bark_spruce.color.png"
+    bark_name = CFG.get("bark_file") or "bark_spruce.color.png"
     if bark_src and os.path.isfile(bark_src):
-        shutil.copy2(bark_src, os.path.join(pack, bark_name))
+        _save_image_png(bark_src, os.path.join(pack, bark_name))
         log(f"  Rinde {bark_src} -> {bark_name}")
-        out["SpruceBark"] = {"base": bark_name}
-    twig_name = "twig_spruce.color.png"
-    op_name = "twig_spruce_o.data.png"
+        out[CFG.get("bark_mat") or "SpruceBark"] = {"base": bark_name}
+    twig_name = CFG.get("twig_file") or "twig_spruce.color.png"
+    op_name = CFG.get("twig_opacity_file") or "twig_spruce_o.data.png"
     if _composite_twig_png(CFG.get("tex_twig_color"), CFG.get("tex_twig_alpha"), os.path.join(pack, twig_name)):
         log(f"  Nadeln -> {twig_name}")
         twig = {"base": twig_name}
         alp = CFG.get("tex_twig_alpha")
         if alp and os.path.isfile(alp):
-            shutil.copy2(alp, os.path.join(pack, op_name))
+            _save_image_png(alp, os.path.join(pack, op_name))
             twig["opacity"] = op_name
             log(f"  Nadel-Opacity -> {op_name}")
-        out["SpruceTwig1"] = twig
-        out["SpruceTwig.001"] = dict(twig)
+        twig_mat = CFG.get("twig_mat") or "SpruceTwig1"
+        out[twig_mat] = twig
+        if not CFG.get("twig_mat"):
+            out["SpruceTwig.001"] = dict(twig)
     card_name = f"{CFG['dae_stem']}_lod1_side.png"
     if os.path.isfile(os.path.join(pack, card_name)):
         out["SpruceCard"] = {"base": card_name}
@@ -452,6 +454,19 @@ def _install_pack_textures(pack):
     elif twig_name in (out.get("SpruceTwig1") or {}).values():
         out["SpruceCard"] = {"base": twig_name}
     return out
+
+
+def _save_image_png(src, dest):
+    """Write a PNG. Cooker suffixes are meaningless on a JPEG payload."""
+    img = bpy.data.images.load(src, check_existing=False)
+    if tuple(img.size) == (0, 0):
+        img.filepath = src
+        img.reload()
+    _ = img.pixels[0]
+    img.filepath_raw = dest
+    img.file_format = "PNG"
+    img.save()
+    bpy.data.images.remove(img)
 
 
 def _save_mat_images(mat, dest_dir):
@@ -465,12 +480,14 @@ def _save_mat_images(mat, dest_dir):
         card = f"{CFG['dae_stem']}_lod1_side.png"
         if os.path.isfile(os.path.join(dest_dir, card)):
             return {"base": card}
-    if "bark" in low and os.path.isfile(os.path.join(dest_dir, "bark_spruce.color.png")):
-        return {"base": "bark_spruce.color.png"}
+    bark_file = CFG.get("bark_file") or "bark_spruce.color.png"
+    twig_file = CFG.get("twig_file") or "twig_spruce.color.png"
+    if "bark" in low and os.path.isfile(os.path.join(dest_dir, bark_file)):
+        return {"base": bark_file}
     if any(h in low for h in ("twig", "leaf", "nadel")) and os.path.isfile(
-        os.path.join(dest_dir, "twig_spruce.color.png")
+        os.path.join(dest_dir, twig_file)
     ):
-        return {"base": "twig_spruce.color.png"}
+        return {"base": twig_file}
     if not mat.use_nodes or mat.node_tree is None:
         return out
     os.makedirs(dest_dir, exist_ok=True)
@@ -733,7 +750,7 @@ def step4_export_dae():
     _write_materials_json(
         os.path.join(pack, "main.materials.json"),
         mat_png,
-        "art/shapes/trees/trees_spruce",
+        CFG.get("vfs_rel") or "art/shapes/trees/trees_spruce",
     )
     import json
 
@@ -741,16 +758,119 @@ def step4_export_dae():
     with open(asset_path, "w", encoding="utf-8") as f:
         json.dump({"imposters": []}, f, indent=2)
         f.write("\n")
+    _rename_exported_materials(dae_path)
     tools = CFG["autoroad_tools"]
     if tools and tools not in sys.path:
         sys.path.insert(0, tools)
     from tree_imposter_lib import install_spruce_far_lod
 
-    install_spruce_far_lod(dae_path)
+    try:
+        install_spruce_far_lod(dae_path)
+    except ModuleNotFoundError as exc:
+        if getattr(exc, "name", "") != "PIL":
+            raise
+        py = shutil.which("python")
+        if not py:
+            raise
+        log("Blender-Python ohne PIL, Karten und Billboard ueber die System-Python.")
+        import subprocess
+
+        subprocess.check_call(
+            [
+                py,
+                "-c",
+                "import sys; sys.path.insert(0, sys.argv[1]); "
+                "from tree_imposter_lib import install_spruce_far_lod; "
+                "install_spruce_far_lod(sys.argv[2])",
+                tools,
+                dae_path,
+            ]
+        )
     names = " + ".join(f"a{p}" for p in pixels)
-    log(f"DAE {dae_path} ({names}, vier Karten a80, Billboard 25).")
+    log(f"DAE {dae_path} ({names}, vier Karten a150, Billboard 25).")
     log("Pack ins Level kopiert build_forest.py. BeamNG ganz beenden.")
 
+
+def _rename_exported_materials(dae_path):
+    """Give a variant its own mapTo names so it does not replace the main spruce."""
+    mapping = CFG.get("mat_rename") or {}
+    if not mapping:
+        return
+    import json
+
+    text = open(dae_path, encoding="utf-8").read()
+    for old, new in sorted(mapping.items(), key=lambda kv: -len(kv[0])):
+        text = text.replace(old, new)
+    with open(dae_path, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write(text)
+    mat_path = os.path.join(os.path.dirname(dae_path), "main.materials.json")
+    if not os.path.isfile(mat_path):
+        return
+    with open(mat_path, encoding="utf-8") as handle:
+        data = json.load(handle)
+    renamed = {}
+    for key, block in data.items():
+        new = mapping.get(key, key)
+        if isinstance(block, dict):
+            block["name"] = new
+            block["mapTo"] = new
+        renamed[new] = block
+    with open(mat_path, "w", encoding="utf-8", newline="\n") as handle:
+        json.dump(renamed, handle, indent=2)
+        handle.write("\n")
+
+
+def apply_cli():
+    if "--" not in sys.argv:
+        return
+    cli = sys.argv[sys.argv.index("--") + 1 :]
+    if "--species" not in cli:
+        return
+    species = cli[cli.index("--species") + 1]
+    if species == "larch":
+        CFG.update(
+            {
+                "pack_dir": r"C:\temp\beamng_autoroad\data\assets\trees\larch",
+                "dae_stem": "tree_larch_large",
+                "species": "larch",
+                "leaf_keep": [1.0],
+                "tex_bark": r"C:\temp\assets\trees\larch\BarkPoplar001_COL_4K.jpg",
+                "tex_twig_color": r"C:\temp\assets\trees\larch\twig\Atlas-811-A_BaseColor.jpg",
+                "tex_twig_alpha": r"C:\temp\assets\trees\larch\twig\Atlas-811-A_Opacity.jpg",
+                "twig_hsv": [0.5, 1.2, 1.0],
+                "bark_file": "bark_larch.color.png",
+                "twig_file": "twig_larch.color.png",
+                "twig_opacity_file": "twig_larch_o.data.png",
+                "bark_mat": "LarchBark",
+                "twig_mat": "LarchTwig",
+                "vfs_rel": "art/shapes/trees/trees_larch",
+            }
+        )
+        return
+    if species in ("spruceb", "sprucec"):
+        letter = species[-1]
+        title = f"Spruce{letter}"
+        CFG.update(
+            {
+                "pack_dir": rf"C:\temp\beamng_autoroad\data\assets\trees\{species}",
+                "dae_stem": f"tree_{species}_large",
+                "species": species,
+                "bark_file": f"bark_{species}.color.png",
+                "twig_file": f"twig_{species}.color.png",
+                "twig_opacity_file": f"twig_{species}_o.data.png",
+                "bark_mat": f"{title}Bark",
+                "twig_mat": f"{title}Twig",
+                "vfs_rel": f"art/shapes/trees/trees_{species}",
+                "mat_rename": {
+                    "SpruceBark": f"{title}Bark",
+                    "SpruceTwig1": f"{title}Twig",
+                    "SpruceTwig.001": f"{title}TwigB",
+                },
+            }
+        )
+
+
+apply_cli()
 
 RUN = ["step1_split", "step2_make_lods", "step3_report", "step4_export_dae"]
 

@@ -193,6 +193,48 @@ def resample_elevation_cubicspline(
     return out
 
 
+def _print_cached(
+    nice: str,
+    path: Path,
+    nbytes: int,
+    bad: float,
+    max_nodata: float,
+) -> None:
+    if bad > max_nodata:
+        print(
+            f"Using cached {nice} with nodata {100 * bad:.2f}% "
+            f"(limit {100 * max_nodata:.2f}%, allow_incomplete): "
+            f"{path} ({nbytes} bytes)"
+        )
+        return
+    print(f"Using cached {nice}: {path} ({nbytes} bytes)")
+
+
+def _finish_if_nodata(
+    nice: str,
+    bad_frac: float,
+    max_nodata: float,
+    path: Path,
+    *,
+    allow_incomplete: bool,
+) -> None:
+    """Warn, then stop unless the source permits an incomplete mosaic."""
+    if bad_frac <= max_nodata:
+        return
+    print(
+        f"WARNING: {nice} incomplete - bad elevation={100 * bad_frac:.2f}% "
+        f"(limit {100 * max_nodata:.2f}%) at {path}"
+    )
+    if allow_incomplete:
+        print("  Continuing because allow_incomplete is set.")
+        return
+    raise SystemExit(
+        f"{nice} nodata {100 * bad_frac:.2f}% exceeds max_nodata_frac "
+        f"{100 * max_nodata:.2f}%. Re-run with --force or raise tile_retries, "
+        f"or set allow_incomplete for a coverage hole."
+    )
+
+
 def _meta_matches_target(
     meta: dict,
     *,
@@ -268,17 +310,12 @@ def _download_native_mosaic(
         if arr.ndim == 3:
             arr = arr[..., 0]
         bad = float(elevation_nodata_mask(arr).mean())
-        if same and bad <= max_nodata:
-            print(
-                f"Using cached native {nice}: {out_native} "
-                f"({out_native.stat().st_size} bytes)"
-            )
+        usable = bad <= max_nodata or allow_incomplete
+        if same and usable:
+            _print_cached(f"native {nice}", out_native, out_native.stat().st_size, bad, max_nodata)
             return arr.astype(np.float32), cached
-        if bad <= max_nodata and arr.shape == (height, width) and not cached:
-            print(
-                f"Using cached native {nice}: {out_native} "
-                f"({out_native.stat().st_size} bytes)"
-            )
+        if usable and arr.shape == (height, width) and not cached:
+            _print_cached(f"native {nice}", out_native, out_native.stat().st_size, bad, max_nodata)
             return arr.astype(np.float32), {
                 "bbox": fetch_bbox,
                 "resolution_m": native_res,
@@ -310,7 +347,13 @@ def _download_native_mosaic(
             "FORMAT": "GeoTIFF",
         }
         data = http_get_geotiff(url, params, timeout_s=600, headers=headers)
-        return read_tiff_bytes(data)
+        arr = np.asarray(read_tiff_bytes(data))
+        if accept_all_nodata:
+            if arr.ndim == 3:
+                arr = arr[..., 0]
+            arr = np.array(arr, dtype=np.float32, copy=True)
+            arr[elevation_nodata_mask(arr)] = np.nan
+        return arr
 
     tile_dir = out_native.with_name(out_native.stem + "_tiles")
     print(
@@ -362,18 +405,13 @@ def _download_native_mosaic(
     }
     meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
     print(f"Wrote native {out_native} ({out_native.stat().st_size} bytes)")
-
-    if bad_frac > max_nodata:
-        msg = (
-            f"WARNING: native {nice} incomplete - bad elevation={100 * bad_frac:.2f}% "
-            f"(limit {100 * max_nodata:.2f}%) at {out_native}"
-        )
-        print(msg)
-        if not allow_incomplete:
-            raise SystemExit(
-                f"native {nice} nodata {100 * bad_frac:.2f}% exceeds max_nodata_frac "
-                f"{100 * max_nodata:.2f}%. Re-run with --force or raise tile_retries."
-            )
+    _finish_if_nodata(
+        f"native {nice}",
+        bad_frac,
+        max_nodata,
+        out_native,
+        allow_incomplete=allow_incomplete,
+    )
     return mosaic.astype(np.float32), meta
 
 
@@ -405,6 +443,8 @@ def fetch_terrain_coverage(
     src = (site.get("sources") or {}).get(source_key) or {}
     if not src:
         raise SystemExit(f"sources.{source_key} missing in site config")
+    allow_incomplete = bool(allow_incomplete or src.get("allow_incomplete", False))
+    accept_all_nodata = bool(accept_all_nodata or src.get("accept_all_nodata", False))
 
     # Local path override: caller already prepared the level raster.
     if src.get("path") and out_path is None and resolution_m is None:
@@ -473,8 +513,8 @@ def fetch_terrain_coverage(
             if arr.ndim == 3:
                 arr = arr[..., 0]
             bad = float(elevation_nodata_mask(arr).mean())
-            if bad <= max_nodata:
-                print(f"Using cached {nice}: {out} ({out.stat().st_size} bytes)")
+            if bad <= max_nodata or allow_incomplete:
+                _print_cached(nice, out, out.stat().st_size, bad, max_nodata)
                 return out
             print(f"Cached {nice} incomplete (bad={100 * bad:.2f}%) — rebuilding")
 
@@ -581,16 +621,11 @@ def fetch_terrain_coverage(
     meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
     print(f"Wrote {out} ({out.stat().st_size} bytes)")
     print(f"Wrote {meta_path}")
-
-    if bad_frac > max_nodata:
-        msg = (
-            f"WARNING: {nice} incomplete - bad elevation={100 * bad_frac:.2f}% "
-            f"(limit {100 * max_nodata:.2f}%) at {out}"
-        )
-        print(msg)
-        if not allow_incomplete:
-            raise SystemExit(
-                f"{nice} nodata {100 * bad_frac:.2f}% exceeds max_nodata_frac "
-                f"{100 * max_nodata:.2f}%. Re-run with --force or raise tile_retries."
-            )
+    _finish_if_nodata(
+        nice,
+        bad_frac,
+        max_nodata,
+        out,
+        allow_incomplete=allow_incomplete,
+    )
     return out

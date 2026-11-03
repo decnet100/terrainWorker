@@ -27,6 +27,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 from build_road_grid import RES_M, _load_geotiff  # noqa: E402
 from filter_road_corridor import write_referenced_tif  # noqa: E402
+from authorities import resolved_working_crs  # noqa: E402
 from site_coords import load_site, processed_dir  # noqa: E402
 
 DROP_ROUGH_M = 0.015
@@ -436,9 +437,9 @@ def main() -> None:
     if gpkg.exists():
         gpkg.unlink()
     if line_geoms:
-        gpd.GeoDataFrame(line_rows, geometry=line_geoms, crs="EPSG:31254").to_file(gpkg, layer="edge", driver="GPKG")
+        gpd.GeoDataFrame(line_rows, geometry=line_geoms, crs=resolved_working_crs(site)).to_file(gpkg, layer="edge", driver="GPKG")
     if pt_geoms:
-        gpd.GeoDataFrame(pt_rows, geometry=pt_geoms, crs="EPSG:31254").to_file(
+        gpd.GeoDataFrame(pt_rows, geometry=pt_geoms, crs=resolved_working_crs(site)).to_file(
             gpkg, layer="edge_pt", driver="GPKG", mode="a"
         )
     unique = {

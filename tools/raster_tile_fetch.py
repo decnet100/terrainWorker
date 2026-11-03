@@ -102,17 +102,19 @@ def make_frac_incomplete(
 ) -> IncompleteFn:
     """Mark a tile incomplete when nodata share exceeds ``max_frac``.
 
-    If ``accept_all_nodata`` is set (backdrop rings / cross-border), a tile that
-    is entirely nodata is treated as outside coverage — not as a failed fetch.
+    If ``accept_all_nodata`` is set (backdrop rings / cross-border), nodata is
+    outside coverage, not a failed fetch. A fully empty tile and a tile that
+    is only partly inside the service are kept. A download error is still
+    retried by the caller.
     """
     limit = float(max_frac)
 
     def _incomplete(arr: np.ndarray) -> bool:
         if arr.size == 0:
             return True
-        frac = float(mask_fn(arr).mean())
-        if accept_all_nodata and frac >= 0.999:
+        if accept_all_nodata:
             return False
+        frac = float(mask_fn(arr).mean())
         return frac > limit
 
     return _incomplete
@@ -133,6 +135,8 @@ def fetch_tiled_mosaic(
     tile_cache_dir: Path | None = None,
     force: bool = False,
     label: str = "raster",
+    skip_tile: Callable[[TileSpec], bool] | None = None,
+    keep_incomplete: Callable[[TileSpec], bool] | None = None,
 ) -> tuple[np.ndarray, dict]:
     """Download tiles, retry incomplete ones, return mosaic + stats dict."""
     tiles = build_tile_grid(bbox, width_px, height_px, tile_px)
@@ -142,6 +146,7 @@ def fetch_tiled_mosaic(
 
     pending = list(tiles)
     ok_count = 0
+    skipped = 0
     fail_ids: list[str] = []
     attempts_used = 0
 
@@ -158,6 +163,9 @@ def fetch_tiled_mosaic(
         still_bad: list[TileSpec] = []
         for spec in pending:
             tid = f"r{spec.iy}_c{spec.ix}"
+            if skip_tile is not None and skip_tile(spec):
+                skipped += 1
+                continue
             cache_path = (
                 tile_cache_dir / f"{tid}.tif" if tile_cache_dir is not None else None
             )
@@ -203,7 +211,9 @@ def fetch_tiled_mosaic(
                     )
                     arr = np.asarray(img, dtype=np.float32)
 
-            if is_incomplete(arr):
+            if is_incomplete(arr) and not (
+                keep_incomplete is not None and keep_incomplete(spec)
+            ):
                 print(
                     f"  {label} tile {tid} incomplete "
                     f"({spec.width_px}x{spec.height_px})"
@@ -247,6 +257,7 @@ def fetch_tiled_mosaic(
         "tiles_ok": ok_count if not pending else len(tiles) - len(pending),
         "tiles_failed": len(pending),
         "tiles_failed_ids": fail_ids,
+        "tiles_skipped": skipped,
         "rounds": attempts_used,
         "width_px": int(width_px),
         "height_px": int(height_px),

@@ -27,6 +27,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 from build_road_grid import RES_M, _load_geotiff  # noqa: E402
 from filter_road_corridor import write_referenced_tif  # noqa: E402
+from authorities import resolved_working_crs  # noqa: E402
 from site_coords import load_site, processed_dir  # noqa: E402
 
 # Local residual at or above this is "still allowed, but clearly off the rest".
@@ -239,7 +240,7 @@ def main() -> None:
     if edge_path.exists():
         edge_path.unlink()
     if edge_geoms:
-        gpd.GeoDataFrame(edge_rows, geometry=edge_geoms, crs="EPSG:31254").to_file(
+        gpd.GeoDataFrame(edge_rows, geometry=edge_geoms, crs=resolved_working_crs(site)).to_file(
             edge_path, layer="edge", driver="GPKG"
         )
     report = {

@@ -1,6 +1,6 @@
 """Put each bridge deck into the same raster and clip as the road mesh.
 
-The axis is the bridge piece in the shifted-centerline package (EPSG:31254).
+The axis is the bridge piece in the shifted-centerline package (site working CRS).
 Each cross-section of the surface model is read for the edge: a narrow rise is
 a railing, a taller one a wall, and both end the driving surface. The gorge
 ends it as well. A vehicle (a step above SPIKE_M) is a hole in the deck, not
@@ -928,7 +928,7 @@ def main() -> None:
     gpd.GeoDataFrame(
         {"objectid": oids},
         geometry=geoms,
-        crs="EPSG:31254",
+        crs=sc.crs,
     ).to_file(clip_path, layer="carriageway", driver="GPKG")
     # The decks alone, for steps that must leave the bridge surface untouched
     # (smooth_road_surface.py protects these polygons, not only the GIP zone).
@@ -936,7 +936,7 @@ def main() -> None:
         gpd.GeoDataFrame(
             {"objectid": [oid for oid, _ in ribbons]},
             geometry=[ribbon for _, ribbon in ribbons],
-            crs="EPSG:31254",
+            crs=sc.crs,
         ).to_file(clip_path, layer="bridge_deck", driver="GPKG")
     report_path = out_dir / "bridge_deck_report.json"
     report_path.write_text(json.dumps({"bridges": reports}, indent=2) + "\n", encoding="utf-8")

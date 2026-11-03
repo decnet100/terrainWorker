@@ -24,7 +24,8 @@ from build_asphalt_meshroads import _is_main_road
 from build_decal_roads import _cfg, stitch_abutting_roads
 from diag_road_bed_modes import _gip_polylines
 from fetch_road_corridor_ortho import ORIGIN_E, ORIGIN_N, RES_M, SPAN_M, TILE_PX
-from measure_gip_widths import _ln_to_31254, _pick_poly, find_landnutzung_geojson, load_street_polygons
+from authorities import resolved_working_crs
+from measure_gip_widths import _ln_to_working, _pick_poly, find_landnutzung_geojson, load_street_polygons
 from measure_road_breaks import _densify, _oid, _oid_num, _poly_offset, _tangents
 from site_coords import SiteCoords, load_site, processed_dir, site_slug
 
@@ -493,6 +494,7 @@ def _recorded_lines(roads: list[dict], sc: SiteCoords) -> list[dict]:
 
 def main() -> None:
     site = load_site()
+    working = resolved_working_crs(site)
     sc = SiteCoords(site)
     proc = processed_dir(site)
     cfg = _cfg(site.get("beamng") or {})
@@ -511,7 +513,7 @@ def main() -> None:
     path = find_landnutzung_geojson(site)
     if path is None:
         raise SystemExit("no Landnutzung geojson for this site")
-    geoms, codes = load_street_polygons(path, _ln_to_31254())
+    geoms, codes = load_street_polygons(path, _ln_to_working(site))
     tree = STRtree(geoms)
 
     rows: list[dict] = []
@@ -612,7 +614,7 @@ def main() -> None:
             recorded_path.unlink()
         except OSError:
             recorded_path = out_dir / "recorded_widths_new.gpkg"
-    gpd.GeoDataFrame(recorded, geometry="geometry", crs="EPSG:31254").to_file(
+    gpd.GeoDataFrame(recorded, geometry="geometry", crs=working).to_file(
         recorded_path, layer="recorded", driver="GPKG"
     )
     gpkg = out_dir / "ortho_edges.gpkg"
@@ -623,14 +625,14 @@ def main() -> None:
         print(f"ortho_edges.gpkg is open, left it unchanged. Recorded widths: {recorded_path}", flush=True)
         print(f"  recorded parts={len(recorded)}", flush=True)
         return
-    gpd.GeoDataFrame(edges, geometry="geometry", crs="EPSG:31254").to_file(gpkg, layer="edges", driver="GPKG")
-    gpd.GeoDataFrame(raw, geometry="geometry", crs="EPSG:31254").to_file(
+    gpd.GeoDataFrame(edges, geometry="geometry", crs=working).to_file(gpkg, layer="edges", driver="GPKG")
+    gpd.GeoDataFrame(raw, geometry="geometry", crs=working).to_file(
         gpkg, layer="raw_edges", driver="GPKG"
     )
-    gpd.GeoDataFrame(ribbons, geometry="geometry", crs="EPSG:31254").to_file(
+    gpd.GeoDataFrame(ribbons, geometry="geometry", crs=working).to_file(
         gpkg, layer="ribbon", driver="GPKG"
     )
-    gpd.GeoDataFrame(recorded, geometry="geometry", crs="EPSG:31254").to_file(
+    gpd.GeoDataFrame(recorded, geometry="geometry", crs=working).to_file(
         gpkg, layer="recorded", driver="GPKG"
     )
 
@@ -648,7 +650,7 @@ def main() -> None:
             "similar width are joined. Gaps up to 50 m are interpolated. "
             "Longer gaps use the mean half-width of the Landnutzung surface."
         ),
-        "crs": "EPSG:31254",
+        "crs": working,
         "const_range_m": CONST_RANGE_M,
         "const_min_m": CONST_MIN_M,
         "join_tol_m": JOIN_TOL_M,

@@ -1,0 +1,16 @@
+---
+description: Repo UI is English, and a check question names the files to open
+alwaysApply: true
+---
+
+# Repo language
+
+Operator-facing text in this repo is English: script prompts, log lines a person reads while running a tool, and text written into those prompts.
+
+When a tool asks a person to judge a place, name the files in the prompt with this sentence:
+
+```
+(open the following in qgis or similar tool to check: [path one, path two])
+```
+
+Use the paths of the files that show the stretch in question. A question without those paths is incomplete.

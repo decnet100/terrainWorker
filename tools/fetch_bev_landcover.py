@@ -10,7 +10,10 @@ Layer: LC.LandCoverRaster — AT Gesamtmosaik LC 2021–2023, 6 Klassen
   5 Gewässer
 
 WCS is disabled on this GeoServer; WMS ``image/geotiff`` returns classified
-uint8. EPSG:31254 WMS 1.3.0 BBOX axis order: miny,minx,maxy,maxx.
+uint8. WMS 1.3.0 bbox order follows the CRS axis: northing first for
+EPSG:31254, easting first for EPSG:25832. Tiles that miss Austria are not
+requested. A tile on the border is requested once; nodata there is the
+foreign side and is not retried.
 
 Downloads in tiles (see ``tools/raster_tile_fetch.py``). Incomplete tiles
 (class 6 nodata) are re-requested; holes are never invented.
@@ -46,6 +49,8 @@ from PIL import Image
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 from raster_tile_fetch import (  # noqa: E402
+    TileSpec,
+    build_tile_grid,
     classified_nodata_mask,
     fetch_tiled_mosaic,
     http_get_geotiff,
@@ -113,16 +118,29 @@ def nodata_fraction(codes: np.ndarray) -> float:
     return float(classified_nodata_mask(codes, NODATA_CODE).mean())
 
 
+def _nodata_is_outside_austria(meta: dict) -> bool:
+    """Skipped tiles and no failed downloads: the holes are outside Austria."""
+    stats = meta.get("tile_stats") or {}
+    return int(stats.get("tiles_failed") or 0) == 0 and int(stats.get("tiles_skipped") or 0) > 0
+
+
 def report_incomplete_landcover(
     codes: np.ndarray,
     *,
     where: str,
     max_nodata_frac: float,
     allow_incomplete: bool = False,
+    outside_austria: bool = False,
 ) -> float:
     frac = nodata_fraction(codes)
     pct = 100.0 * frac
     limit_pct = 100.0 * max_nodata_frac
+    if outside_austria:
+        print(
+            f"BEV landcover nodata={pct:.2f}% outside Austria, kept ({where})",
+            flush=True,
+        )
+        return frac
     if frac <= max_nodata_frac:
         if frac > 0:
             print(
@@ -170,24 +188,79 @@ def _pixel_size(
     return w, h
 
 
-def _download_bev_tile(site: dict, cfg: dict, spec) -> np.ndarray:
-    # WMS 1.3.0 + EPSG:31254 -> axis order northing,easting
-    bbox = f"{spec.ymin},{spec.xmin},{spec.ymax},{spec.xmax}"
+def _wms13_north_first(crs: str) -> bool:
+    """True when the first CRS axis is northing, so a WMS 1.3.0 bbox leads with y."""
+    from pyproj import CRS
+
+    code = str(crs).split(":")[-1]
+    direction = str(CRS.from_epsg(int(code)).axis_info[0].direction or "")
+    return direction.lower().startswith("north")
+
+
+def _wms13_bbox(spec: TileSpec, *, north_first: bool) -> str:
+    if north_first:
+        return f"{spec.ymin},{spec.xmin},{spec.ymax},{spec.xmax}"
+    return f"{spec.xmin},{spec.ymin},{spec.xmax},{spec.ymax}"
+
+
+def _austria_wgs84():
+    """Union of the Austrian NUTS level-2 polygons."""
+    from shapely.ops import unary_union
+
+    from authorities import load_nuts_features
+
+    parts = [
+        geom
+        for nid, _name, geom in load_nuts_features(download=True)
+        if str(nid).startswith("AT")
+    ]
+    if not parts:
+        raise SystemExit("Austrian NUTS polygons are missing")
+    return unary_union(parts)
+
+
+def _tile_vs_austria(spec: TileSpec, to_wgs, austria) -> str:
+    """``out`` misses Austria, ``in`` lies inside, ``edge`` crosses the border."""
+    from shapely.geometry import Polygon
+
+    lon, lat = to_wgs.transform(
+        [spec.xmin, spec.xmax, spec.xmax, spec.xmin],
+        [spec.ymin, spec.ymin, spec.ymax, spec.ymax],
+    )
+    poly = Polygon(list(zip(lon, lat)))
+    if poly.is_empty or not austria.intersects(poly):
+        return "out"
+    if austria.covers(poly):
+        return "in"
+    return "edge"
+
+
+def _download_bev_tile(site: dict, cfg: dict, spec, *, north_first: bool) -> np.ndarray:
+    import logging
+
+    crs = str(site.get("crs", "EPSG:31254"))
     params = {
         "SERVICE": "WMS",
         "VERSION": "1.3.0",
         "REQUEST": "GetMap",
         "LAYERS": cfg["layer"],
         "STYLES": "",
-        "CRS": str(site.get("crs", "EPSG:31254")),
-        "BBOX": bbox,
+        "CRS": crs,
+        "BBOX": _wms13_bbox(spec, north_first=north_first),
         "WIDTH": str(spec.width_px),
         "HEIGHT": str(spec.height_px),
         "FORMAT": "image/geotiff",
         "TRANSPARENT": "FALSE",
     }
     data = http_get_geotiff(cfg["url"], params, timeout_s=cfg["timeout_s"])
-    return read_tiff_bytes(data)
+    # GeoServer writes GDAL_NODATA as '6.0'. tifffile warns and still reads the classes.
+    log = logging.getLogger("tifffile")
+    level = log.level
+    log.setLevel(logging.ERROR)
+    try:
+        return read_tiff_bytes(data)
+    finally:
+        log.setLevel(level)
 
 
 def fetch_bev_landcover_bbox(
@@ -200,7 +273,7 @@ def fetch_bev_landcover_bbox(
     allow_incomplete: bool = False,
     accept_all_nodata: bool = False,
 ) -> Path:
-    """Tiled WMS GetMap for an arbitrary EPSG:31254 envelope."""
+    """Tiled WMS GetMap for one envelope in the site CRS."""
     cfg = _cfg(site)
     cfg["size"] = int(size)
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -210,7 +283,13 @@ def fetch_bev_landcover_bbox(
 
     if dest.is_file() and dest.stat().st_size > 1000 and meta_path.is_file() and not force:
         codes = _load_classified(dest)
-        if nodata_fraction(codes) <= cfg["max_nodata_frac"]:
+        try:
+            cached_meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            cached_meta = {}
+        if nodata_fraction(codes) <= cfg["max_nodata_frac"] or _nodata_is_outside_austria(
+            cached_meta
+        ):
             print(f"Using cached BEV landcover: {dest} ({dest.stat().st_size} bytes)")
             return dest
         print(
@@ -219,17 +298,42 @@ def fetch_bev_landcover_bbox(
         )
 
     tile_dir = dest.with_name(dest.stem + "_tiles")
+    crs = str(site.get("crs", "EPSG:31254"))
+    north_first = _wms13_north_first(crs)
+    tiles = build_tile_grid((xmin, ymin, xmax, ymax), w, h, cfg["tile_px"])
+    from pyproj import Transformer
+
+    to_wgs = Transformer.from_crs(crs, "EPSG:4326", always_xy=True)
+    austria = _austria_wgs84()
+    outside: set[tuple[int, int]] = set()
+    border: set[tuple[int, int]] = set()
+    for spec in tiles:
+        kind = _tile_vs_austria(spec, to_wgs, austria)
+        key = (spec.iy, spec.ix)
+        if kind == "out":
+            outside.add(key)
+        elif kind == "edge":
+            border.add(key)
+    print(
+        f"BEV landcover: {len(outside)} tiles outside Austria skipped, "
+        f"{len(border)} on the border",
+        flush=True,
+    )
     mosaic, tile_stats = fetch_tiled_mosaic(
         bbox=(xmin, ymin, xmax, ymax),
         width_px=w,
         height_px=h,
         tile_px=cfg["tile_px"],
-        download_tile=lambda spec: _download_bev_tile(site, cfg, spec),
+        download_tile=lambda spec: _download_bev_tile(
+            site, cfg, spec, north_first=north_first
+        ),
         is_incomplete=make_frac_incomplete(
             lambda a: classified_nodata_mask(a, NODATA_CODE),
             cfg["max_tile_nodata_frac"],
             accept_all_nodata=accept_all_nodata,
         ),
+        skip_tile=lambda spec: (spec.iy, spec.ix) in outside,
+        keep_incomplete=lambda spec: (spec.iy, spec.ix) in border,
         fill_value=NODATA_CODE,
         dtype=np.uint8,
         retries=cfg["tile_retries"],
@@ -264,6 +368,7 @@ def fetch_bev_landcover_bbox(
         where=str(dest),
         max_nodata_frac=cfg["max_nodata_frac"],
         allow_incomplete=allow_incomplete,
+        outside_austria=_nodata_is_outside_austria(meta),
     )
     return dest
 
@@ -441,11 +546,17 @@ def _export_processed(
         print(f"Resampled landcover -> {size}x{size}")
 
     cfg = _cfg(site)
+    meta_path = raw_path.with_suffix(".meta.json")
+    try:
+        raw_meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.is_file() else {}
+    except json.JSONDecodeError:
+        raw_meta = {}
     nodata_frac = report_incomplete_landcover(
         codes,
         where=str(raw_path),
         max_nodata_frac=cfg["max_nodata_frac"],
         allow_incomplete=allow_incomplete,
+        outside_austria=_nodata_is_outside_austria(raw_meta),
     )
 
     tiff.imwrite(proc / "landcover_bev.tif", codes, compression="deflate")

@@ -208,9 +208,10 @@ def snap_road(
     *,
     max_shift_m: float,
     step_m: float,
+    site: dict | None = None,
 ) -> tuple[dict, list[dict]]:
     nodes = road.get("nodes") or []
-    if len(nodes) < 2 or axis_is_structure_span(road):
+    if len(nodes) < 2 or axis_is_structure_span(road, site):
         return road, []
     new_nodes = []
     events = []
@@ -392,7 +393,7 @@ def main() -> None:
     offsets: list[float] = []
 
     for rid, road in before.items():
-        if axis_is_structure_span(road):
+        if axis_is_structure_span(road, site):
             after[rid] = road
             n_struct += 1
             continue
@@ -401,6 +402,7 @@ def main() -> None:
             asphalt,
             max_shift_m=float(args.max_shift_m),
             step_m=float(args.step_m),
+            site=site,
         )
         after[rid] = snapped
         events_by_road[rid] = evs

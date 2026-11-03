@@ -129,7 +129,9 @@ def main() -> None:
 
     roads = gpd.read_file(find_gip_geojson(site))
     if roads.crs is None:
-        roads = roads.set_crs("EPSG:31254")
+        from authorities import resolved_working_crs
+
+        roads = roads.set_crs(resolved_working_crs(site))
     crs = roads.crs
     bbox = tuple(roads.to_crs(4326).total_bounds)
     struct = pyogrio.read_dataframe(ref, layer=LAYER, bbox=bbox).to_crs(crs)

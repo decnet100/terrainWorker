@@ -1,0 +1,22 @@
+---
+description: BeamNG-Systemkonsole ist GE-Lua; Prefs nur über VariableRegistry lesen und setzen
+alwaysApply: true
+---
+
+# BeamNG-Konsole = GE-Lua
+
+Die Systemkonsole (Ö, Aktion „Toggle System Console“) steht auf **GE - Lua**. Links neben dem Eingabefeld muss das so stehen. `Strg+U` ist die UI-Konsole, dort laufen diese Befehle nicht. `^` öffnet nichts (deutsche Tot-Taste).
+
+TorqueScript ist in diesem Modus wirkungslos. `$pref::… = …` ist ein Lua-Syntaxfehler, `echo(…)` gibt nichts aus. Die getippte Zeile landet trotzdem in `consoleHistory.json`.
+
+Lesen und Schreiben über `VariableRegistry`. Eine Zeile pro Eingabe, ohne `powershell`-Fence:
+
+```
+print(VariableRegistry.get("$pref::TS::detailAdjust"))
+```
+
+```
+VariableRegistry.set("$pref::TS::detailAdjust", 0.5)
+```
+
+Die Ausgabe erscheint als Logzeile in derselben Konsole. Mesh-Qualität Ultra setzt `detailAdjust` auf 2. Ein höherer Wert schiebt Mesh-Stufen weiter weg. Zum Prüfen einer Stufe den Wert senken (zum Beispiel 0.5), danach auf 2 zurücksetzen.

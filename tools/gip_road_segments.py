@@ -846,20 +846,26 @@ def _gip_segment_width_m(
     default_m = float(default_m)
     objekt = str(props.get("OBJEKT") or "").upper().strip()
     code = str(props.get("STR_CODE") or "").strip()
-    if objekt in ("S-FRW", "S-STRAIL"):
+    if objekt == "S-FRW":
+        return 3.5
+    if objekt == "S-STRAIL":
         return 2.5
-    if objekt in ("S-F", "S-GW"):
+    if objekt == "S-F":
         return 4.0
+    if objekt == "S-GW":
+        return 3.75
     if objekt in ("S-G", "S-GB"):
         return 5.0
     if objekt in _SUBORDINATE_LANE_OBJEKT:
         return float(lane_width_m)
-    if not code:
+    if not code and objekt not in {"S-B", "S-BT", "S-L", "S-LT"}:
         return 5.5
     w = _width_for_str_code(code, by_code)
     if w is not None:
         return w
-    if gip_is_bundesstrasse(code):
+    if objekt in ("S-L", "S-LT"):
+        return 6.5
+    if gip_is_bundesstrasse(code) or objekt in ("S-B", "S-BT"):
         lanes = _declared_lanes(code, props, by_lanes)
         if lanes is not None and lanes >= 3:
             return float(lanes) * float(lane_width_m)

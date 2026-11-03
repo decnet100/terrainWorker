@@ -352,10 +352,16 @@ def main() -> None:
     PILImage.fromarray(shaded, mode="L").save(PROC / "preview_hillshade.png")
     print("Wrote preview_hillshade.png")
 
-    # Terrain paint masks (OSM landuse + slope + road buffer)
+    # Terrain paint masks (OSM landuse + slope + road buffer).
+    # Child scripts parse sys.argv. A flag meant for this process must not reach them.
     import runpy
-    runpy.run_path(str(ROOT / "tools" / "build_terrain_masks.py"), run_name="__main__")
-    runpy.run_path(str(ROOT / "tools" / "build_guardrails.py"), run_name="__main__")
+    argv = sys.argv
+    sys.argv = [argv[0]]
+    try:
+        runpy.run_path(str(ROOT / "tools" / "build_terrain_masks.py"), run_name="__main__")
+        runpy.run_path(str(ROOT / "tools" / "build_guardrails.py"), run_name="__main__")
+    finally:
+        sys.argv = argv
 
 
 if __name__ == "__main__":

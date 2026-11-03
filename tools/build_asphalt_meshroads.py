@@ -37,7 +37,7 @@ def _is_main_road(road: dict, site: dict) -> bool:
     try:
         from fetch_suedtirol_road_links import axis_is_structure_span  # noqa: WPS433
 
-        if axis_is_structure_span(road):
+        if axis_is_structure_span(road, site):
             return False
     except Exception:  # noqa: BLE001
         pass
@@ -76,7 +76,7 @@ def _road_ids(site: dict, proc: Path) -> set[str]:
         from fetch_suedtirol_road_links import axis_is_structure_span  # noqa: WPS433
 
         before = len(roads)
-        roads = [r for r in roads if not axis_is_structure_span(r)]
+        roads = [r for r in roads if not axis_is_structure_span(r, site)]
         n = before - len(roads)
         if n:
             print(f"span omit before stitch: {n} tunnel/bridge axis segment(s)", flush=True)

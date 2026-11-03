@@ -263,46 +263,14 @@ def keep_near_mask(elev: np.ndarray, meta: dict, site: dict, cfg: dict) -> np.nd
     return np.isfinite(elev) & _bbox_rect(xx, yy, site, outer) & ~_bbox_rect(xx, yy, site, 0.0)
 
 
-def _project_to_bbox_edge(x: float, y: float, site: dict) -> tuple[float, float]:
-    bx0, by0, bx1, by1 = map(float, site["bbox"])
-    inside = (bx0 < x < bx1) and (by0 < y < by1)
-    if inside:
-        d = (x - bx0, bx1 - x, y - by0, by1 - y)
-        i = int(np.argmin(d))
-        if i == 0:
-            return bx0, y
-        if i == 1:
-            return bx1, y
-        if i == 2:
-            return x, by0
-        return x, by1
-    return float(min(max(x, bx0), bx1)), float(min(max(y, by0), by1))
-
-
-def _outside_bbox_m(x: float, y: float, site: dict) -> float:
-    bx0, by0, bx1, by1 = map(float, site["bbox"])
-    ox = max(bx0 - x, x - bx1, 0.0)
-    oy = max(by0 - y, y - by1, 0.0)
-    if ox > 0.0 or oy > 0.0:
-        return float(math.hypot(ox, oy))
-    return 0.0
-
-
-def _hm_abs_at(hm_rel: np.ndarray, sc: SiteCoords, x: float, y: float, z0: float) -> float:
-    n = hm_rel.shape[0]
-    bx, by = sc.crs_to_terrain(x, y)
-    col = float(np.clip(bx / sc.square_m, 0.0, n - 1.0))
-    row = float(np.clip((n - 1.0) - by / sc.square_m, 0.0, n - 1.0))
-    rel = map_coordinates(
-        hm_rel, [[row], [col]], order=1, mode="nearest", prefilter=False
-    )[0]
-    return float(rel) + z0
-
-
 def keep_mid_mask(elev: np.ndarray, meta: dict, site: dict, cfg: dict) -> np.ndarray:
-    """Always-keep ring from the near outer edge out to mid_m (no viewshed)."""
+    """Always-keep ring from the near outer edge out to mid_m (no viewshed).
+
+    The inner edge is the near ring's outer edge. The two meshes share that
+    polyline; they do not overlap.
+    """
     xx, yy = _world_grids(elev, meta)
-    inner = max(0.0, float(cfg["near_m"]) - float(cfg["near_overlap_m"]))
+    inner = float(cfg["near_m"])
     outer = float(cfg["mid_m"])
     return np.isfinite(elev) & _bbox_rect(xx, yy, site, outer) & ~_bbox_rect(xx, yy, site, inner)
 
@@ -370,10 +338,8 @@ def keep_far_mask(
     radius = float(cfg["radius_m"])
     xx, yy = _world_grids(elev, meta)
     keep &= (xx - cx) ** 2 + (yy - cy) ** 2 <= radius * radius
-    far_hole = max(
-        float(cfg["hole_pad_m"]),
-        float(cfg["mid_m"]) - float(cfg["mid_overlap_m"]),
-    )
+    # Abut the mid ring. The shared polyline is the mid outer edge.
+    far_hole = float(cfg["mid_m"])
     keep &= ~_bbox_rect(xx, yy, site, far_hole)
     col_c, row_c = _xy_to_pixel(meta, cx, cy)
     n_pre = int(keep.sum())
@@ -1023,6 +989,85 @@ def _crs_to_beamng(sc: SiteCoords, x: float, y: float) -> tuple[float, float]:
     return sc.crs_to_terrain(x, y)
 
 
+def _rect_pad(site: dict, pad_m: float) -> tuple[float, float, float, float]:
+    x0, y0, x1, y1 = map(float, site["bbox"])
+    p = float(pad_m)
+    return x0 - p, y0 - p, x1 + p, y1 + p
+
+
+def _rect_seam_xy(x0: float, y0: float, x1: float, y1: float, step_m: float) -> np.ndarray:
+    """Closed rectangle polyline. Corners once. Same step → same XY on both rings."""
+
+    def edge(p0: tuple[float, float], p1: tuple[float, float]) -> np.ndarray:
+        length = float(math.hypot(p1[0] - p0[0], p1[1] - p0[1]))
+        n = max(1, int(round(length / max(step_m, 1e-3))))
+        t = np.linspace(0.0, 1.0, n, endpoint=False)
+        return np.column_stack(
+            [p0[0] + t * (p1[0] - p0[0]), p0[1] + t * (p1[1] - p0[1])]
+        )
+
+    parts = (
+        edge((x0, y0), (x0, y1)),
+        edge((x0, y1), (x1, y1)),
+        edge((x1, y1), (x1, y0)),
+        edge((x1, y0), (x0, y0)),
+    )
+    return np.vstack(parts)
+
+
+def _sample_surface_z(
+    elev: np.ndarray,
+    meta: dict,
+    xy: np.ndarray,
+    order: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Absolute Z at XY. ``ok`` is false where the raster has no data."""
+    px, py = float(meta["px"]), float(meta["py"])
+    ox, oy = float(meta["origin_x"]), float(meta["origin_y"])
+    col = (xy[:, 0] - ox) / px - 0.5
+    row = (xy[:, 1] - oy) / py - 0.5
+    finite = np.isfinite(elev)
+    fill = float(np.nanmedian(elev)) if bool(finite.any()) else 0.0
+    zsrc = np.where(finite, elev, fill).astype(np.float64)
+    coords = np.vstack([row, col])
+    z = map_coordinates(
+        zsrc, coords, order=order, mode="nearest", prefilter=order >= 3
+    )
+    fin = map_coordinates(finite.astype(np.float32), coords, order=0, mode="nearest")
+    ok = fin > 0.5
+    return np.where(ok, z, np.nan), ok
+
+
+def _sample_heightmap_z(hm_rel: np.ndarray, sc: SiteCoords, xy: np.ndarray, z0: float) -> np.ndarray:
+    n = hm_rel.shape[0]
+    bx = (xy[:, 0] - sc.xmin) / sc.bw * sc.terrain_span
+    by = (xy[:, 1] - sc.ymin) / sc.bh * sc.terrain_span
+    col = np.clip(bx / sc.square_m, 0.0, n - 1.0)
+    row = np.clip((n - 1.0) - by / sc.square_m, 0.0, n - 1.0)
+    rel = map_coordinates(
+        hm_rel.astype(np.float64),
+        np.vstack([row, col]),
+        order=1,
+        mode="nearest",
+        prefilter=False,
+    )
+    return rel + z0
+
+
+def _seam_from_surface(
+    elev: np.ndarray,
+    meta: dict,
+    rect: tuple[float, float, float, float],
+    step_m: float,
+    order: int,
+) -> np.ndarray | None:
+    xy = _rect_seam_xy(*rect, step_m)
+    z, ok = _sample_surface_z(elev, meta, xy, order)
+    if not bool(ok.any()):
+        return None
+    return np.column_stack([xy[ok], z[ok]])
+
+
 def build_meshes(
     elev: np.ndarray,
     keep: np.ndarray,
@@ -1034,12 +1079,15 @@ def build_meshes(
     split_quadrants: bool = True,
     split_tiles: int | None = None,
     uv_bbox: tuple[float, float, float, float] | None = None,
-    snap_inner_bbox: bool = False,
-    hm_rel: np.ndarray | None = None,
-    lip_drop_m: float = 0.0,
     z_order: int = 1,
+    seams: list[dict] | None = None,
 ) -> dict[str, tuple[list[tuple[float, float, float]], list[tuple[int, int, int]], list[tuple[float, float]]]]:
-    """Quads assigned by face centre so N/S/E/W splits do not open radial gaps."""
+    """Quads by face centre. Optional rectangle seams share one XYZ polyline.
+
+    A seam is ``{"xyz": (N,3) absolute, "rect": (x0,y0,x1,y1), "cover": "outside"|"inside"}``.
+    ``outside``: this mesh lies outside the rectangle (hole). ``inside``: it lies inside
+    (outer edge of a ring). Skirt triangles run from that polyline to the first grid line.
+    """
     z, k, xs, ys = _world_sample_grid(elev, keep, meta, mesh_step_m, z_order=z_order)
     h, w = z.shape
     if uv_bbox is None:
@@ -1067,9 +1115,13 @@ def build_meshes(
             "uvs": [],
             "faces": [],
             "index": np.full((h, w), -1, dtype=np.int32),
+            "extra": {},
         }
         for q in names
     }
+    suppress = np.zeros((h, w), dtype=bool)
+    band = float(mesh_step_m) * 0.55
+    seam_list = list(seams or [])
 
     def tile_of(x: float, y: float) -> str:
         if n_tiles == 1:
@@ -1082,32 +1134,106 @@ def build_meshes(
         ty = int(np.clip((y - uv_ymin) / span_y * n_tiles, 0, n_tiles - 1))
         return _grid_tile_name(n_tiles, ty, tx)
 
+    def push_vert(q: str, x: float, y: float, z_abs: float) -> int:
+        b = buckets[q]
+        key = (round(x, 3), round(y, 3))
+        hit = b["extra"].get(key)
+        if hit is not None:
+            return int(hit)
+        bx, by = _crs_to_beamng(sc, x, y)
+        u = (x - uv_xmin) / span_x
+        t = (y - uv_ymin) / span_y
+        idx = len(b["verts"])
+        b["extra"][key] = idx
+        b["verts"].append((bx, by, z_abs - z0))
+        b["uvs"].append((u, t))
+        return idx
+
     def ensure_vert(q: str, r: int, c: int) -> int:
         b = buckets[q]
         idx = int(b["index"][r, c])
         if idx >= 0:
             return idx
         x, y = float(xs[c]), float(ys[r])
-        z_abs = float(z[r, c])
-        if snap_inner_bbox and _outside_bbox_m(x, y, sc.site) <= mesh_step_m * 1.25:
-            x, y = _project_to_bbox_edge(x, y, sc.site)
-            if hm_rel is not None:
-                hm_abs = _hm_abs_at(hm_rel, sc, x, y, z0)
-                z_abs = min(z_abs, hm_abs) - float(lip_drop_m)
         bx, by = _crs_to_beamng(sc, x, y)
-        bz = z_abs - z0
         u = (x - uv_xmin) / span_x
         t = (y - uv_ymin) / span_y
         idx = len(b["verts"])
         b["index"][r, c] = idx
-        b["verts"].append((bx, by, bz))
+        b["verts"].append((bx, by, float(z[r, c]) - z0))
         b["uvs"].append((u, t))
         return idx
+
+    def add_tri(p: dict, q: dict, r: dict) -> None:
+        cz = (q["x"] - p["x"]) * (r["y"] - p["y"]) - (q["y"] - p["y"]) * (r["x"] - p["x"])
+        if abs(cz) < 1e-8:
+            return
+        if cz < 0.0:
+            q, r = r, q
+        tile = tile_of(
+            (p["x"] + q["x"] + r["x"]) / 3.0,
+            (p["y"] + q["y"] + r["y"]) / 3.0,
+        )
+
+        def vid(pt: dict) -> int:
+            grid = pt.get("grid")
+            if grid is not None:
+                return ensure_vert(tile, grid[0], grid[1])
+            return push_vert(tile, pt["x"], pt["y"], pt["z"])
+
+        buckets[tile]["faces"].append((vid(p), vid(q), vid(r)))
+
+    def attach_index(axis_vals: np.ndarray, edge: float, mesh_dir: int) -> int | None:
+        dist = (axis_vals - edge) * float(mesh_dir)
+        ok = dist > band + 1e-6
+        if not bool(np.any(ok)):
+            return None
+        dist_ok = np.where(ok, dist, np.inf)
+        i = int(np.argmin(dist_ok))
+        if float(dist_ok[i]) > float(mesh_step_m) * 2.5:
+            return None
+        return i
+
+    def mark_between(edge: float, attach: float, axis: str, t0: float, t1: float) -> None:
+        lo, hi = (edge, attach) if edge < attach else (attach, edge)
+        if axis == "x":
+            cols = np.where((xs > lo + 1e-3) & (xs < hi - 1e-3))[0]
+            rows = np.where((ys >= t0 - 1e-3) & (ys <= t1 + 1e-3))[0]
+        else:
+            rows = np.where((ys > lo + 1e-3) & (ys < hi - 1e-3))[0]
+            cols = np.where((xs >= t0 - 1e-3) & (xs <= t1 + 1e-3))[0]
+        if cols.size and rows.size:
+            suppress[np.ix_(rows, cols)] = True
+
+    side_attach: dict[tuple[int, str], tuple[int, float]] = {}
+
+    def prepare_seam(si: int, seam: dict) -> None:
+        x0, y0, x1, y1 = (float(v) for v in seam["rect"])
+        cover = str(seam["cover"])
+        specs = (
+            (("W", "x", -1, y0, y1), ("E", "x", 1, y0, y1), ("S", "y", -1, x0, x1), ("N", "y", 1, x0, x1))
+            if cover == "outside"
+            else (("W", "x", 1, y0, y1), ("E", "x", -1, y0, y1), ("S", "y", 1, x0, x1), ("N", "y", -1, x0, x1))
+        )
+        for name, axis, mesh_dir, t0, t1 in specs:
+            edge = x0 if name == "W" else x1 if name == "E" else y0 if name == "S" else y1
+            vals = xs if axis == "x" else ys
+            idx = attach_index(vals, edge, mesh_dir)
+            if idx is None:
+                continue
+            side_attach[(si, name)] = (idx, edge)
+            mark_between(edge, float(vals[idx]), axis, t0, t1)
+
+    for si, seam in enumerate(seam_list):
+        prepare_seam(si, seam)
 
     for r in range(h - 1):
         for c in range(w - 1):
             corners = ((r, c), (r, c + 1), (r + 1, c + 1), (r + 1, c))  # NW NE SE SW
-            if not all(k[rr, cc] and np.isfinite(z[rr, cc]) for rr, cc in corners):
+            if not all(
+                k[rr, cc] and np.isfinite(z[rr, cc]) and not suppress[rr, cc]
+                for rr, cc in corners
+            ):
                 continue
             mx = 0.25 * sum(float(xs[cc]) for _rr, cc in corners)
             my = 0.25 * sum(float(ys[rr]) for rr, _cc in corners)
@@ -1119,12 +1245,298 @@ def build_meshes(
             buckets[q]["faces"].append((nw, sw, se))
             buckets[q]["faces"].append((nw, se, ne))
 
+    def dedup_chain(chain: list[dict]) -> list[dict]:
+        if not chain:
+            return []
+        out_c = [chain[0]]
+        for pt in chain[1:]:
+            if abs(pt["t"] - out_c[-1]["t"]) < 1e-3:
+                if pt.get("grid") is not None:
+                    out_c[-1] = pt
+                continue
+            out_c.append(pt)
+        return out_c
+
+    def stitch(chain_a: list[dict], chain_b: list[dict]) -> None:
+        ia = ib = 0
+        na, nb = len(chain_a), len(chain_b)
+        if na < 2 or nb < 2:
+            return
+        while ia < na - 1 or ib < nb - 1:
+            take_a = ib >= nb - 1 or (
+                ia < na - 1 and chain_a[ia + 1]["t"] <= chain_b[ib + 1]["t"] + 1e-6
+            )
+            if take_a:
+                add_tri(chain_a[ia], chain_b[ib], chain_a[ia + 1])
+                ia += 1
+            else:
+                add_tri(chain_a[ia], chain_b[ib], chain_b[ib + 1])
+                ib += 1
+
+    def skirt_side(si: int, seam: dict, name: str) -> None:
+        hit = side_attach.get((si, name))
+        if hit is None:
+            return
+        idx, edge = hit
+        x0, y0, x1, y1 = (float(v) for v in seam["rect"])
+        xyz = seam["xyz"]
+        vertical = name in ("W", "E")
+        t0, t1 = (y0, y1) if vertical else (x0, x1)
+        # Stop at the neighbouring attachment lines. Corner quads fill the rest.
+        # Inner hole: those lines lie outside this side, so the clamp does nothing.
+        if vertical:
+            south = side_attach.get((si, "S"))
+            north = side_attach.get((si, "N"))
+            if south is not None:
+                t0 = max(t0, float(ys[south[0]]))
+            if north is not None:
+                t1 = min(t1, float(ys[north[0]]))
+        else:
+            west = side_attach.get((si, "W"))
+            east = side_attach.get((si, "E"))
+            if west is not None:
+                t0 = max(t0, float(xs[west[0]]))
+            if east is not None:
+                t1 = min(t1, float(xs[east[0]]))
+        if t1 - t0 < 1e-3:
+            return
+        if vertical:
+            on = np.isclose(xyz[:, 0], edge, atol=1e-2) & (xyz[:, 1] >= t0 - 1e-3) & (xyz[:, 1] <= t1 + 1e-3)
+        else:
+            on = np.isclose(xyz[:, 1], edge, atol=1e-2) & (xyz[:, 0] >= t0 - 1e-3) & (xyz[:, 0] <= t1 + 1e-3)
+        pts = xyz[on]
+        if pts.shape[0] < 2:
+            return
+        order = np.argsort(pts[:, 1 if vertical else 0])
+        pts = pts[order]
+        seam_chain = [
+            {
+                "t": float(p[1 if vertical else 0]),
+                "x": float(p[0]),
+                "y": float(p[1]),
+                "z": float(p[2]),
+                "grid": None,
+            }
+            for p in pts
+        ]
+        along = ys if vertical else xs
+        cross = float(xs[idx] if vertical else ys[idx])
+        if vertical:
+            cand = [
+                r
+                for r in range(h)
+                if t0 - 1e-3 <= float(ys[r]) <= t1 + 1e-3 and k[r, idx] and np.isfinite(z[r, idx])
+            ]
+        else:
+            cand = [
+                c
+                for c in range(w)
+                if t0 - 1e-3 <= float(xs[c]) <= t1 + 1e-3 and k[idx, c] and np.isfinite(z[idx, c])
+            ]
+        cand.sort(key=lambda i: float(along[i]))
+        if len(cand) < 1:
+            return
+        runs: list[list[int]] = [[cand[0]]]
+        for i in cand[1:]:
+            if abs(float(along[i]) - float(along[runs[-1][-1]])) > float(mesh_step_m) * 1.6:
+                runs.append([i])
+            else:
+                runs[-1].append(i)
+        # A viewshed hole splits the attachment line. Seam points in that gap go to
+        # the nearer run, so the shared polyline is still in this mesh.
+        starts = [float(along[run[0]]) for run in runs]
+        ends = [float(along[run[-1]]) for run in runs]
+        windows: list[tuple[float, float]] = []
+        for ri in range(len(runs)):
+            lo_w = t0 if ri == 0 else 0.5 * (ends[ri - 1] + starts[ri])
+            hi_w = t1 if ri == len(runs) - 1 else 0.5 * (ends[ri] + starts[ri + 1])
+            windows.append((lo_w, hi_w))
+        for ri, run in enumerate(runs):
+            grid_chain = []
+            for i in run:
+                if vertical:
+                    grid_chain.append(
+                        {
+                            "t": float(ys[i]),
+                            "x": cross,
+                            "y": float(ys[i]),
+                            "z": float(z[i, idx]),
+                            "grid": (i, idx),
+                        }
+                    )
+                else:
+                    grid_chain.append(
+                        {
+                            "t": float(xs[i]),
+                            "x": float(xs[i]),
+                            "y": cross,
+                            "z": float(z[idx, i]),
+                            "grid": (idx, i),
+                        }
+                    )
+            grid_chain = dedup_chain(grid_chain)
+            lo, hi = windows[ri]
+            part = dedup_chain([p for p in seam_chain if lo - 1e-6 <= p["t"] <= hi + 1e-6])
+            if len(part) < 2 or len(grid_chain) < 1:
+                continue
+            if len(grid_chain) == 1:
+                for i in range(len(part) - 1):
+                    add_tri(grid_chain[0], part[i], part[i + 1])
+                continue
+            stitch(part, grid_chain)
+
+    n_before = sum(len(b["faces"]) for b in buckets.values())
+    for si, seam in enumerate(seam_list):
+        for name in ("W", "E", "S", "N"):
+            skirt_side(si, seam, name)
+        _corner_fans(seam, si, side_attach, xs, ys, z, k, add_tri)
+    n_skirt = sum(len(b["faces"]) for b in buckets.values()) - n_before
+    if seam_list:
+        print(f"  seam skirts: {n_skirt} tris")
+
     out: dict[str, tuple] = {}
     for q, b in buckets.items():
         if b["faces"]:
             out[q] = (b["verts"], b["faces"], b["uvs"])
             print(f"  mesh {q}: verts={len(b['verts'])} tris={len(b['faces'])}")
     return out  # type: ignore[return-value]
+
+
+def _corner_fans(seam, si, side_attach, xs, ys, z, k, add_tri) -> None:
+    """Fan the seam points between a corner and the two skirts onto the grid corner.
+
+    Side skirts stop at the attachment lines, so the points in that last step
+    would otherwise be missing. One fan covers the corner once.
+    """
+    x0, y0, x1, y1 = (float(v) for v in seam["rect"])
+    xyz = np.asarray(seam["xyz"], dtype=np.float64)
+    # (vertical side, horizontal side, corner xy, vertical walks down toward the corner)
+    corners = (
+        ("W", "S", x0, y0),
+        ("W", "N", x0, y1),
+        ("E", "S", x1, y0),
+        ("E", "N", x1, y1),
+    )
+
+    def limb(constant: float, along_axis: str, lo: float, hi: float, descending: bool) -> list[dict]:
+        if along_axis == "y":
+            m = np.isclose(xyz[:, 0], constant, atol=1e-2) & (xyz[:, 1] >= lo - 1e-6) & (xyz[:, 1] <= hi + 1e-6)
+            pts = xyz[m]
+            pts = pts[np.argsort(pts[:, 1])]
+        else:
+            m = np.isclose(xyz[:, 1], constant, atol=1e-2) & (xyz[:, 0] >= lo - 1e-6) & (xyz[:, 0] <= hi + 1e-6)
+            pts = xyz[m]
+            pts = pts[np.argsort(pts[:, 0])]
+        if descending:
+            pts = pts[::-1]
+        return [
+            {"t": 0.0, "x": float(p[0]), "y": float(p[1]), "z": float(p[2]), "grid": None}
+            for p in pts
+        ]
+
+    for v_name, h_name, cx, cy in corners:
+        hv = side_attach.get((si, v_name))
+        hh = side_attach.get((si, h_name))
+        if hv is None or hh is None:
+            continue
+        col, row = hv[0], hh[0]
+        if not (k[row, col] and np.isfinite(z[row, col])):
+            continue
+        gx, gy = float(xs[col]), float(ys[row])
+        on_v = xyz[np.isclose(xyz[:, 0], cx, atol=1e-2)]
+        on_h = xyz[np.isclose(xyz[:, 1], cy, atol=1e-2)]
+        y_edge = np.sort(on_v[:, 1]) if on_v.size else np.array([cy])
+        x_edge = np.sort(on_h[:, 0]) if on_h.size else np.array([cx])
+        if gy >= cy:
+            hit = y_edge[y_edge >= gy - 1e-6]
+            y_j = float(hit[0]) if hit.size else cy
+        else:
+            hit = y_edge[y_edge <= gy + 1e-6]
+            y_j = float(hit[-1]) if hit.size else cy
+        if gx >= cx:
+            hit = x_edge[x_edge >= gx - 1e-6]
+            x_j = float(hit[0]) if hit.size else cx
+        else:
+            hit = x_edge[x_edge <= gx + 1e-6]
+            x_j = float(hit[-1]) if hit.size else cx
+        y_lo, y_hi = (min(cy, y_j), max(cy, y_j))
+        x_lo, x_hi = (min(cx, x_j), max(cx, x_j))
+        # Vertical limb: skirt junction → corner. Horizontal limb: corner → other junction.
+        vertical = limb(cx, "y", y_lo, y_hi, descending=gy > cy)
+        horizontal = limb(cy, "x", x_lo, x_hi, descending=gx < cx)
+        if vertical and horizontal:
+            if abs(vertical[-1]["x"] - horizontal[0]["x"]) < 1e-3 and abs(
+                vertical[-1]["y"] - horizontal[0]["y"]
+            ) < 1e-3:
+                horizontal = horizontal[1:]
+        chain = vertical + horizontal
+        grid_pt = {"t": 0.0, "x": gx, "y": gy, "z": float(z[row, col]), "grid": (row, col)}
+        if len(chain) >= 2:
+            for i in range(len(chain) - 1):
+                add_tri(grid_pt, chain[i], chain[i + 1])
+            continue
+        # Inner hole: no extra seam points in the corner. Fan from the seam corner
+        # along every grid sample between the skirt and the corner grid point.
+        hit = np.where(np.isclose(xyz[:, 0], cx, atol=1e-2) & np.isclose(xyz[:, 1], cy, atol=1e-2))[0]
+        if hit.size == 0:
+            continue
+        s = xyz[int(hit[0])]
+        seam_pt = {"t": 0.0, "x": float(s[0]), "y": float(s[1]), "z": float(s[2]), "grid": None}
+
+        def column_chain() -> list[dict]:
+            kept = [r for r in range(len(ys)) if k[r, col] and np.isfinite(z[r, col])]
+            ys_k = [float(ys[r]) for r in kept]
+            if gy >= cy:
+                side = [y for y in ys_k if y <= cy + 1e-3]
+                y_skirt = max(side) if side else cy
+            else:
+                side = [y for y in ys_k if y >= cy - 1e-3]
+                y_skirt = min(side) if side else cy
+            lo, hi = min(y_skirt, gy) - 1e-3, max(y_skirt, gy) + 1e-3
+            rows = [r for r in kept if lo <= float(ys[r]) <= hi]
+            rows = sorted(set(rows + [row]), key=lambda r: float(ys[r]))
+            return [
+                {"t": float(ys[r]), "x": float(xs[col]), "y": float(ys[r]), "z": float(z[r, col]), "grid": (r, col)}
+                for r in rows
+            ]
+
+        def row_chain() -> list[dict]:
+            kept = [c for c in range(len(xs)) if k[row, c] and np.isfinite(z[row, c])]
+            xs_k = [float(xs[c]) for c in kept]
+            if gx >= cx:
+                side = [x for x in xs_k if x <= cx + 1e-3]
+                x_skirt = max(side) if side else cx
+            else:
+                side = [x for x in xs_k if x >= cx - 1e-3]
+                x_skirt = min(side) if side else cx
+            lo, hi = min(x_skirt, gx) - 1e-3, max(x_skirt, gx) + 1e-3
+            cols = [c for c in kept if lo <= float(xs[c]) <= hi]
+            cols = sorted(set(cols + [col]), key=lambda c: float(xs[c]))
+            return [
+                {"t": float(xs[c]), "x": float(xs[c]), "y": float(ys[row]), "z": float(z[row, c]), "grid": (row, c)}
+                for c in cols
+            ]
+
+        v_chain = column_chain()
+        # Drop samples on the far side of G (already covered by the skirt's neighbour quads
+        # only up to the skirt). Keep from the sample nearest the corner through G.
+        if cy <= gy:
+            v_chain = [p for p in v_chain if p["y"] <= gy + 1e-3]
+        else:
+            v_chain = [p for p in v_chain if p["y"] >= gy - 1e-3]
+        h_chain = row_chain()
+        if cx <= gx:
+            h_chain = [p for p in h_chain if p["x"] <= gx + 1e-3]
+        else:
+            h_chain = [p for p in h_chain if p["x"] >= gx - 1e-3]
+        for seq in (v_chain, h_chain):
+            if len(seq) < 2:
+                continue
+            # Walk toward G so the first edge meets the skirt.
+            if seq[-1]["grid"] != (row, col):
+                seq = list(reversed(seq))
+            for i in range(len(seq) - 1):
+                add_tri(seam_pt, seq[i], seq[i + 1])
 
 
 def write_collada(
@@ -1878,26 +2290,66 @@ def main() -> None:
         tex_mid=tex_mid,
     )
 
+    sink = float(cfg["near_lip_drop_m"])
+    near_step = float(cfg["near_step_m"])
+    mid_step = float(cfg["mid_step_m"])
+    level_rect = tuple(float(v) for v in site["bbox"])
+    near_rect = _rect_pad(site, float(cfg["near_m"]))
+    mid_rect = _rect_pad(site, float(cfg["mid_m"]))
+    level_seam = None
+    near_outer = None
+    if keep_near_mesh is not None:
+        xy_lvl = _rect_seam_xy(*level_rect, near_step)
+        z_lvl = _sample_heightmap_z(hm_rel, sc, xy_lvl, z0) - sink
+        level_seam = np.column_stack([xy_lvl, z_lvl])
+        near_outer = _seam_from_surface(near_surf, near_meta, near_rect, near_step, order=1)
+        print(
+            f"level seam {len(level_seam)} pts, {sink:.3f} m under the heightmap"
+        )
+    mid_outer = _seam_from_surface(mid_surf, meta, mid_rect, mid_step, order=1)
+    if near_outer is not None:
+        mz, okm = _sample_surface_z(mid_surf, meta, near_outer[:, :2], order=1)
+        if bool(okm.any()):
+            dz = mz[okm] - near_outer[okm, 2]
+            print(
+                f"near/mid seam vs mid surface: "
+                f"p50={float(np.median(dz)):.2f} m  max|dZ|={float(np.max(np.abs(dz))):.2f} m"
+            )
+
+    def _seam(xyz: np.ndarray | None, rect: tuple[float, float, float, float], cover: str) -> dict | None:
+        if xyz is None or len(xyz) < 4:
+            return None
+        return {"xyz": xyz, "rect": rect, "cover": cover}
+
+    far_seams = [s for s in (_seam(mid_outer, mid_rect, "outside"),) if s is not None]
     print(f"Meshing far step={cfg['mesh_step_m']} m ...")
-    meshes = build_meshes(elev, keep_far, meta, sc, z0, float(cfg["mesh_step_m"]))
+    meshes = build_meshes(
+        elev, keep_far, meta, sc, z0, float(cfg["mesh_step_m"]), seams=far_seams
+    )
     if keep_near_mesh is not None:
         print(
-            f"Meshing near step={cfg['near_step_m']} m cubic spline "
-            f"(Tirol DGM+canopy, lip drop, tiles={int(cfg['near_tiles'])}) ..."
+            f"Meshing near step={near_step:.0f} m cubic spline "
+            f"(tiles={int(cfg['near_tiles'])}) ..."
         )
+        near_seams = [
+            s
+            for s in (
+                _seam(level_seam, level_rect, "outside"),
+                _seam(near_outer, near_rect, "inside"),
+            )
+            if s is not None
+        ]
         near_meshes = build_meshes(
             near_surf,
             keep_near_mesh,
             near_meta,
             sc,
             z0,
-            float(cfg["near_step_m"]),
+            near_step,
             split_tiles=int(cfg["near_tiles"]),
             uv_bbox=near_extent(site),
-            snap_inner_bbox=True,
-            hm_rel=hm_rel,
-            lip_drop_m=float(cfg["near_lip_drop_m"]),
             z_order=3,
+            seams=near_seams,
         )
         for q, (verts, _faces, _uvs) in near_meshes.items():
             if len(verts) > COLLADA_MAX_VERTS:
@@ -1905,16 +2357,25 @@ def main() -> None:
                     f"  WARN {q}: {len(verts)} verts > {COLLADA_MAX_VERTS} "
                     "(raise near_tiles or near_step_m)"
                 )
-    print(f"Meshing mid step={cfg['mid_step_m']} m (Copernicus+nDSM, always-keep) ...")
+    print(f"Meshing mid step={mid_step:.0f} m (Copernicus+nDSM, shared seams) ...")
+    mid_seams = [
+        s
+        for s in (
+            _seam(near_outer, near_rect, "outside"),
+            _seam(mid_outer, mid_rect, "inside"),
+        )
+        if s is not None
+    ]
     mid_meshes = build_meshes(
         mid_surf,
         keep_mid,
         meta,
         sc,
         z0,
-        float(cfg["mid_step_m"]),
+        mid_step,
         split_tiles=int(cfg["mid_tiles"]),
         uv_bbox=mid_extent(site),
+        seams=mid_seams,
     )
     if not meshes and not near_meshes and not mid_meshes:
         raise SystemExit("No backdrop triangles - viewshed mask empty?")

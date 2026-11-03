@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import sys
 import zipfile
 from pathlib import Path
@@ -33,7 +34,36 @@ STEAM_LEVELS = Path(
     r"C:\Program Files (x86)\Steam\steamapps\common\BeamNG.drive\content\levels"
 )
 DRIVER_TRAINING_ZIP = STEAM_LEVELS / "driver_training.zip"
+ITALY_ZIP = STEAM_LEVELS / "italy.zip"
 JV_ZIP = STEAM_LEVELS / "johnson_valley.zip"
+PINE_ZIP_PREFIX = "levels/italy/art/shapes/trees/trees_italy/"
+PINE_LOCAL_REL = "art/shapes/trees/trees_pine"
+PINE_SHAPE = "scots_pine.dae"
+PINE_MATERIALS = ("scots_pine", "scots_pine_branches", "scots_pine_trunk")
+BEECH_ZIP = USER_LEVELS.parent / "mods" / "repo" / "Aldcourt.zip"
+BEECH_ZIP_PREFIX = "levels/Aldcourt/art/shapes/trees/trees_beech/"
+BEECH_LOCAL_REL = "art/shapes/trees/trees_beech"
+BEECH_SHAPE = "tree_beech_forest_a.dae"
+BEECH_FILES = (
+    BEECH_SHAPE,
+    "tree_beech_forest_a.cdae",
+    "tree_beech_forest_a.dae.imposter.dds",
+    "tree_beech_forest_a.dae.imposter_normals.dds",
+    "materials.cs",
+    "vegetation_beech_bark_d.dds",
+    "vegetation_beech_bark_n.dds",
+    "vegetation_beech_bark_s.dds",
+    "vegetation_beech_d.dds",
+    "vegetation_beech_n.dds",
+    "vegetation_beech_s.dds",
+)
+SPECIES_ITEMS = {
+    "pine": "autoroad_pine_large",
+    "douglas": "autoroad_douglas_large",
+    "beech": "autoroad_beech_forest",
+    "larch": "autoroad_larch_large",
+    "bush": "autoroad_krummholz_bush",
+}
 FIR_ZIP_PREFIX = "levels/driver_training/art/shapes/trees/trees_douglasfir/"
 FIR_LOCAL_REL = "art/shapes/trees/trees_douglasfir"
 DRY_GRASS_ZIP_PREFIX = "levels/johnson_valley/art/shapes/groundcover/"
@@ -48,6 +78,9 @@ SHAPE_FILES = {
 SPRUCE_PACK = ROOT / "data" / "assets" / "trees" / "spruce"
 SPRUCE_LOCAL_REL = "art/shapes/trees/trees_spruce"
 SPRUCE_SHAPE = "tree_spruce_large.dae"
+LARCH_PACK = ROOT / "data" / "assets" / "trees" / "larch"
+LARCH_LOCAL_REL = "art/shapes/trees/trees_larch"
+LARCH_SHAPE = "tree_larch_large.dae"
 
 DRY_GRASS_SHAPES = {
     "autoroad_dry_grass_01": "s_gc_dry_grass_01.dae",
@@ -55,6 +88,17 @@ DRY_GRASS_SHAPES = {
     "autoroad_dry_grass_03": "s_gc_dry_grass_03.dae",
     "autoroad_dry_grass_04": "s_gc_dry_grass_04.dae",
 }
+
+
+def _stamp_imposter_sidecars(dae_path: Path) -> None:
+    """Keep imposter sidecars newer than the DAE so the engine does not rebake them."""
+    if not dae_path.is_file():
+        return
+    newer = dae_path.stat().st_mtime + 5.0
+    for suffix in (".imposter.dds", ".imposter_normals.dds", ".asset.json"):
+        side = dae_path.parent / (dae_path.name + suffix)
+        if side.is_file():
+            os.utime(side, (newer, newer))
 
 
 def _item_template(
@@ -95,7 +139,11 @@ def _item_template(
 
 
 def vendor_fir_pack(
-    user_level: Path, level_name: str, *, cheap: bool = False
+    user_level: Path,
+    level_name: str,
+    *,
+    cheap: bool = False,
+    large_internal: str = "autoroad_fir_large",
 ) -> dict[str, dict]:
     """Copy douglasfir meshes + materials into this level."""
     if not DRIVER_TRAINING_ZIP.is_file():
@@ -131,9 +179,29 @@ def vendor_fir_pack(
                 raise SystemExit(f"Missing in driver_training.zip: {src}")
             (dest / name).write_bytes(z.read(src))
             n_copied += 1
+    for shape in SHAPE_FILES.values():
+        _stamp_imposter_sidecars(dest / shape)
     print(f"Vendored douglasfir pack -> {dest} ({n_copied} files)")
 
     base = f"/levels/{level_name}/{FIR_LOCAL_REL}"
+    if large_internal != "autoroad_fir_large":
+        print(f"Stock douglas as {large_internal}")
+        return {
+            large_internal: _item_template(
+                large_internal,
+                f"{base}/{SHAPE_FILES['autoroad_fir_large']}",
+                radius=2.0,
+                collidable=not cheap,
+                wind_scale=0.0 if cheap else 0.4,
+                trunk_bend=0.0 if cheap else 0.03,
+                branch_amp=0.0 if cheap else 0.02,
+                detail_amp=0.0 if cheap else 0.2,
+                detail_freq=1.0 if cheap else 5.0,
+                mass=70.0,
+                rigidity=150.0,
+                annotation="TREE",
+            ),
+        }
     if cheap:
         print("Forest cheap mode: single LARGE fir, no collision, wind off")
         return {
@@ -197,8 +265,10 @@ def vendor_fir_pack(
     }
 
 
-def _rewrite_spruce_material_maps(mat_path: Path, level_name: str) -> None:
-    """Point every texture map at /levels/<level>/art/shapes/trees/trees_spruce/<file>.
+def _rewrite_spruce_material_maps(
+    mat_path: Path, level_name: str, local_rel: str = SPRUCE_LOCAL_REL
+) -> None:
+    """Point every texture map at /levels/<level>/<local_rel>/<file>.
 
     Idempotent: a doubled /levels/.../levels/... prefix from an older vendor
     pass is collapsed by taking only the filename.
@@ -206,7 +276,7 @@ def _rewrite_spruce_material_maps(mat_path: Path, level_name: str) -> None:
     if not mat_path.is_file():
         return
     data = json.loads(mat_path.read_text(encoding="utf-8"))
-    vfs = f"/levels/{level_name}/{SPRUCE_LOCAL_REL}"
+    vfs = f"/levels/{level_name}/{local_rel}"
     tex_keys = {
         "baseColorMap",
         "normalMap",
@@ -258,6 +328,7 @@ def vendor_spruce_pack(
             n_copied += 1
     print(f"Vendored spruce pack -> {dest} ({n_copied} files)")
     _rewrite_spruce_material_maps(dest / "main.materials.json", level_name)
+    _stamp_imposter_sidecars(dest / SPRUCE_SHAPE)
     vfs = f"/levels/{level_name}/{SPRUCE_LOCAL_REL}/{SPRUCE_SHAPE}"
     large = _item_template(
         "autoroad_fir_large",
@@ -306,6 +377,182 @@ def vendor_spruce_pack(
             annotation="BUSH",
         ),
     }
+
+
+def larch_pack_ready(pack: Path | None = None) -> bool:
+    p = pack or LARCH_PACK
+    dae = p / LARCH_SHAPE
+    asset = p / f"{LARCH_SHAPE}.asset.json"
+    dds = p / f"{LARCH_SHAPE}.imposter.dds"
+    return dae.is_file() and asset.is_file() and dds.is_file()
+
+
+def vendor_larch_pack(user_level: Path, level_name: str, *, cheap: bool = False) -> dict[str, dict]:
+    """Copy the larch DAE and its cooker maps into the level."""
+    if not larch_pack_ready():
+        raise SystemExit(f"Larch pack incomplete in {LARCH_PACK}")
+    dest = user_level / LARCH_LOCAL_REL
+    dest.mkdir(parents=True, exist_ok=True)
+    n_copied = 0
+    for src in LARCH_PACK.iterdir():
+        if not src.is_file():
+            continue
+        if src.suffix.lower() in {".json", ".dae", ".dds", ".png", ".jpg", ".jpeg"}:
+            (dest / src.name).write_bytes(src.read_bytes())
+            n_copied += 1
+    print(f"Vendored larch pack -> {dest} ({n_copied} files)")
+    _rewrite_spruce_material_maps(
+        dest / "main.materials.json", level_name, LARCH_LOCAL_REL
+    )
+    _stamp_imposter_sidecars(dest / LARCH_SHAPE)
+    vfs = f"/levels/{level_name}/{LARCH_LOCAL_REL}/{LARCH_SHAPE}"
+    large = _item_template(
+        "autoroad_larch_large",
+        vfs,
+        radius=2.0,
+        collidable=not cheap,
+        wind_scale=0.0 if cheap else 0.35,
+        trunk_bend=0.0 if cheap else 0.03,
+        branch_amp=0.0 if cheap else 0.02,
+        detail_amp=0.0 if cheap else 0.2,
+        detail_freq=1.0 if cheap else 5.0,
+        mass=70.0,
+        rigidity=150.0,
+        annotation="TREE",
+    )
+    return {"autoroad_larch_large": large}
+
+
+def vendor_variant_pack(
+    user_level: Path,
+    level_name: str,
+    *,
+    pack: Path,
+    local_rel: str,
+    shape: str,
+    internal: str,
+    cheap: bool,
+) -> dict[str, dict]:
+    """Copy one extra tree pack into the level and register its forest item."""
+    dae = pack / shape
+    if not (
+        dae.is_file()
+        and (pack / f"{shape}.asset.json").is_file()
+        and (pack / f"{shape}.imposter.dds").is_file()
+    ):
+        raise SystemExit(f"Tree pack incomplete in {pack}")
+    dest = user_level / local_rel
+    dest.mkdir(parents=True, exist_ok=True)
+    n_copied = 0
+    for src in pack.iterdir():
+        if src.is_file() and src.suffix.lower() in {".json", ".dae", ".dds", ".png", ".jpg", ".jpeg"}:
+            (dest / src.name).write_bytes(src.read_bytes())
+            n_copied += 1
+    print(f"Vendored {internal} -> {dest} ({n_copied} files)")
+    _rewrite_spruce_material_maps(dest / "main.materials.json", level_name, local_rel)
+    _stamp_imposter_sidecars(dest / shape)
+    item = _item_template(
+        internal,
+        f"/levels/{level_name}/{local_rel}/{shape}",
+        radius=2.0,
+        collidable=not cheap,
+        wind_scale=0.0 if cheap else 0.35,
+        trunk_bend=0.0 if cheap else 0.03,
+        branch_amp=0.0 if cheap else 0.02,
+        detail_amp=0.0 if cheap else 0.2,
+        detail_freq=1.0 if cheap else 5.0,
+        mass=70.0,
+        rigidity=150.0,
+        annotation="TREE",
+    )
+    return {internal: item}
+
+
+def vendor_pine_pack(
+    user_level: Path, level_name: str, *, cheap: bool = False
+) -> dict[str, dict]:
+    """Copy the Italy Scots pine and the three materials that point at /assets."""
+    if not ITALY_ZIP.is_file():
+        raise SystemExit(f"Missing {ITALY_ZIP}")
+    dest = user_level / PINE_LOCAL_REL
+    dest.mkdir(parents=True, exist_ok=True)
+    needed = [
+        PINE_SHAPE,
+        "scots_pine.cdae",
+        "scots_pine.dae.asset.json",
+        "scots_pine.dae.imposter.dds",
+        "scots_pine.dae.imposter_normals.dds",
+    ]
+    with zipfile.ZipFile(ITALY_ZIP) as z:
+        names = set(z.namelist())
+        for name in needed:
+            src = PINE_ZIP_PREFIX + name
+            if src not in names:
+                if name.endswith(".cdae"):
+                    continue
+                raise SystemExit(f"Missing in italy.zip: {src}")
+            (dest / name).write_bytes(z.read(src))
+        raw = json.loads(z.read(PINE_ZIP_PREFIX + "main.materials.json"))
+    keep = {key: raw[key] for key in PINE_MATERIALS if key in raw}
+    if len(keep) != len(PINE_MATERIALS):
+        missing = [key for key in PINE_MATERIALS if key not in keep]
+        raise SystemExit(f"Scots pine materials missing: {missing}")
+    (dest / "main.materials.json").write_text(
+        json.dumps(keep, indent=2) + "\n", encoding="utf-8"
+    )
+    _stamp_imposter_sidecars(dest / PINE_SHAPE)
+    print(f"Vendored scots pine -> {dest}")
+    item = _item_template(
+        "autoroad_pine_large",
+        f"/levels/{level_name}/{PINE_LOCAL_REL}/{PINE_SHAPE}",
+        radius=2.0,
+        collidable=not cheap,
+        wind_scale=0.0 if cheap else 0.35,
+        trunk_bend=0.0 if cheap else 0.03,
+        branch_amp=0.0 if cheap else 0.02,
+        detail_amp=0.0 if cheap else 0.2,
+        detail_freq=1.0 if cheap else 5.0,
+        mass=70.0,
+        rigidity=150.0,
+        annotation="TREE",
+    )
+    return {"autoroad_pine_large": item}
+
+
+def vendor_beech_pack(
+    user_level: Path, level_name: str, *, cheap: bool = False
+) -> dict[str, dict]:
+    """Copy the Aldcourt forest beech. Materials stay the stock materials.cs."""
+    if not BEECH_ZIP.is_file():
+        raise SystemExit(f"Missing {BEECH_ZIP}")
+    dest = user_level / BEECH_LOCAL_REL
+    dest.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(BEECH_ZIP) as z:
+        names = set(z.namelist())
+        for name in BEECH_FILES:
+            src = BEECH_ZIP_PREFIX + name
+            if src not in names:
+                if name.endswith(".cdae"):
+                    continue
+                raise SystemExit(f"Missing in Aldcourt.zip: {src}")
+            (dest / name).write_bytes(z.read(src))
+    _stamp_imposter_sidecars(dest / BEECH_SHAPE)
+    print(f"Vendored beech -> {dest}")
+    item = _item_template(
+        "autoroad_beech_forest",
+        f"/levels/{level_name}/{BEECH_LOCAL_REL}/{BEECH_SHAPE}",
+        radius=2.0,
+        collidable=not cheap,
+        wind_scale=0.0 if cheap else 0.35,
+        trunk_bend=0.0 if cheap else 0.03,
+        branch_amp=0.0 if cheap else 0.02,
+        detail_amp=0.0 if cheap else 0.2,
+        detail_freq=1.0 if cheap else 5.0,
+        mass=70.0,
+        rigidity=150.0,
+        annotation="TREE",
+    )
+    return {"autoroad_beech_forest": item}
 
 
 def vendor_dry_grass_pack(user_level: Path, level_name: str) -> dict[str, dict]:
@@ -389,7 +636,84 @@ def _cfg(bng: dict) -> dict:
         "seed": int(raw.get("seed") or 13),
         "shape_pack": str(raw.get("shape_pack") or "douglasfir").strip().lower(),
         "hull_skip_interior": bool(raw.get("hull_skip_interior", True)),
+        "larch_share": float(raw.get("larch_share") or 0.0),
+        "spruceb_share": float(raw.get("spruceb_share") or 0.0),
+        "sprucec_share": float(raw.get("sprucec_share") or 0.0),
+        "douglas_share": float(raw.get("douglas_share") or 0.0),
+        "pine_share": float(raw.get("pine_share") or 0.0),
+        "waldveg_enabled": bool((raw.get("waldveg") or {}).get("enabled", False)),
+        "waldveg_url": str((raw.get("waldveg") or {}).get("url") or "").strip(),
+        "waldveg_types": {
+            str(code): {str(k): float(v) for k, v in (mix or {}).items()}
+            for code, mix in ((raw.get("waldveg") or {}).get("types") or {}).items()
+        },
+        "waldveg_default": {
+            str(k): float(v)
+            for k, v in (((raw.get("waldveg") or {}).get("default")) or {}).items()
+        },
     }
+
+
+def _spruce_items() -> list[str]:
+    items = ["autoroad_fir_large"]
+    for key, internal, shape in (
+        ("spruceb", "autoroad_spruceb_large", "tree_spruceb_large.dae"),
+        ("sprucec", "autoroad_sprucec_large", "tree_sprucec_large.dae"),
+    ):
+        if (ROOT / "data" / "assets" / "trees" / key / shape).is_file():
+            items.append(internal)
+    return items
+
+
+def _expand_mix(mix: dict, spruce_items: list[str]) -> list[tuple[str, float]]:
+    """Species shares to a cumulative roll table. Spruce is split across its meshes."""
+    weighted: list[tuple[str, float]] = []
+    total = 0.0
+    for species, share in mix.items():
+        share = float(share)
+        if share <= 0.0:
+            continue
+        if species == "spruce":
+            if not spruce_items:
+                raise SystemExit("spruce share set but no spruce mesh is available")
+            each = share / len(spruce_items)
+            for item in spruce_items:
+                total += each
+                weighted.append((item, total))
+        else:
+            item = SPECIES_ITEMS.get(species)
+            if item is None:
+                raise SystemExit(f"Unknown tree species in waldveg mix: {species}")
+            total += share
+            weighted.append((item, total))
+    if weighted and not 0.98 <= total <= 1.02:
+        raise SystemExit(f"Waldveg shares sum to {total:.3f}, expected 1")
+    if total <= 0.0:
+        return []
+    scale = 1.0 / total
+    acc = 0.0
+    table: list[tuple[str, float]] = []
+    for item, raw_acc in weighted:
+        acc = raw_acc * scale
+        table.append((item, acc))
+    if table:
+        table[-1] = (table[-1][0], 1.0)
+    return table
+
+
+def _waldveg_species(cfg: dict) -> set[str]:
+    if not cfg.get("waldveg_enabled"):
+        return set()
+    used: set[str] = set()
+    mixes = list((cfg.get("waldveg_types") or {}).values())
+    default = cfg.get("waldveg_default") or {}
+    if default:
+        mixes.append(default)
+    for mix in mixes:
+        for name, share in mix.items():
+            if float(share) > 0.0:
+                used.add(str(name))
+    return used
 
 
 def _yaw_matrix(yaw_rad: float) -> list[float]:
@@ -490,6 +814,13 @@ def scatter(site: dict, cfg: dict) -> dict[str, list[dict]]:
     cheap = bool(cfg.get("cheap"))
     placements: dict[str, list[dict]] = {
         "autoroad_fir_large": [],
+        "autoroad_larch_large": [],
+        "autoroad_spruceb_large": [],
+        "autoroad_sprucec_large": [],
+        "autoroad_douglas_large": [],
+        "autoroad_pine_large": [],
+        "autoroad_beech_forest": [],
+        "autoroad_krummholz_bush": [],
         "autoroad_fir_small": [],
         "autoroad_fir_bush": [],
         **{k: [] for k in grass_kinds},
@@ -515,7 +846,11 @@ def scatter(site: dict, cfg: dict) -> dict[str, list[dict]]:
         max_scrub = int(round(max_items * scrub_frac)) if cfg["trees"] else 0
         max_high = max(0, max_items - max_scrub)
     jitter = float(cfg["jitter"])
-    cand_cap = max_items + max(1000, max_items // 10)
+    # Large caps lose too many cells to slope and road clearance at a 10% surplus.
+    headroom = max(1000, max_items // 10)
+    if max_items >= 100_000:
+        headroom = max(headroom, max_items // 2)
+    cand_cap = max_items + headroom
 
     def try_place(
         kind: str,
@@ -576,18 +911,86 @@ def scatter(site: dict, cfg: dict) -> dict[str, list[dict]]:
                 max_candidates=cand_cap,
             )
             rng.shuffle(high_cells)
+            use_waldveg = bool(cfg.get("waldveg_enabled"))
+            veg = None
+            id_to_code: dict[int, str] = {}
+            tables: dict[str, list[tuple[str, float]]] = {}
+            default_table: list[tuple[str, float]] = []
+            if use_waldveg:
+                from fetch_tirol_waldveg import CODES_NAME, MASK_NAME  # noqa: WPS433
+
+                veg_path = proc / MASK_NAME
+                if not veg_path.is_file():
+                    raise SystemExit(f"Missing {veg_path}")
+                veg = np.asarray(Image.open(veg_path), dtype=np.uint8)
+                if veg.ndim == 3:
+                    veg = veg[..., 0]
+                meta = json.loads((proc / CODES_NAME).read_text(encoding="utf-8"))
+                id_to_code = {int(v): str(k) for k, v in (meta.get("ids") or {}).items()}
+                spruce_items = _spruce_items()
+                tables = {
+                    code: _expand_mix(mix, spruce_items)
+                    for code, mix in (cfg.get("waldveg_types") or {}).items()
+                }
+                default_table = _expand_mix(cfg.get("waldveg_default") or {}, spruce_items)
+            else:
+                mix = (
+                    ("autoroad_larch_large", float(cfg.get("larch_share") or 0.0)),
+                    ("autoroad_spruceb_large", float(cfg.get("spruceb_share") or 0.0)),
+                    ("autoroad_sprucec_large", float(cfg.get("sprucec_share") or 0.0)),
+                    ("autoroad_douglas_large", float(cfg.get("douglas_share") or 0.0)),
+                    ("autoroad_pine_large", float(cfg.get("pine_share") or 0.0)),
+                )
+            skipped = 0
+            by_code: dict[str, int] = {}
             for r, c in high_cells:
+                if use_waldveg:
+                    ri = int(round(r))
+                    ci = int(round(c))
+                    code = ""
+                    if veg is not None and 0 <= ri < veg.shape[0] and 0 <= ci < veg.shape[1]:
+                        code = id_to_code.get(int(veg[ri, ci]), "")
+                    table = default_table if code == "" else tables.get(code)
+                    if not table:
+                        skipped += 1
+                        continue
+                    roll = float(rng.random())
+                    kind = table[-1][0]
+                    for name, acc in table:
+                        if roll < acc:
+                            kind = name
+                            break
+                else:
+                    roll = float(rng.random())
+                    kind = "autoroad_fir_large"
+                    acc = 0.0
+                    for name, share in mix:
+                        acc += share
+                        if roll < acc:
+                            kind = name
+                            break
+                    code = ""
+                if kind == "autoroad_krummholz_bush":
+                    scale_lo, scale_hi_m = float(s_sc[0]), float(s_sc[1])
+                else:
+                    scale_lo, scale_hi_m = float(s_hi[0]), float(s_hi[1])
                 status = try_place(
-                    "autoroad_fir_large",
+                    kind,
                     r,
                     c,
-                    float(s_hi[0]),
-                    float(s_hi[1]),
+                    scale_lo,
+                    scale_hi_m,
                     slope_limit=slope_max,
                     budget="high",
                 )
+                if status == "ok" and use_waldveg:
+                    by_code[code or "(ohne Typ)"] = by_code.get(code or "(ohne Typ)", 0) + 1
                 if status == "full":
                     break
+            if use_waldveg:
+                print(f"Waldveg: {skipped} candidates on types without a tree mix")
+                for code, n in sorted(by_code.items(), key=lambda kv: -kv[1]):
+                    print(f"  {code:12} {n}")
         else:
             high_cells = _candidate_cells(
                 high,
@@ -739,6 +1142,8 @@ def write_forest4(user_level: Path, proc: Path, placements: dict[str, list[dict]
     forest_dir = user_level / "forest"
     forest_dir.mkdir(parents=True, exist_ok=True)
     for old in forest_dir.glob("autoroad_*.forest4.json"):
+        if old.name.startswith("autoroad_canopy"):
+            continue
         old.unlink()
     for kind, rows in placements.items():
         if not rows:
@@ -786,6 +1191,12 @@ def main() -> None:
     proc = processed_dir(site)
     if cfg["trees"] and not (proc / "mask_forest_high.png").is_file():
         raise SystemExit("Missing mask_forest_*.png - run tools/build_terrain_masks.py first")
+    if cfg.get("waldveg_enabled"):
+        if not cfg.get("waldveg_url"):
+            raise SystemExit("forest.waldveg.url missing")
+        from fetch_tirol_waldveg import ensure_waldveg_mask  # noqa: WPS433
+
+        ensure_waldveg_mask(site, cfg["waldveg_url"])
     if cfg["dry_grass"] and not (
         (proc / "mask_biome_meadow_dry.png").is_file()
         or (proc / "mask_biome_veg_niedrig.png").is_file()
@@ -798,7 +1209,17 @@ def main() -> None:
     n_trees = sum(
         len(v)
         for k, v in placements.items()
-        if k.startswith("autoroad_fir")
+        if k.startswith(
+            (
+                "autoroad_fir",
+                "autoroad_larch",
+                "autoroad_spruce",
+                "autoroad_douglas",
+                "autoroad_pine",
+                "autoroad_beech",
+                "autoroad_krummholz",
+            )
+        )
     )
     meta = {
         "level": level_name,
@@ -838,6 +1259,77 @@ def main() -> None:
                 items.update(
                     vendor_spruce_pack(user_level, level_name, cheap=bool(cfg["cheap"]))
                 )
+                used = _waldveg_species(cfg)
+                if float(cfg.get("larch_share") or 0.0) > 0.0 or "larch" in used:
+                    if larch_pack_ready():
+                        items.update(
+                            vendor_larch_pack(
+                                user_level, level_name, cheap=bool(cfg["cheap"])
+                            )
+                        )
+                    else:
+                        print(f"larch_share set but {LARCH_PACK} is incomplete")
+                for key, internal, shape in (
+                    ("spruceb", "autoroad_spruceb_large", "tree_spruceb_large.dae"),
+                    ("sprucec", "autoroad_sprucec_large", "tree_sprucec_large.dae"),
+                ):
+                    if float(cfg.get(f"{key}_share") or 0.0) <= 0.0 and "spruce" not in used:
+                        continue
+                    variant = ROOT / "data" / "assets" / "trees" / key
+                    if (variant / shape).is_file():
+                        items.update(
+                            vendor_variant_pack(
+                                user_level,
+                                level_name,
+                                pack=variant,
+                                local_rel=f"art/shapes/trees/trees_{key}",
+                                shape=shape,
+                                internal=internal,
+                                cheap=bool(cfg["cheap"]),
+                            )
+                        )
+                    else:
+                        print(f"{key}_share set but {variant} is incomplete")
+                if (
+                    float(cfg.get("douglas_share") or 0.0) > 0.0
+                    or "douglas" in used
+                    or "bush" in used
+                ):
+                    items.update(
+                        vendor_fir_pack(
+                            user_level,
+                            level_name,
+                            cheap=bool(cfg["cheap"]),
+                            large_internal="autoroad_douglas_large",
+                        )
+                    )
+                if "bush" in used:
+                    items["autoroad_krummholz_bush"] = _item_template(
+                        "autoroad_krummholz_bush",
+                        f"/levels/{level_name}/{FIR_LOCAL_REL}/{SHAPE_FILES['autoroad_fir_bush']}",
+                        radius=0.8,
+                        collidable=not bool(cfg["cheap"]),
+                        wind_scale=0.0 if cfg["cheap"] else 0.5,
+                        trunk_bend=0.0 if cfg["cheap"] else 0.1,
+                        branch_amp=0.0 if cfg["cheap"] else 0.01,
+                        detail_amp=0.0 if cfg["cheap"] else 0.2,
+                        detail_freq=1.0 if cfg["cheap"] else 1.5,
+                        mass=1.0,
+                        rigidity=5.0,
+                        annotation="BUSH",
+                    )
+                if float(cfg.get("pine_share") or 0.0) > 0.0 or "pine" in used:
+                    items.update(
+                        vendor_pine_pack(
+                            user_level, level_name, cheap=bool(cfg["cheap"])
+                        )
+                    )
+                if "beech" in used:
+                    items.update(
+                        vendor_beech_pack(
+                            user_level, level_name, cheap=bool(cfg["cheap"])
+                        )
+                    )
             else:
                 print(
                     f"shape_pack=spruce but {SPRUCE_PACK} is incomplete — "

@@ -80,7 +80,7 @@ def backdrop_cfg(site: dict) -> dict:
         "near_step_m": float(raw.get("near_step_m", 5.0)),
         "near_dgm_res_m": float(raw.get("near_dgm_res_m", 2.0)),
         "near_overlap_m": float(raw.get("near_overlap_m", 80.0)),
-        "near_lip_drop_m": float(raw.get("near_lip_drop_m", 1.0)),
+        "near_lip_drop_m": float(raw.get("near_lip_drop_m", 0.02)),
         "near_texture_size": int(raw.get("near_texture_size", 2048)),
         "near_normal_size": int(raw.get("near_normal_size") or raw.get("near_texture_size") or 2048),
         "near_tiles": int(raw.get("near_tiles", 9)),

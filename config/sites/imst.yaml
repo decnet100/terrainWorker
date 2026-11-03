@@ -339,7 +339,7 @@ beamng:
     near_step_m: 5
     near_dgm_res_m: 2
     near_overlap_m: 80
-    near_lip_drop_m: 1.0
+    near_lip_drop_m: 0.02      # level edge under the heightmap; ring seams are exact
     near_texture_size: 2048
     near_normal_size: 4096     # 2 m DGM → finer ToD relief; albedo stays 2048
     near_tiles: 15             # 5 km ring @ 5 m, stay under 65k verts/tile

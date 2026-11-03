@@ -1,0 +1,16 @@
+---
+description: Gleichrangige Junction behält den Knick der durchgehenden Straße
+alwaysApply: true
+---
+
+# Junction, gleicher Rang
+
+An einem Knoten mit drei oder mehr Links derselben funktionalen Klasse ist das Paar mit dem geringsten Knick die durchgehende Straße. Die übrigen Links derselben Klasse sind Zufahrten.
+
+Die durchgehende Straße behält ihre Linienführung, einschließlich eines Knicks. Diesen Knick nicht durch eine Gerade ersetzen und keine Stützpunkte dafür aus der Linie herausziehen. Ein Knick ist zulässig. Ihn nachträglich in eine Kurve zu verwandeln ist ein eigener, späterer Schritt.
+
+Der Junction-Punkt liegt auf der Mittellinie der durchgehenden Straße, dort wo die Verlängerung einer Zufahrt sie trifft. Bei mehreren Zufahrten ist es der Mittelpunkt dieser Treffpunkte, gemessen entlang der Mittellinie.
+
+Die Geländeanpassung verschiebt auch die durchgehende Straße an der Mündung. Diese Verschiebung nicht verwerfen und die Achse nicht auf eine vorher gebaute Gerade zurücksetzen. Die durchgehende Straße hat dabei Vorrang: die Zufahrten enden auf ihrer angepassten Mittellinie, nicht umgekehrt.
+
+Eine niedrigere funktionale Klasse, die an demselben Knoten ankommt, übernimmt diesen Junction-Punkt.

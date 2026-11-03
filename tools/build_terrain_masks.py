@@ -427,7 +427,7 @@ def rasterize_bev_landcover(
     landuse[bare] = CLASS_DIRT
     landuse[building] = CLASS_CONCRETE
     landuse[water] = CLASS_WATER
-    # code 6 / other → leave -1 (dirt default in classify)
+    # code 6 / other → leave -1 (filled later by AV landcover, else dirt)
 
     extras = {
         "forest_high": veg_hoch,
@@ -464,6 +464,160 @@ def rasterize_bev_landcover(
         },
     )
     return landuse, extras, note
+
+
+# Graubünden AV Bodenbedeckung ``art`` → terrain class and extra masks.
+# Fels is rock from the survey. Geröll stays bare ground; mask_biome_geroell
+# is the later block scatter. Paved polygons are the carriageway itself.
+_AV_SIMPLE_ART: dict[str, tuple[int, tuple[str, ...]]] = {
+    "bestockt.geschlossener_Wald": (CLASS_FOREST, ("forest_high", "veg_hoch")),
+    "bestockt.uebrige_bestockte": (CLASS_FOREST, ("forest_scrub", "veg_mittel")),
+    "humusiert.Acker_Wiese_Weide.Weide": (CLASS_GRASS, ("veg_niedrig",)),
+    "humusiert.Acker_Wiese_Weide.Acker_Wiese": (CLASS_GRASS, ("veg_niedrig",)),
+    "humusiert.uebrige_humusierte": (CLASS_GRASS, ("veg_niedrig",)),
+    "humusiert.Gartenanlage": (CLASS_GRASS, ("veg_niedrig",)),
+    "humusiert.Hoch_Flachmoor": (CLASS_GRASS, ("veg_niedrig",)),
+    "Gewaesser.fliessendes": (CLASS_WATER, ("water",)),
+    "vegetationslos.Fels": (CLASS_ROCK, ("fels",)),
+    "vegetationslos.Geroell_Sand": (CLASS_DIRT, ("geroell",)),
+    "vegetationslos.uebrige_vegetationslose": (CLASS_DIRT, ("bare",)),
+    "vegetationslos.Abbau_Deponie": (CLASS_DIRT, ("bare",)),
+    "befestigt.Strasse_Weg": (CLASS_ASPHALT, ()),
+    "befestigt.uebrige_befestigte": (CLASS_CONCRETE, ()),
+    "befestigt.Verkehrsinsel": (CLASS_CONCRETE, ()),
+}
+
+
+def _ensure_bool(extras: dict[str, np.ndarray], key: str, shape: tuple[int, int]) -> np.ndarray:
+    cur = extras.get(key)
+    if cur is None or np.shape(cur) != shape:
+        arr = np.zeros(shape, dtype=bool)
+    else:
+        arr = np.asarray(cur, dtype=bool)
+        if not arr.flags.writeable:
+            arr = arr.copy()
+    extras[key] = arr
+    return arr
+
+
+def _paint_polygon_where_empty(
+    grid: np.ndarray,
+    exterior: list[tuple[float, float]],
+    holes: list[list[tuple[float, float]]],
+    value: int,
+) -> np.ndarray:
+    """Fill one polygon into cells that are still unset. Holes stay unset."""
+    size = grid.shape[0]
+    xs = [p[0] for p in exterior]
+    ys = [p[1] for p in exterior]
+    c0 = max(0, int(np.floor(min(xs))))
+    c1 = min(size, int(np.ceil(max(xs))) + 1)
+    r0 = max(0, int(np.floor(min(ys))))
+    r1 = min(size, int(np.ceil(max(ys))) + 1)
+    if c1 <= c0 or r1 <= r0 or len(exterior) < 3:
+        return np.zeros((0, 0), dtype=bool)
+    img = Image.new("L", (c1 - c0, r1 - r0), 0)
+    draw = ImageDraw.Draw(img)
+    draw.polygon([(x - c0, y - r0) for x, y in exterior], fill=1)
+    for hole in holes:
+        if len(hole) >= 3:
+            draw.polygon([(x - c0, y - r0) for x, y in hole], fill=0)
+    mask = np.asarray(img, dtype=np.uint8) > 0
+    view = grid[r0:r1, c0:c1]
+    write = mask & (view < 0)
+    view[write] = value
+    return write
+
+
+def _av_parts(geom):
+    if geom is None or geom.is_empty:
+        return
+    kind = geom.geom_type
+    if kind == "Polygon":
+        yield geom
+    elif kind == "MultiPolygon":
+        yield from geom.geoms
+    elif kind == "GeometryCollection":
+        for part in geom.geoms:
+            yield from _av_parts(part)
+
+
+def overlay_av_landcover(
+    landuse: np.ndarray,
+    extras: dict[str, np.ndarray],
+) -> tuple[np.ndarray, str]:
+    """Paint AV surfaces into cells the primary landcover left empty.
+
+    Reads ``sources.av_landcover.path`` (GeoPackage, working CRS after
+    reprojection). Known ``art`` values become terrain classes. The painted
+    cells are ``extras['av_hold']`` so slope rock does not replace them.
+    """
+    src = ((SITE.get("sources") or {}).get("av_landcover") or {})
+    rel = str(src.get("path") or "").strip()
+    if not rel:
+        return landuse, ""
+    path = Path(rel)
+    if not path.is_file():
+        path = ROOT / rel
+    if not path.is_file():
+        print(f"AV landcover missing: {rel}")
+        return landuse, ""
+
+    import geopandas as gpd
+
+    layer = str(src.get("layer") or "Bodenbedeckung_ohne_Gebaeude_farbig")
+    attr = str(src.get("attribute") or "art")
+    gdf = gpd.read_file(path, layer=layer)
+    if gdf.crs is None:
+        gdf = gdf.set_crs(str(src.get("crs") or "EPSG:2056"))
+    gdf = gdf.to_crs(CRS)
+    landuse = np.array(landuse, dtype=np.int8, copy=True)
+    shape = landuse.shape
+    hold = _ensure_bool(extras, "av_hold", shape)
+    counts: dict[str, int] = {}
+    unknown: dict[str, int] = {}
+    for _, row in gdf.iterrows():
+        art = str(row.get(attr) or "")
+        spec = _AV_SIMPLE_ART.get(art)
+        if spec is None:
+            unknown[art] = unknown.get(art, 0) + 1
+            continue
+        value, extra_keys = spec
+        for poly in _av_parts(row.geometry):
+            exterior = [
+                _to_px_geo(float(x) - XMIN, float(y) - YMIN, shape[0])
+                for x, y, *_rest in poly.exterior.coords
+            ]
+            holes = [
+                [
+                    _to_px_geo(float(x) - XMIN, float(y) - YMIN, shape[0])
+                    for x, y, *_rest in ring.coords
+                ]
+                for ring in poly.interiors
+            ]
+            wrote = _paint_polygon_where_empty(landuse, exterior, holes, value)
+            if wrote.size == 0 or not wrote.any():
+                continue
+            r0 = max(0, int(np.floor(min(p[1] for p in exterior))))
+            c0 = max(0, int(np.floor(min(p[0] for p in exterior))))
+            r1 = r0 + wrote.shape[0]
+            c1 = c0 + wrote.shape[1]
+            hold[r0:r1, c0:c1] |= wrote
+            for key in extra_keys:
+                layer_mask = _ensure_bool(extras, key, shape)
+                layer_mask[r0:r1, c0:c1] |= wrote
+            counts[art] = counts.get(art, 0) + int(wrote.sum())
+    painted = int(hold.sum())
+    print(
+        f"AV landcover: painted={painted} px ({painted / hold.size * 100:.2f}%) "
+        f"from {path.name}"
+    )
+    for art, n in sorted(counts.items(), key=lambda kv: -kv[1]):
+        print(f"  {art}: {n} px ({n / hold.size * 100:.2f}%)")
+    if unknown:
+        skipped = ", ".join(f"{k} ({v})" for k, v in sorted(unknown.items()))
+        print(f"AV landcover skipped unknown art: {skipped}")
+    return landuse, "av_landcover"
 
 
 def _has_foreign_landcover() -> bool:
@@ -845,9 +999,10 @@ def _stroke_road_nodes(
 def road_masks(size: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Return (asphalt, shoulder, forest_gravel) along roads (BeamNG metres).
 
-    Default (Tirol / no ``sources.road_areas``): OSM ``roads_beamng.json`` plus,
-    when Decals use GIP, all GIP segments. ``S-F`` / ``S-GW`` / ``S-FRW`` /
-    ``S-STRAIL`` paint gravel at node width, not asphalt.
+    Default (Tirol / no ``sources.road_areas``): ``roads_beamng.json`` is
+    stroked once, with the same surface skip as the GIP pass (closed tunnel
+    bores and gravel paths get no asphalt and no shoulder). When decals use
+    GIP, those segments are stroked again; gravel paths paint gravel only.
 
     Südtirol with ``sources.road_areas`` (TrasRoadArea): asphalt comes from
     official polygons; shoulder is a dilation of that footprint. OSM/GIP
@@ -917,7 +1072,11 @@ def road_masks(size: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     path = PROC / "roads_beamng.json"
     if path.exists():
         n_osm = _stroke_road_nodes(
-            json.loads(path.read_text(encoding="utf-8")), size, draw_a, draw_s
+            json.loads(path.read_text(encoding="utf-8")),
+            size,
+            draw_a,
+            draw_s,
+            skip_pred=gip_skip_surface_paint,
         )
 
     bng_cfg = SITE.get("beamng") or {}
@@ -1173,6 +1332,7 @@ def classify(
     gallery_roof: np.ndarray | None = None,
     gallery_roof_keep_asphalt: np.ndarray | None = None,
     gravel: np.ndarray | None = None,
+    survey_hold: np.ndarray | None = None,
 ) -> np.ndarray:
     """Exclusive material class per pixel.
 
@@ -1184,15 +1344,20 @@ def classify(
     they only omit the road stroke (caller passes no bridge_under here).
     ``gallery_roof_keep_asphalt`` is rock only where no road asphalt
     (surface road above an underpass wins).
+    ``survey_hold`` cells keep the landcover class: slope does not turn
+    them into rock. Survey rock (Fels) is still applied from landuse.
     """
     out = np.full(landuse.shape, CLASS_DIRT, dtype=np.uint8)
     out[landuse == CLASS_GRASS] = CLASS_GRASS
     out[landuse == CLASS_FOREST] = CLASS_FOREST
     rock = slope_rock_mask(slope, SLOPE_ROCK_DEG, SLOPE_ROCK_OPEN_PX)
+    if survey_hold is not None:
+        rock = rock & ~np.asarray(survey_hold, dtype=bool)
     out[rock] = CLASS_ROCK
     out[landuse == CLASS_ROCK] = CLASS_ROCK
     out[landuse == CLASS_WATER] = CLASS_WATER
     out[landuse == CLASS_CONCRETE] = CLASS_CONCRETE
+    out[landuse == CLASS_ASPHALT] = CLASS_ASPHALT
     # Road corridor overrides slope-rock (Böschung = Kies/Dirt, not Fels).
     out[shoulder] = CLASS_DIRT
     if ROAD_TERRAIN in ("gravel", "dirt", "none", "decal"):
@@ -1291,6 +1456,10 @@ def main() -> None:
             landuse = np.full((OUT_SIZE, OUT_SIZE), -1, dtype=np.int8)
             source_note = "slope_only"
 
+    landuse, av_note = overlay_av_landcover(landuse, extras)
+    if av_note:
+        source_note = f"{source_note}+{av_note}"
+
     asphalt, shoulder, gravel = road_masks(OUT_SIZE)
     bridge_under = bridge_under_mask(OUT_SIZE)
     gallery_roof, gallery_roof_keep = gallery_roof_mask(OUT_SIZE)
@@ -1340,6 +1509,7 @@ def main() -> None:
         gallery_roof,
         gallery_roof_keep,
         gravel_vis,
+        extras.get("av_hold"),
     )
 
     mask_dir = PROC / "terrain_masks"
@@ -1413,6 +1583,14 @@ def main() -> None:
     Image.fromarray(water.astype(np.uint8) * 255, mode="L").save(
         PROC / "mask_biome_water.png"
     )
+    geroell = np.asarray(extras.get("geroell", np.zeros((OUT_SIZE, OUT_SIZE), dtype=bool)), dtype=bool)
+    fels = np.asarray(extras.get("fels", np.zeros((OUT_SIZE, OUT_SIZE), dtype=bool)), dtype=bool)
+    Image.fromarray(geroell.astype(np.uint8) * 255, mode="L").save(
+        PROC / "mask_biome_geroell.png"
+    )
+    Image.fromarray(fels.astype(np.uint8) * 255, mode="L").save(
+        PROC / "mask_biome_fels.png"
+    )
     bev_codes = extras.get("bev_codes")
     if bev_codes is not None:
         Image.fromarray(np.asarray(bev_codes, dtype=np.uint8), mode="L").save(
@@ -1457,6 +1635,8 @@ def main() -> None:
             "biome_veg_niedrig_pct": round(float(veg_niedrig.mean() * 100), 2),
             "biome_bare_pct": round(float(bare.mean() * 100), 2),
             "biome_building_pct": round(float(building.mean() * 100), 2),
+            "biome_geroell_pct": round(float(geroell.mean() * 100), 2),
+            "biome_fels_pct": round(float(fels.mean() * 100), 2),
             "gallery_roof_pct": round(float(gallery_roof.mean() * 100), 2),
             "gallery_roof_keep_asphalt_pct": round(float(gallery_roof_keep.mean() * 100), 2),
             "gallery_span_omit_pct": round(float(gallery_span.mean() * 100), 2),
@@ -1584,6 +1764,8 @@ def main() -> None:
             "mask_biome_bare.png",
             "mask_biome_building.png",
             "mask_biome_water.png",
+            "mask_biome_geroell.png",
+            "mask_biome_fels.png",
             "mask_biome_bev_codes.png",
             "preview_terrain_materials.png",
         ):

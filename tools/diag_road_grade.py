@@ -50,8 +50,8 @@ LIMITS = {
 }
 
 
-def _road_kind(road: dict) -> str:
-    if axis_is_structure_span(road):
+def _road_kind(road: dict, site: dict | None = None) -> str:
+    if axis_is_structure_span(road, site):
         return "structure"
     if road.get("is_main_road") or str(road.get("str_code") or "").upper().startswith(
         ("L", "B", "A")
@@ -136,8 +136,9 @@ def _grade_stations(
     elev: np.ndarray,
     sc: SiteCoords,
     step_m: float,
+    site: dict | None = None,
 ) -> list[dict]:
-    kind = _road_kind(road)
+    kind = _road_kind(road, site)
     lim = LIMITS.get(kind, LIMITS["other"])
     xy = _polyline_xyw(road)
     samples = _resample(xy, step_m)
@@ -258,12 +259,18 @@ def _flag_runs(stations: list[dict], min_level: str = "soft") -> list[dict]:
     return flags
 
 
-def _centerline_row(rid: str, road: dict, sc: SiteCoords, stations: list[dict]) -> dict | None:
+def _centerline_row(
+    rid: str,
+    road: dict,
+    sc: SiteCoords,
+    stations: list[dict],
+    site: dict | None = None,
+) -> dict | None:
     xy = _polyline_xyw(road)
     if len(xy) < 2:
         return None
     coords = [sc.terrain_to_crs(x, y) for x, y, _w in xy]
-    kind = _road_kind(road)
+    kind = _road_kind(road, site)
     grades = [r["grade_pct"] for r in stations if r["road_id"] == str(rid)]
     return {
         "road_id": str(rid),
@@ -373,9 +380,9 @@ def main() -> None:
     all_stations: list[dict] = []
     cl_rows = []
     for rid, road in roads.items():
-        st = _grade_stations(road, rid, elev, sc, step_m)
+        st = _grade_stations(road, rid, elev, sc, step_m, site)
         all_stations.extend(st)
-        row = _centerline_row(rid, road, sc, st)
+        row = _centerline_row(rid, road, sc, st, site)
         if row is not None:
             cl_rows.append(row)
 

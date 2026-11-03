@@ -3016,7 +3016,7 @@ def main() -> None:
         from fetch_suedtirol_road_links import axis_is_structure_span  # noqa: WPS433
 
         before_span = len(roads)
-        roads = [r for r in roads if not axis_is_structure_span(r)]
+        roads = [r for r in roads if not axis_is_structure_span(r, site)]
         n_span = before_span - len(roads)
         if n_span:
             print(
@@ -3062,7 +3062,7 @@ def main() -> None:
         from fetch_suedtirol_road_links import axis_is_structure_span  # noqa: WPS433
 
         before_span = len(decal_roads)
-        decal_roads = [r for r in decal_roads if not axis_is_structure_span(r)]
+        decal_roads = [r for r in decal_roads if not axis_is_structure_span(r, site)]
         n_span = before_span - len(decal_roads)
         if n_span:
             print(f"DecalRoads: skipped {n_span} remaining span segment(s)")

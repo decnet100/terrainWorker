@@ -1,0 +1,88 @@
+# Hand assignment for the spans whose road line stayed within 1 m below to 2 m above the DGM.
+# Percentages are along the link as digitised and cover that span, widened by one 2 m station.
+# Isolated stations of one or two samples far from the span are not included.
+structures:
+  - link_id: c9637c5d-e57f-48eb-a09e-1df67830697a
+    from_pct: 38.38
+    to_pct: 50.15
+    typ: gallery
+  - link_id: 160e285a-225e-4af1-912b-7fe30c6e0d82
+    from_pct: 44.50
+    to_pct: 63.19
+    typ: tunnel
+  - link_id: 94bf3b41-8d8b-3d6c-bdec-a00b6b44e2c0
+    from_pct: 4.22
+    to_pct: 15.04
+    typ: gallery
+  - link_id: be9a4ba7-7a21-3ee8-ab21-c1a7384fb1ad
+    from_pct: 0.00
+    to_pct: 97.84
+    typ: ground
+  - link_id: 8120c939-fc8a-30ad-8135-b152a88f65a2
+    from_pct: 0.00
+    to_pct: 93.69
+    typ: ground
+  - link_id: 593fa910-1085-466f-b9dc-d889594739d8
+    from_pct: 1.73
+    to_pct: 2.10
+    typ: ground
+  - link_id: 593fa910-1085-466f-b9dc-d889594739d8
+    from_pct: 12.53
+    to_pct: 12.89
+    typ: ground
+  - link_id: 593fa910-1085-466f-b9dc-d889594739d8
+    from_pct: 21.67
+    to_pct: 22.04
+    typ: ground
+  - link_id: 593fa910-1085-466f-b9dc-d889594739d8
+    from_pct: 95.40
+    to_pct: 95.77
+    typ: ground
+  - link_id: 593fa910-1085-466f-b9dc-d889594739d8
+    from_pct: 96.68
+    to_pct: 97.05
+    typ: ground
+  - link_id: 593fa910-1085-466f-b9dc-d889594739d8
+    from_pct: 97.78
+    to_pct: 98.14
+    typ: ground
+  - link_id: 18fd3661-3803-4dc0-b7f4-01ee4e0b6dbe
+    from_pct: 26.60
+    to_pct: 51.79
+    typ: bridge
+  - link_id: 18fd3661-3803-4dc0-b7f4-01ee4e0b6dbe
+    from_pct: 64.35
+    to_pct: 100.00
+    typ: bridge
+  - link_id: 33307e63-90cd-3578-b101-c18109021e4c
+    from_pct: 0.00
+    to_pct: 30.94
+    typ: ground
+  - link_id: a70de875-0238-3d42-97a1-05ed2e4b7652
+    from_pct: 10.27
+    to_pct: 10.91
+    typ: ground
+  - link_id: a70de875-0238-3d42-97a1-05ed2e4b7652
+    from_pct: 21.10
+    to_pct: 21.73
+    typ: ground
+  - link_id: a70de875-0238-3d42-97a1-05ed2e4b7652
+    from_pct: 68.21
+    to_pct: 68.84
+    typ: ground
+  - link_id: a8b7be95-ad39-4d39-be19-38e51770eb71
+    from_pct: 82.59
+    to_pct: 86.82
+    typ: bridge
+  - link_id: a8b7be95-ad39-4d39-be19-38e51770eb71
+    from_pct: 96.69
+    to_pct: 99.51
+    typ: bridge
+  - link_id: ed3ae0d1-739c-36bd-a316-9c35ca8dc48c
+    from_pct: 79.78
+    to_pct: 84.16
+    typ: ground
+  - link_id: ed3ae0d1-739c-36bd-a316-9c35ca8dc48c
+    from_pct: 88.51
+    to_pct: 95.10
+    typ: ground

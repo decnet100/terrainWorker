@@ -454,6 +454,24 @@ STEPS: tuple[Step, ...] = (
         core=True,
     ),
     Step(
+        id="build_forest_hull",
+        title="Forest hulls",
+        summary="Opaque nDSM crown + side skirt on dense patches. Off until beamng.forest_hull.enabled.",
+        script="tools/build_forest_hull.py",
+        group="3  BeamNG-Level",
+        docs="docs/CONCEPT.md",
+        yaml_keys=(
+            "beamng.forest_hull.enabled",
+            "beamng.forest_hull.rim_m",
+            "beamng.forest_hull.skirt",
+            "beamng.forest_hull.min_area_m2",
+        ),
+        outputs=(
+            "data/processed/{slug}/mask_forest_hull_interior.png",
+            "data/processed/{slug}/forest_hull_summary.json",
+        ),
+    ),
+    Step(
         id="build_forest",
         title="Scatter forest",
         summary="Forest points from the biome masks. The level folder must already exist.",
@@ -464,6 +482,8 @@ STEPS: tuple[Step, ...] = (
             "beamng.forest.trees",
             "beamng.forest.dry_grass",
             "beamng.forest.density",
+            "beamng.forest.shape_pack",
+            "beamng.forest.hull_skip_interior",
         ),
         outputs=("data/processed/{slug}/forest_scatter_summary.json",),
         core=True,

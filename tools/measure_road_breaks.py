@@ -31,7 +31,8 @@ from build_asphalt_meshroads import _is_main_road
 from build_road_grid import _arg_value, _ensure_raw_mosaic, _load_geotiff
 from diag_road_bed_modes import _gip_polylines
 from guardrail_junctions import find_junctions
-from measure_gip_widths import _ln_to_31254, _pick_poly, find_landnutzung_geojson, load_street_polygons
+from authorities import resolved_working_crs
+from measure_gip_widths import _ln_to_working, _pick_poly, find_landnutzung_geojson, load_street_polygons
 from raster_tile_fetch import elevation_nodata_mask
 from site_coords import SiteCoords, load_site, processed_dir
 
@@ -599,6 +600,7 @@ def _junction_xy(roads: list[dict]) -> np.ndarray:
 
 def main() -> None:
     site = load_site()
+    working = resolved_working_crs(site)
     sc = SiteCoords(site)
     proc = processed_dir(site)
     cfg = bdr._cfg(site.get("beamng") or {})
@@ -663,7 +665,7 @@ def main() -> None:
     path = find_landnutzung_geojson(site)
     if path is None:
         raise SystemExit("no Landnutzung geojson for this site")
-    geoms, codes = load_street_polygons(path, _ln_to_31254())
+    geoms, codes = load_street_polygons(path, _ln_to_working(site))
     if not geoms:
         raise SystemExit(f"no street polygons in {path.name}")
     poly_tree = STRtree(geoms)
@@ -811,16 +813,16 @@ def main() -> None:
     gpkg = out_dir / "road_breaks.gpkg"
     if gpkg.exists():
         gpkg.unlink()
-    gpd.GeoDataFrame(edges, geometry="geometry", crs="EPSG:31254").to_file(
+    gpd.GeoDataFrame(edges, geometry="geometry", crs=working).to_file(
         gpkg, layer="edges", driver="GPKG"
     )
-    gpd.GeoDataFrame(smooth, geometry="geometry", crs="EPSG:31254").to_file(
+    gpd.GeoDataFrame(smooth, geometry="geometry", crs=working).to_file(
         gpkg, layer="edges_smooth", driver="GPKG"
     )
-    gpd.GeoDataFrame(ribbons, geometry="geometry", crs="EPSG:31254").to_file(
+    gpd.GeoDataFrame(ribbons, geometry="geometry", crs=working).to_file(
         gpkg, layer="ribbon", driver="GPKG"
     )
-    gpd.GeoDataFrame(breaks, geometry="geometry", crs="EPSG:31254").to_file(
+    gpd.GeoDataFrame(breaks, geometry="geometry", crs=working).to_file(
         gpkg, layer="breaks", driver="GPKG"
     )
 
@@ -840,7 +842,7 @@ def main() -> None:
         ),
         "heights": height_label,
         "heights_path": str(heights_path),
-        "crs": "EPSG:31254",
+        "crs": working,
         "station_m": STATION_M,
         "search_m": SEARCH_M,
         "break_deg": break_deg,
@@ -853,7 +855,7 @@ def main() -> None:
         "jumps_after": after,
         "inside_angle_deg": INSIDE_ANGLE_DEG,
         "median_radius_stations": MEDIAN_RADIUS,
-        "offsets": "ground metres, EPSG:31254",
+        "offsets": "ground metres, site working CRS",
         "roads": len(roads),
         "stations": len(rows),
         "edge_parts": len(edges),

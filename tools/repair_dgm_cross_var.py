@@ -29,6 +29,7 @@ from repair_dgm_cross_section import _inward  # noqa: E402
 from repair_dgm_edge_profile import _densify  # noqa: E402
 from repair_dgm_iterate import _deviation, _prepare, _road_mask, _stats  # noqa: E402
 from repair_dgm_side_band import DROP_ROUGH_M  # noqa: E402
+from authorities import resolved_working_crs  # noqa: E402
 from site_coords import load_site, processed_dir  # noqa: E402
 
 STATION_M = 0.5
@@ -368,7 +369,7 @@ def main() -> None:
         gpd.GeoDataFrame(
             [row for _pt, row in profile_rows],
             geometry=[pt for pt, _row in profile_rows],
-            crs="EPSG:31254",
+            crs=resolved_working_crs(site),
         ).to_file(gpkg, layer="profile", driver="GPKG")
     delta = np.abs(working[take].astype(np.float64) - raw[take].astype(np.float64))
     report = {

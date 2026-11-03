@@ -6,6 +6,10 @@ then cubic-spline resamples onto ``beamng.meters_per_pixel``. Do not set
 
 Default: reuse data/raw/dgm_<site>.tif if present and meta matches.
 Re-download only with --force.
+
+``sources.dgm.allow_incomplete`` keeps a mosaic above ``max_nodata_frac``
+(coverage hole outside the service). ``sources.dgm.accept_all_nodata``
+does not retry tiles the service returns empty.
 """
 from __future__ import annotations
 

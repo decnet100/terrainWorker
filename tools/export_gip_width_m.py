@@ -9,7 +9,7 @@ mean_above_class. catalog_applied is the pipeline flag.
 A second layer, buffer, holds the same corridors as polygons (radius =
 width / 2), so the check does not depend on the QGIS tool.
 
-Output is one GeoPackage per level, EPSG:31254:
+Output is one GeoPackage per level, in the site working CRS:
 
     data/processed/<slug>/gip_width_m.gpkg
 
@@ -42,6 +42,7 @@ from authorities import (  # noqa: E402
     gip_fc_crs,
     gip_source_oid,
     make_grid_transformer,
+    resolved_working_crs,
     same_crs,
 )
 from build_bridges import find_gip_geojson  # noqa: E402
@@ -189,15 +190,15 @@ def _attr(value):
     return json.dumps(value, ensure_ascii=False)
 
 
-def _to_31254(site: dict, data: dict):
-    """GIP cache → EPSG:31254.
+def _to_working(site: dict, data: dict):
+    """GIP cache → the site working CRS.
 
-    A geographic WGS84/ETRS cache (older extracts) is shifted with the BEV
-    MGI grid. 4326 and 4258 share the same horizontal coordinates in PROJ;
-    the grid is what lands the line on the orthophoto.
+    A geographic WGS84/ETRS cache is shifted with the BEV grid when the
+    working CRS is MGI. 4326 and 4258 share the same horizontal coordinates
+    in PROJ.
     """
     src = gip_fc_crs(data, site)
-    dest = "EPSG:31254"
+    dest = resolved_working_crs(site)
     if same_crs(src, dest):
         from pyproj import Transformer
 
@@ -225,7 +226,7 @@ def _project(geom: dict, tf):
 def _rows_for_site(site: dict) -> tuple[list[dict], str]:
     path = find_gip_geojson(site)
     data = json.loads(path.read_text(encoding="utf-8"))
-    tf = _to_31254(site, data)
+    tf = _to_working(site, data)
     rows: list[dict] = []
     checked = False
     for feat in data.get("features") or []:
@@ -356,7 +357,7 @@ def export_site(site: dict) -> Path:
             if alt.exists():
                 alt.unlink()
             out = alt
-    gdf = gpd.GeoDataFrame(rows, geometry="geometry", crs="EPSG:31254")
+    gdf = gpd.GeoDataFrame(rows, geometry="geometry", crs=resolved_working_crs(site))
     gdf.to_file(
         out,
         layer=LAYER,

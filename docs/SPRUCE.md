@@ -9,8 +9,8 @@ Stand der Kette: Pack `data/assets/trees/spruce/`. Ins Level kopiert `vendor_spr
 | Node | Pixel | Inhalt |
 |------|-------|--------|
 | `tree_spruce_large_a1000` | ab 1000 | Nahmesh, Rinde + Nadeln |
-| `tree_spruce_large_a80` | 80 bis 1000 | vier Ansichtskarten, je 90° |
-| `bb_autobillboard25` | 25 bis 80 | eine Fläche, die zur Kamera zeigt |
+| `tree_spruce_large_a150` | 150 bis 1000 | vier Ansichtskarten, je 90° |
+| `bb_autobillboard25` | 25 bis 150 | eine Fläche, die zur Kamera zeigt |
 | — | unter 25 | nichts |
 
 Die Pixelgröße ist die Torque-Detailgröße. Die größte Stufe, die noch unter die projizierte Größe passt, wird gezeichnet. Bei `detailAdjust` 2 liegt 1000 px ungefähr bei 100 m, 2500 px lagen ungefähr bei 40 m.
@@ -79,6 +79,32 @@ Der Billboard über den ganzen Mittelgrund (alles unter 2500 px) hat geflackert 
 ## Nahmesh
 
 Nadeltextur ohne `baseColorFactor`. Der Faktor 0,55 / 1 / 0,4 hat Rot und Blau gedrückt und ein einfarbiges Grün erzeugt. `alphaRef` 75, doppelseitig, `invertBackFaceNormals`. Keine Nadel-Normal-Map, kein Specular, kein Subsurface: das hat die Füllrate gekostet und die Farbe nicht gerettet.
+
+## Lärche
+
+Dieselbe Kette, Quelle `laerche_1c.blend`, Objekt `tree`. Pack `data/assets/trees/larch/`, im Level `trees_larch`. Materialnamen `LarchBark`, `LarchTwig`, `LarchMid`, damit sie die Fichte nicht überschreiben. Endungen wieder `.color.png` fürs Albedo und `.data.png` für Deckkraft und die Karten-Normale.
+
+`beamng.forest.larch_share` ist der Anteil der Plätze, der eine Lärche bekommt. Zusammen mit den Fichten-Varianten steht er auf 0,25, der Rest bleibt die Hauptfichte. Die Dichte ändert sich dadurch nicht. Aufnahme und Export:
+
+```powershell
+& "C:\Program Files\Blender Foundation\Blender 5.2\blender.exe" "C:\temp\assets\trees\laerche_1c.blend" --background --python "C:\temp\beamng_autoroad\tools\blender\tree_imposter_capture.py" -- --species larch
+```
+
+```powershell
+& "C:\Program Files\Blender Foundation\Blender 5.2\blender.exe" "C:\temp\assets\trees\laerche_1c.blend" --background --python "C:\temp\beamng_autoroad\tools\blender\tree_imposter_capture.py" -- --species larch --ao
+```
+
+```powershell
+& "C:\Program Files\Blender Foundation\Blender 5.2\blender.exe" "C:\temp\assets\trees\laerche_1c.blend" --background --python "C:\temp\beamng_autoroad\tools\blender\tree_lod_spruce.py" -- --species larch
+```
+
+Der Export schreibt das Nahmesh und hängt danach die Karten und den Billboard an. Fehlt PIL in der Blender-Python, ruft das Skript dafür die System-Python auf.
+
+## Fichte2b und Fichte2c
+
+Dieselbe Kette und dieselben Nadeltexturen wie die Hauptfichte, andere Kronenform. Quellen `fichte2b.blend` und `fichte2c.blend`. Packs `data/assets/trees/spruceb/` und `sprucec/`, im Level `trees_spruceb` und `trees_sprucec`. Materialnamen `SprucebBark`, `SprucebTwig`, `SprucebMid` bzw. `Sprucec*`, sonst überschreibt die Variante die Hauptfichte.
+
+`spruceb_share` und `sprucec_share` sind je 0,25, die Lärche ebenfalls 0,25. Der Rest der Plätze ist die Hauptfichte. Die Dichte (Abstand 3 m, höchstens 30000) bleibt. Aufnahme und Export mit `--species spruceb` oder `--species sprucec` und der jeweiligen Blend-Datei, in derselben Reihenfolge wie bei der Lärche.
 
 ## Was nicht wiederholen
 

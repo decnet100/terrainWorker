@@ -40,16 +40,16 @@ SPECIES: dict[str, dict[str, Any]] = {
         "leaf_hints": ("twig", "leaf", "nadel", "foliage", "needle"),
     },
     "larch": {
-        "equator_steps": 12,
-        "polar_steps": 1,
-        "include_poles": True,
-        "polar_angle": 35.0,
+        "equator_steps": 16,
+        "polar_steps": 0,
+        "include_poles": False,
+        "polar_angle": 0.0,
         "dimension": 256,
         "detail_level": 0,
         "size": 25,
-        "world_size_m": 20.0,
+        "world_size_m": 24.0,
         "dae_stem": "tree_larch_large",
-        "blend": "laerche_versuch.blend",
+        "blend": "laerche_1c.blend",
         "bark_hints": ("bark", "rinde", "stamm", "trunk"),
         "leaf_hints": ("twig", "leaf", "nadel", "foliage", "needle"),
     },
@@ -97,6 +97,11 @@ class ImposterView:
 
 def species_cfg(name: str) -> dict[str, Any]:
     key = str(name).strip().lower()
+    if key in ("spruceb", "sprucec"):
+        cfg = dict(SPECIES["spruce"])
+        cfg["dae_stem"] = f"tree_{key}_large"
+        cfg["blend"] = f"fichte2{key[-1]}.blend"
+        return cfg
     if key not in SPECIES:
         raise SystemExit(f"Unknown tree species '{name}'. Known: {sorted(SPECIES)}")
     return dict(SPECIES[key])
@@ -758,7 +763,7 @@ SPRUCE_CARD_RADIUS = 17.97062468991007
 SPRUCE_ORTHO_PAD = 2.05
 # a1000 is the near mesh and must not match. Alternatives need "-mesh" right after the number.
 _LOWER_GEOM = re.compile(
-    r"    <geometry id=\"tree_spruce_large_a(?:500|250|80|25)-mesh\"[\s\S]*?</geometry>\n"
+    r"    <geometry id=\"tree_spruce_large_a(?:500|250|150|80|25)-mesh\"[\s\S]*?</geometry>\n"
 )
 _SPRUCE_CARD_IMAGE = re.compile(r"    <image id=\"SpruceCard-image\"[\s\S]*?</image>\n")
 _SPRUCE_CARD_EFFECT = re.compile(r"    <effect id=\"SpruceCard-effect\">[\s\S]*?</effect>\n")
@@ -767,6 +772,8 @@ _SPRUCE_MID_IMAGE = re.compile(r"    <image id=\"SpruceMid-image\"[\s\S]*?</imag
 _SPRUCE_MID_EFFECT = re.compile(r"    <effect id=\"SpruceMid-effect\">[\s\S]*?</effect>\n")
 _SPRUCE_MID_MAT = re.compile(r"    <material id=\"SpruceMid-material\"[\s\S]*?</material>\n")
 # Every fourth equator photo: 4 directions, 90 degrees apart.
+# Cards start at this pixel size. Below it the single billboard (size 25) is used.
+CARD_PIXELS = 150
 MID_VIEW_INDEXES = (0, 4, 8, 12)
 MID_CELL = (256, 512)
 MID_MARGIN = 8
@@ -774,6 +781,31 @@ _VISUAL_SCENE = re.compile(r"  <library_visual_scenes>[\s\S]*?</library_visual_s
 _NEAR_NODE = re.compile(
     r"<node id=\"tree_spruce_large_a1000\" name=\"tree_spruce_large_a1000\" type=\"NODE\">[\s\S]*?</node>"
 )
+
+
+def _near_stem(text: str) -> str:
+    """LOD stem from the near mesh node, for example tree_larch_large."""
+    found = re.search(r'id="(tree_[A-Za-z0-9_]+)_a1000"', text)
+    if found is None:
+        raise ValueError("near LOD node a1000 missing")
+    return found.group(1)
+
+
+def _species_tag(stem: str) -> str:
+    body = stem[5:] if stem.startswith("tree_") else stem
+    if body.endswith("_large"):
+        body = body[: -len("_large")]
+    return body
+
+
+def _card_frame(cells_dir: Path) -> tuple[tuple[float, float, float], float]:
+    """Crown centre and radius from the capture. Spruce constants if the file is absent."""
+    meta = cells_dir / "views.json"
+    if not meta.is_file():
+        return SPRUCE_CARD_CENTER, SPRUCE_CARD_RADIUS
+    data = json.loads(meta.read_text(encoding="utf-8"))
+    center = tuple(float(v) for v in data["center"])
+    return center, float(data["radius"])  # type: ignore[return-value]
 
 
 def spruce_view_basis(index: int, equator_steps: int = 16) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
@@ -909,17 +941,25 @@ _CARD_NODE = re.compile(
 
 def attach_camera_billboard(text: str) -> str:
     """Drop the fixed cards and add the empty engine billboard node."""
-    text = _LOWER_GEOM.sub("", text)
-    text = _CARD_NODE.sub("", text)
+    stem = _near_stem(text)
+    lower = re.compile(
+        rf"    <geometry id=\"{re.escape(stem)}_a(?:500|250|150|80|25)-mesh\"[\s\S]*?</geometry>\n"
+    )
+    card = re.compile(
+        rf"\n          <node id=\"{re.escape(stem)}_a(?:150|80|25)\" "
+        rf"name=\"{re.escape(stem)}_a(?:150|80|25)\" type=\"NODE\">[\s\S]*?</node>"
+    )
+    text = lower.sub("", text)
+    text = card.sub("", text)
     if "bb_autobillboard25" not in text:
         needle = '      <node id="base00" name="base00" type="NODE">\n'
         insert = needle + '        <node id="bb_autobillboard25" name="bb_autobillboard25" type="NODE"/>\n'
         if needle not in text:
             raise ValueError("base00 missing")
         text = text.replace(needle, insert, 1)
-    if "tree_spruce_large_a1000" not in text:
+    if f"{stem}_a1000" not in text:
         raise ValueError("near mesh missing")
-    if 'id="tree_spruce_large_a80"' in text or 'id="tree_spruce_large_a25"' in text:
+    if f'id="{stem}_a{CARD_PIXELS}"' in text or f'id="{stem}_a80"' in text or f'id="{stem}_a25"' in text:
         raise ValueError("crossed cards still in DAE")
     return text
 
@@ -1077,26 +1117,39 @@ def _card_node_xml() -> str:
     return _lod_node_xml("tree_spruce_large_a25", "SpruceCard")
 
 
-def ensure_spruce_mid_material(text: str) -> str:
-    """Collada stubs so the eight view cards can bind SpruceMid. No double-sided extra."""
-    if "SpruceMid-material" in text:
+def ensure_spruce_mid_material(
+    text: str,
+    material: str = "SpruceMid",
+    image_name: str = "spruce_mid.color.png",
+) -> str:
+    """Collada stubs so the view cards can bind the mid material. No double-sided extra."""
+    if f"{material}-material" in text:
         return text
-    image = '    <image id="SpruceMid-image" name="SpruceMid-image"><init_from>spruce_mid.color.png</init_from></image>\n'
+    image = (
+        f'    <image id="{material}-image" name="{material}-image">'
+        f"<init_from>{image_name}</init_from></image>\n"
+    )
     effect = (
-        '    <effect id="SpruceMid-effect">\n'
+        f'    <effect id="{material}-effect">\n'
         "      <profile_COMMON>\n"
-        '        <newparam sid="SpruceMid-surface"><surface type="2D"><init_from>SpruceMid-image</init_from></surface></newparam>\n'
-        '        <newparam sid="SpruceMid-sampler"><sampler2D><source>SpruceMid-surface</source></sampler2D></newparam>\n'
-        '        <technique sid="common"><lambert><diffuse><texture texture="SpruceMid-sampler" texcoord="UVSET0"/></diffuse></lambert></technique>\n'
+        f'        <newparam sid="{material}-surface"><surface type="2D">'
+        f"<init_from>{material}-image</init_from></surface></newparam>\n"
+        f'        <newparam sid="{material}-sampler"><sampler2D>'
+        f"<source>{material}-surface</source></sampler2D></newparam>\n"
+        f'        <technique sid="common"><lambert><diffuse>'
+        f'<texture texture="{material}-sampler" texcoord="UVSET0"/></diffuse></lambert></technique>\n'
         "      </profile_COMMON>\n"
         "    </effect>\n"
     )
-    material = '    <material id="SpruceMid-material" name="SpruceMid"><instance_effect url="#SpruceMid-effect"/></material>\n'
+    material_xml = (
+        f'    <material id="{material}-material" name="{material}">'
+        f'<instance_effect url="#{material}-effect"/></material>\n'
+    )
     if "  </library_images>\n" not in text:
         raise ValueError("DAE has no library_images")
     text = text.replace("  </library_images>\n", image + "  </library_images>\n", 1)
     text = text.replace("  </library_effects>\n", effect + "  </library_effects>\n", 1)
-    text = text.replace("  </library_materials>\n", material + "  </library_materials>\n", 1)
+    text = text.replace("  </library_materials>\n", material_xml + "  </library_materials>\n", 1)
     return text
 
 
@@ -1105,22 +1158,29 @@ def attach_mid_cards(
     quads: list[list[tuple[float, float, float]]],
     uvs: list[list[tuple[float, float]]],
 ) -> str:
-    """Put the eight view cards back under the near mesh. The billboard node stays."""
-    if 'id="tree_spruce_large_a80"' in text:
+    """Put the four view cards back under the near mesh. The billboard node stays."""
+    stem = _near_stem(text)
+    tag = _species_tag(stem)
+    mat_name = f"{tag[:1].upper()}{tag[1:]}Mid"
+    card_name = f"{stem}_a{CARD_PIXELS}"
+    if f'id="{card_name}"' in text or f'id="{stem}_a80"' in text:
         raise ValueError("mid cards already in DAE")
     if "bb_autobillboard25" not in text:
         raise ValueError("billboard node missing")
-    text = ensure_spruce_mid_material(text)
-    geo = _quads_geometry_xml("tree_spruce_large_a80", "SpruceMid", quads, uvs)
+    text = ensure_spruce_mid_material(text, mat_name, f"{tag}_mid.color.png")
+    geo = _quads_geometry_xml(card_name, mat_name, quads, uvs)
     if "  </library_geometries>\n" not in text:
         raise ValueError("DAE has no library_geometries")
     text = text.replace("  </library_geometries>\n", geo + "  </library_geometries>\n", 1)
-    near = _NEAR_NODE.search(text)
+    near = re.search(
+        rf'<node id="{re.escape(stem)}_a1000" name="{re.escape(stem)}_a1000" type="NODE">[\s\S]*?</node>',
+        text,
+    )
     if near is None:
-        raise ValueError("near LOD node tree_spruce_large_a1000 missing")
-    node = "\n" + _lod_node_xml("tree_spruce_large_a80", "SpruceMid")
+        raise ValueError(f"near LOD node {stem}_a1000 missing")
+    node = "\n" + _lod_node_xml(card_name, mat_name)
     text = text[: near.end()] + node + text[near.end() :]
-    if 'id="tree_spruce_large_a25"' in text:
+    if f'id="{stem}_a25"' in text:
         raise ValueError("far cards would share pixel size 25 with the billboard")
     return text
 
@@ -1131,7 +1191,7 @@ def patch_spruce_dae_xml(
     mid_quads: list[list[tuple[float, float, float]]] | None = None,
     mid_uvs: list[list[tuple[float, float]]] | None = None,
 ) -> str:
-    """Near mesh stays _a1000. Optional _a80 view cards, then the _a25 stamp. No atlas billboard."""
+    """Near mesh stays _a1000. Optional view cards, then the _a25 stamp. No atlas billboard."""
     text = _LOWER_GEOM.sub("", text)
     text = _SPRUCE_CARD_IMAGE.sub("", text)
     text = _SPRUCE_CARD_EFFECT.sub("", text)
@@ -1172,7 +1232,7 @@ def patch_spruce_dae_xml(
     text = text.replace("  </library_materials>\n", material + "  </library_materials>\n", 1)
     geo = ""
     if mid_quads:
-        geo += _quads_geometry_xml("tree_spruce_large_a80", "SpruceMid", mid_quads, mid_uvs)
+        geo += _quads_geometry_xml(f"tree_spruce_large_a{CARD_PIXELS}", "SpruceMid", mid_quads, mid_uvs)
     geo += _card_geometry_xml(quads)
     if "  </library_geometries>\n" not in text:
         raise ValueError("DAE has no library_geometries")
@@ -1180,7 +1240,7 @@ def patch_spruce_dae_xml(
     near = _NEAR_NODE.search(text)
     if near is None:
         raise ValueError("near LOD node tree_spruce_large_a1000 missing")
-    mid_node = _lod_node_xml("tree_spruce_large_a80", "SpruceMid") + "\n" if mid_quads else ""
+    mid_node = _lod_node_xml(f"tree_spruce_large_a{CARD_PIXELS}", "SpruceMid") + "\n" if mid_quads else ""
     scene = (
         "  <library_visual_scenes>\n"
         '    <visual_scene id="Scene" name="Scene">\n'
@@ -1206,7 +1266,7 @@ def patch_spruce_dae_xml(
         mid_effect = _SPRUCE_MID_EFFECT.search(text)
         if mid_effect is None or "double_sided" in mid_effect.group(0):
             raise ValueError("SpruceMid card must stay single-sided")
-        if 'id="tree_spruce_large_a80"' not in text or "tree_spruce_large_a1000-mesh" not in text:
+        if f'id="tree_spruce_large_a{CARD_PIXELS}"' not in text or "tree_spruce_large_a1000-mesh" not in text:
             raise ValueError("mid or near mesh missing after patch")
     return text
 
@@ -1355,7 +1415,8 @@ def build_spruce_mid_atlas(
         v_top = 1.0 - oy / atlas_h
         v_bot = 1.0 - (oy + ch) / atlas_h
         uvs.append([(u0, v_bot), (u1, v_bot), (u1, v_top), (u0, v_top)])
-        quads.append(spruce_view_quad(index, uv_rect))
+        center, radius = _card_frame(cells_dir)
+        quads.append(spruce_view_quad(index, uv_rect, center=center, radius=radius))
     color_dst.parent.mkdir(parents=True, exist_ok=True)
     atlas.save(color_dst)
     write_card_opacity(atlas, opacity_dst)
@@ -1364,9 +1425,10 @@ def build_spruce_mid_atlas(
     return quads, uvs
 
 
-def simplify_spruce_materials(path: Path, vfs_prefix: str) -> None:
-    """Twig color factor, no normal/specular/subsurface. Far card uses spruce_card.color.png."""
+def simplify_spruce_materials(path: Path, vfs_prefix: str, tag: str = "spruce") -> None:
+    """Twig color factor, no normal/specular/subsurface. Maps use the cooker suffixes."""
     prefix = vfs_prefix.rstrip("/")
+    title = f"{tag[:1].upper()}{tag[1:]}"
     data = json.loads(path.read_text(encoding="utf-8"))
     for name, block in list(data.items()):
         low = name.lower()
@@ -1376,8 +1438,8 @@ def simplify_spruce_materials(path: Path, vfs_prefix: str) -> None:
             block["Stages"] = [
                 {
                     "metallicFactor": 0.0,
-                    "baseColorMap": f"{prefix}/twig_spruce.color.png",
-                    "opacityMap": f"{prefix}/twig_spruce_o.data.png",
+                    "baseColorMap": f"{prefix}/twig_{tag}.color.png",
+                    "opacityMap": f"{prefix}/twig_{tag}_o.data.png",
                     "roughnessFactor": 0.9,
                 },
                 {},
@@ -1395,7 +1457,7 @@ def simplify_spruce_materials(path: Path, vfs_prefix: str) -> None:
             block["Stages"] = [
                 {
                     "metallicFactor": 0.0,
-                    "baseColorMap": f"{prefix}/bark_spruce.color.png",
+                    "baseColorMap": f"{prefix}/bark_{tag}.color.png",
                     "roughnessFactor": 0.85,
                 },
                 {},
@@ -1403,15 +1465,15 @@ def simplify_spruce_materials(path: Path, vfs_prefix: str) -> None:
                 {},
             ]
             block["castShadows"] = False
-    data["SpruceCard"] = {
-        "name": "SpruceCard",
-        "mapTo": "SpruceCard",
+    data[f"{title}Card"] = {
+        "name": f"{title}Card",
+        "mapTo": f"{title}Card",
         "class": "Material",
         "Stages": [
             {
                 "metallicFactor": 0.0,
-                "baseColorMap": f"{prefix}/spruce_card.color.png",
-                "opacityMap": f"{prefix}/spruce_card_o.data.png",
+                "baseColorMap": f"{prefix}/{tag}_card.color.png",
+                "opacityMap": f"{prefix}/{tag}_card_o.data.png",
                 "roughnessFactor": 1.0,
                 "specular": [0.0, 0.0, 0.0, 1.0],
             },
@@ -1431,16 +1493,16 @@ def simplify_spruce_materials(path: Path, vfs_prefix: str) -> None:
         "subSurface": False,
     }
     # Double sided: defaultMat.hlsl flips normal.z on the back face under MFT_DoubleSided.
-    data["SpruceMid"] = {
-        "name": "SpruceMid",
-        "mapTo": "SpruceMid",
+    data[f"{title}Mid"] = {
+        "name": f"{title}Mid",
+        "mapTo": f"{title}Mid",
         "class": "Material",
         "Stages": [
             {
                 "metallicFactor": 0.0,
-                "baseColorMap": f"{prefix}/spruce_mid.color.png",
-                "opacityMap": f"{prefix}/spruce_mid_o.data.png",
-                "normalMap": f"{prefix}/spruce_mid_n.data.png",
+                "baseColorMap": f"{prefix}/{tag}_mid.color.png",
+                "opacityMap": f"{prefix}/{tag}_mid_o.data.png",
+                "normalMap": f"{prefix}/{tag}_mid_n.data.png",
                 "normalMapStrength": 1.0,
                 "roughnessFactor": 1.0,
                 "specular": [0.0, 0.0, 0.0, 1.0],
@@ -1474,8 +1536,9 @@ def install_spruce_far_lod(dae_path: Path | str, card_src: Path | str | None = N
     import time
 
     dae_path = Path(dae_path)
-    cells = Path(card_src).parent if card_src else Path(r"C:\temp\assets\trees\out\spruce\cells")
-    spec = species_cfg("spruce")
+    tag = _species_tag(dae_path.name.removesuffix(".dae"))
+    cells = Path(card_src).parent if card_src else Path(rf"C:\temp\assets\trees\out\{tag}\cells")
+    spec = species_cfg(tag)
     n = int(spec["equator_steps"])
     dim = int(spec["dimension"])
     from PIL import Image
@@ -1497,9 +1560,9 @@ def install_spruce_far_lod(dae_path: Path | str, card_src: Path | str | None = N
     text = attach_camera_billboard(dae_path.read_text(encoding="utf-8"))
     quads, uvs = build_spruce_mid_atlas(
         cells,
-        dae_path.with_name("spruce_mid.color.png"),
-        dae_path.with_name("spruce_mid_o.data.png"),
-        dae_path.with_name("spruce_mid_n.data.png"),
+        dae_path.with_name(f"{tag}_mid.color.png"),
+        dae_path.with_name(f"{tag}_mid_o.data.png"),
+        dae_path.with_name(f"{tag}_mid_n.data.png"),
     )
     text = attach_mid_cards(text, quads, uvs)
     dae_path.write_text(text, encoding="utf-8", newline="\n")
@@ -1511,7 +1574,7 @@ def install_spruce_far_lod(dae_path: Path | str, card_src: Path | str | None = N
         os.utime(side, (now + 5.0, now + 5.0))
     mat = dae_path.with_name("main.materials.json")
     if mat.is_file():
-        simplify_spruce_materials(mat, "art/shapes/trees/trees_spruce")
+        simplify_spruce_materials(mat, f"art/shapes/trees/trees_{tag}", tag)
     info["dae"] = str(dae_path)
     return info
 

@@ -153,6 +153,53 @@ def _ensure_output(nt):
     return nt.nodes.new("ShaderNodeOutputMaterial")
 
 
+def _link_color_socket(nt, src_socket, dest_socket):
+    if src_socket.links:
+        nt.links.new(src_socket.links[0].from_socket, dest_socket)
+    else:
+        dest_socket.default_value = src_socket.default_value
+
+
+def _link_principled_base(nt, shader, dest_socket):
+    if shader is None or shader.type != "BSDF_PRINCIPLED":
+        return
+    base = shader.inputs.get("Base Color")
+    if base is not None:
+        _link_color_socket(nt, base, dest_socket)
+
+
+def _surface_node(nt):
+    out = _ensure_output(nt)
+    surf = out.inputs.get("Surface")
+    if surf and surf.links:
+        return surf.links[0].from_node
+    return _principled(nt)
+
+
+def _link_albedo(nt, emission):
+    """Emission of the color that actually reaches the material output.
+
+    A single Principled shader keeps its base color, including a hue node in
+    front of it. A mix of two Principled shaders keeps the same mix factor, so
+    a trunk that blends two barks is not replaced by whichever node is first.
+    """
+    src = _surface_node(nt)
+    if src is not None and src.type == "MIX_SHADER" and len(src.inputs) >= 3:
+        mix = nt.nodes.new("ShaderNodeMix")
+        mix.name = "_imp_albedo_mix"
+        mix.data_type = "RGBA"
+        _link_color_socket(nt, src.inputs[0], mix.inputs["Factor"])
+        a = src.inputs[1].links[0].from_node if src.inputs[1].links else None
+        b = src.inputs[2].links[0].from_node if src.inputs[2].links else None
+        _link_principled_base(nt, a, mix.inputs["A"])
+        _link_principled_base(nt, b, mix.inputs["B"])
+        nt.links.new(mix.outputs["Result"], emission.inputs["Color"])
+        return
+    princ = src if src is not None and src.type == "BSDF_PRINCIPLED" else _principled(nt)
+    if princ and "Base Color" in princ.inputs:
+        _link_color_socket(nt, princ.inputs["Base Color"], emission.inputs["Color"])
+
+
 def install_capture_shaders(mode: str):
     """mode: albedo | normal. Stores originals on the material as '_imp_backup'."""
     for mat in bpy.data.materials:
@@ -168,10 +215,7 @@ def install_capture_shaders(mode: str):
         em.name = "_imp_emission"
         em.location = (out.location.x - 280, out.location.y)
         if mode == "albedo":
-            if princ and "Base Color" in princ.inputs and princ.inputs["Base Color"].links:
-                nt.links.new(princ.inputs["Base Color"].links[0].from_socket, em.inputs["Color"])
-            elif princ:
-                em.inputs["Color"].default_value = princ.inputs["Base Color"].default_value
+            _link_albedo(nt, em)
             em.inputs["Strength"].default_value = 1.0
         elif mode == "ao":
             ao = nt.nodes.new("ShaderNodeAmbientOcclusion")
@@ -227,7 +271,7 @@ def restore_capture_shaders_one(mat):
     if not mat.use_nodes or mat.node_tree is None:
         return
     nt = mat.node_tree
-    for name in ("_imp_emission", "_imp_geom", "_imp_add", "_imp_mul", "_imp_ao", "_imp_trans", "_imp_mix"):
+    for name in ("_imp_emission", "_imp_geom", "_imp_add", "_imp_mul", "_imp_ao", "_imp_albedo_mix", "_imp_trans", "_imp_mix"):
         n = nt.nodes.get(name)
         if n:
             nt.nodes.remove(n)
@@ -311,6 +355,11 @@ def step_capture():
     except ImportError:
         log(f"FEHLER: tree_imposter_lib nicht in {CFG['autoroad_tools']}")
         return
+    cli = _cli_args()
+    if "--species" in cli:
+        CFG["species"] = cli[cli.index("--species") + 1]
+    if CFG["species"] != "spruce" and CFG["out_dir"] == "//out/spruce/cells/":
+        CFG["out_dir"] = f"//out/{CFG['species']}/cells/"
     spec = species_cfg(CFG["species"])
     src = find_source()
     if src is None:
@@ -328,7 +377,6 @@ def step_capture():
     d = out_dir()
     setup_scene(work, CFG["samples_albedo"], CFG["render_px"])
     cam = ensure_camera(work, center, radius)
-    cli = _cli_args()
     ao_only = "--ao" in cli
     if "--ao-distance" in cli:
         CFG["ao_distance_m"] = float(cli[cli.index("--ao-distance") + 1])

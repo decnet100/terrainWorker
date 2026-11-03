@@ -19,3 +19,6 @@ Thumbs.db
 
 # Lokale Fremdcode-Notizen
 /notes/
+
+# 3D assets (trees, buildings): local only, too large for the repo
+data/assets/

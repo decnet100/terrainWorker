@@ -1,0 +1,15 @@
+# GIP nodes that are one point. A later pass sets every id in a group to the
+# position of keep, then moves a link end that lies within 5 cm of a moved node
+# by the same vector. keep is the node that already holds the arms.
+#
+# Measured on gip_routing node/link, EPSG:25832, before this pass:
+# 0b9da19f at 613674.703 5198425.799, level 0, z 1144.676, n_links 3.
+#   link start 83a5ef3a (Wirtschaftsweg 109) and bd67b23f (B180, street 101070).
+# 3bf4e1d1 at 613675.341 5198424.993, level -1, z 1144.600, n_links 2.
+#   link start 51cf5ca7 (B180, 1.5 m).
+# Distance 1.03 m. Same junction, split by the GIP.
+coincide:
+  - keep: 0b9da19f-eb55-355a-9866-42e613a16960
+    ids:
+      - 0b9da19f-eb55-355a-9866-42e613a16960
+      - 3bf4e1d1-edb3-4e71-a737-b2cd79a6080a

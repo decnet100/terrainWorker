@@ -7825,7 +7825,7 @@ def main() -> None:
                     raise SystemExit(
                         f"Missing {proc / 'roads_beamng.json'} (needed for hermite galleries)"
                     )
-                seed = bb.pick_road(roads, feat["xy"])
+                seed = bb.pick_road(roads, feat["xy"], site)
                 pad = float(cfg.get("portal_search_out_m") or 25.0) + float(
                     cfg.get("portal_out_extra_m") or 2.0
                 ) + 5.0

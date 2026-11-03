@@ -22,7 +22,7 @@ Distances below are measured **outward from the playable bbox**, not from the ma
 | **Mid** | `near_m` → `mid_m` (~10 km), with `near_overlap_m` / `mid_overlap_m` so rings overlap. **Always kept** (no viewshed). | Copernicus GLO-30 **+ filtered Tirol nDSM** (`mid_canopy`, `mid_dgm_res_m` default 8 m). Outside AT coverage the bump is 0. | SWISSIMAGE crop of the mid extent | `mid_step_m` 15 m |
 | **Far** | out to `radius_m` (~40 km from site centre), minus a hole through mid. **Viewshed-culled**. | Copernicus GLO-30 @ `viewshed_step_m` (50 m) | SWISSIMAGE of the full padded square | `mesh_step_m` 120 m |
 
-Near inner edge: vertices on the playable bbox are snapped to the bbox, Z clamped to the composed heightmap, then dropped by `near_lip_drop_m` (default 1 m). That is a **cliff under the lip**, not a tuck under the driveable surface (tucking z-fights / pokes through).
+Ring edges are shared polylines. The same `(x, y, z)` is written into both meshes. The level edge uses the composed heightmap, then `near_lip_drop_m` (default 2 cm) so the terrain wins the shared pixels. Near/mid and mid/far copy the inner surface with no extra drop. The rings meet; they do not overlap.
 
 Mesh Z used to take every *k*-th DGM cell (`elev[::stride]`). That is nearest-neighbour downsample and shows as terraces. Near samples the 2 m DGM with a **cubic spline** at each 5 m vertex. Mid samples Copernicus at 15 m (bilinear on the 50 m grid; the GLO-30→site-CRS warp itself is cubic). Far stays 120 m.
 
@@ -135,8 +135,8 @@ Defaults live in `fetch_backdrop.backdrop_cfg`. Fernpass Mega overrides many of 
 | `near_m` | 2000 | Near ring outer distance from bbox (Reschen: 5000) |
 | `near_step_m` | 5 | Near triangle spacing (2 m DGM; 15 m is the mid ring) |
 | `near_dgm_res_m` | 2 | Near WCS request resolution |
-| `near_overlap_m` | 80 | Mid starts this far inside `near_m` |
-| `near_lip_drop_m` | 1 | Drop near verts on the bbox vs playable Z |
+| `near_overlap_m` | 80 | Unused by the mesh. Rings meet on the `near_m` polyline. |
+| `near_lip_drop_m` | 0.02 | Level/near seam under the heightmap. Ring seams are exact. |
 | `near_texture_size` | 2048 | Near albedo PNG |
 | `near_normal_size` | = albedo | Near `normalMap` PNG. Reschen 4096 from the 2 m DGM (~4.5 m/texel). |
 | `near_tiles` | 9 | Near Collada grid (letter names). Reschen 5 km @ 5 m uses 15×15 so each tile stays under 65 535 verts. |
@@ -147,7 +147,7 @@ Defaults live in `fetch_backdrop.backdrop_cfg`. Fernpass Mega overrides many of 
 | `near_canopy_min_area_m2` | 40 | Drop connected blobs smaller than this |
 | `mid_m` | 10000 | Mid ring outer distance from bbox |
 | `mid_step_m` | 15 | Mid triangle spacing |
-| `mid_overlap_m` | 150 | Far hole starts this far inside `mid_m` |
+| `mid_overlap_m` | 150 | Unused by the mesh. Far starts on the `mid_m` polyline. |
 | `mid_texture_size` | 2048 | Mid PNG |
 | `mid_tiles` | 8 | Mid Collada grid (letter names, not digits). 10 km @ 15 m. |
 | `mid_canopy` | = `near_canopy` | Add the same filtered nDSM onto Copernicus mid Z. Needs `sources.dom`. |
@@ -269,7 +269,6 @@ PNG-only iteration stays on `preview_backdrop_detect.py` / `preview_forest_detec
 
 ## Not in this POC
 
-- Seamless skirt that matches every playable texel (lip is a deliberate 1 m drop)
 - Filling German / Italian voids in the near DGM with Copernicus
 - EEA-10 DEM; optional near-ring tree billboard clumps (recolor BEV forest first)
 - Streaming / one mesh for the whole 80 km square (vertex limit → tiles)

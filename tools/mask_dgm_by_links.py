@@ -1,14 +1,13 @@
-"""Keep the mixed DGM only inside a buffer of every GIP link.
+"""Keep the 0.5 m DGM only inside a buffer of every GIP link.
 
-The mixed file is the full tile, Tyrol and Swiss together, on a 1 m grid.
-Cells whose centre lies more than 15 m from every link are cleared. The
-result is the terrain for the grade checks.
+The source is the native 50 cm coverage, not the 1 m mixed tile. Cells whose
+centre lies more than 15 m from every link are cleared. The result is the
+terrain for the grade checks.
 
     cd C:\\temp\\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/pfunds_spiess.yaml"; python tools\\mask_dgm_by_links.py
 """
 from __future__ import annotations
 
-import re
 import sys
 from pathlib import Path
 
@@ -28,16 +27,38 @@ from site_coords import load_site, processed_dir  # noqa: E402
 BUFFER_M = 15.0
 
 
+def _source(site: dict) -> Path:
+    """Native 50 cm DGM. The mixed tile is 1 m and is not this buffer."""
+    configured = ROOT / str(((site.get("sources") or {}).get("dgm") or {}).get("path") or "")
+    name = configured.name
+    native = None
+    if name.endswith("_mixed.tif"):
+        native = configured.with_name(name.replace("_mixed.tif", "_native.tif"))
+    elif configured.stem.endswith("_mixed"):
+        native = configured.with_name(configured.stem.replace("_mixed", "_native") + configured.suffix)
+    if native is not None and native.is_file():
+        return native
+    raise SystemExit(f"missing 0.5 m DGM beside {configured}")
+
+
+def _corner(path: Path) -> tuple[float, float, float]:
+    """Outer north-west corner and cell size. The world file names the cell centre."""
+    tfw = path.with_suffix(".tfw")
+    if not tfw.is_file():
+        raise SystemExit(f"missing world file {tfw}")
+    vals = [float(part) for part in tfw.read_text(encoding="utf-8").split()]
+    resx, _rot, _rot2, resy, cx, cy = vals
+    res = abs(resx)
+    if abs(abs(resx) - abs(resy)) > 1e-6:
+        raise SystemExit(f"{path} has unequal pixel scales {resx} and {resy}")
+    if abs(res - 0.5) > 1e-6:
+        raise SystemExit(f"{path} is {res} m, the link buffer needs the 0.5 m DGM")
+    return cx - 0.5 * res, cy + 0.5 * res, res
+
+
 def _grid(path: Path) -> tuple[np.ndarray, float, float, float]:
-    """Array plus outer north-west corner and cell size, from the aux file."""
-    aux = Path(str(path) + ".aux.xml")
-    text = aux.read_text(encoding="utf-8")
-    match = re.search(r"<GeoTransform>([^<]+)</GeoTransform>", text)
-    if match is None:
-        raise SystemExit(f"GeoTransform missing in {aux}")
-    origin_x, scale_x, _rot, origin_y, _rot2, scale_y = (float(part) for part in match.group(1).split(","))
-    if abs(abs(scale_x) - abs(scale_y)) > 1e-6:
-        raise SystemExit(f"{path} has unequal pixel scales {scale_x} and {scale_y}")
+    """Array plus outer north-west corner and cell size."""
+    xmin, ymax, res = _corner(path)
     with tiff.TiffFile(path) as src:
         z = np.asarray(src.pages[0].asarray(), dtype=np.float32)
     if z.ndim == 3:
@@ -46,7 +67,7 @@ def _grid(path: Path) -> tuple[np.ndarray, float, float, float]:
     if np.any(bad):
         z = z.copy()
         z[bad] = np.nan
-    return z, float(origin_x), float(origin_y), float(abs(scale_x))
+    return z, xmin, ymax, res
 
 
 def _paint(mask: np.ndarray, geom, xmin: float, ymax: float, res: float) -> None:
@@ -73,9 +94,7 @@ def _paint(mask: np.ndarray, geom, xmin: float, ymax: float, res: float) -> None
 def main() -> None:
     site = load_site()
     proc = processed_dir(site)
-    source = ROOT / str(((site.get("sources") or {}).get("dgm") or {}).get("path") or "")
-    if not source.is_file():
-        raise SystemExit(f"missing mixed DGM {source}")
+    source = _source(site)
     z, xmin, ymax, res = _grid(source)
     print(f"source {source} {z.shape[1]}x{z.shape[0]} cell {res:.2f} m", flush=True)
     links = gpd.read_file(gpkg_path(site), layer="link")

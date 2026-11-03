@@ -44,9 +44,10 @@ import build_decal_roads as bdr
 from build_asphalt_meshroads import _is_main_road
 from build_corridor_mesh import CLEARANCE_M, USER_LEVELS, _write_collada, _write_material
 from diag_road_bed_modes import _gip_polylines
+from authorities import resolved_working_crs
 from filter_road_corridor import raster_frame, write_referenced_tif
 from raster_tile_fetch import elevation_nodata_mask
-from measure_gip_widths import _ln_to_31254, _pick_poly, find_landnutzung_geojson, load_street_polygons
+from measure_gip_widths import _ln_to_working, _pick_poly, find_landnutzung_geojson, load_street_polygons
 from site_coords import SiteCoords, load_site, processed_dir, site_slug
 
 from mesh_dateinaht import SAMPLE_M, build_seam_chain
@@ -1060,11 +1061,11 @@ def _centerline_samples(pts: list, step_m: float = 5.0) -> list[tuple[float, flo
 
 
 def _carriageway_polygons(site: dict, proc: Path, sc: SiteCoords) -> tuple[list, dict]:
-    """Street polygons the meshed centerlines run through, in EPSG:31254."""
+    """Street polygons the meshed centerlines run through, in the site working CRS."""
     path = find_landnutzung_geojson(site)
     if path is None:
         raise SystemExit("no Landnutzung geojson for this site")
-    geoms, codes = load_street_polygons(path, _ln_to_31254())
+    geoms, codes = load_street_polygons(path, _ln_to_working(site))
     if not geoms:
         raise SystemExit(f"no street polygons in {path.name}")
     tree = STRtree(geoms)
@@ -1607,7 +1608,7 @@ def _ensure_raw_mosaic(site: dict, proc: Path) -> tuple[Path, dict]:
         "raster": raster.name,
         "source": "unfiltered 0.5 m DGM",
         "resolution_m": RES_M,
-        "crs": str(src.get("crs") or "EPSG:31254"),
+        "crs": str(src.get("crs") or resolved_working_crs(site)),
         "xmin": frame["xmin"],
         "ymin": frame["ymin"],
         "xmax": frame["xmax"],

@@ -219,7 +219,11 @@ def project_on_road(
     return s, px, py, pz, tx, ty, tz, pw
 
 
-def pick_road(roads: list[dict], xy_gip: list[tuple[float, float]]) -> dict:
+def pick_road(
+    roads: list[dict],
+    xy_gip: list[tuple[float, float]],
+    site: dict | None = None,
+) -> dict:
     """Nearest carriageway centerline to GIP (exclude footpaths and span pieces)."""
     mid = xy_gip[len(xy_gip) // 2]
     best = None
@@ -231,7 +235,7 @@ def pick_road(roads: list[dict], xy_gip: list[tuple[float, float]]) -> dict:
         hwy = str(road.get("highway") or "")
         if hwy in {"path", "footway", "cycleway", "steps", "track"}:
             continue
-        if axis_is_structure_span is not None and axis_is_structure_span(road):
+        if axis_is_structure_span is not None and axis_is_structure_span(road, site):
             continue
         _s, px, py, _pz, _tx, _ty, _tz, _w = project_on_road(road, mid[0], mid[1])
         d2 = (mid[0] - px) ** 2 + (mid[1] - py) ** 2
@@ -2033,7 +2037,7 @@ def main() -> None:
                 else:
                     if not roads:
                         raise SystemExit(f"Missing {proc / 'roads_beamng.json'}")
-                    seed = pick_road(roads, feat["xy"])
+                    seed = pick_road(roads, feat["xy"], site)
                     road = stitch_road_chain(roads, seed)
             strip_entries, info = build_bridge_entries_road_spline(
                 feat, road, z_terrain, cfg
@@ -2056,7 +2060,7 @@ def main() -> None:
 
         if not roads:
             raise SystemExit(f"Missing {proc / 'roads_beamng.json'}")
-        road = pick_road(roads, feat["xy"])
+        road = pick_road(roads, feat["xy"], site)
         road = stitch_road_chain(roads, road)
         xy, zs, normals, widths, info = build_span_on_road(feat["xy"], road, z_terrain, cfg)
         info["name"] = feat["name"]

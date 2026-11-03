@@ -38,6 +38,7 @@ from build_asphalt_meshroads import _is_main_road
 from diag_road_bed_modes import _gip_polylines
 from fetch_road_corridor_dgm import RES_M, TILE_M
 from raster_tile_fetch import elevation_nodata_mask
+from authorities import resolved_working_crs
 from site_coords import SiteCoords, load_site, processed_dir, site_slug
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -628,13 +629,16 @@ def write_referenced_tif(
     xmin: float,
     ymax: float,
     res: float,
-    epsg: int = 31254,
+    epsg: int | None = None,
 ) -> None:
     """GeoTIFF plus world file. Pixel (0, 0) is the north-west cell.
 
     The tiepoint is the outer north-west corner. The world file names the
-    centre of that cell, which is the same grid.
+    centre of that cell, which is the same grid. Without ``epsg`` the file
+    is tagged with the site working CRS.
     """
+    if epsg is None:
+        epsg = int(str(resolved_working_crs(load_site())).split(":")[-1])
     path.parent.mkdir(parents=True, exist_ok=True)
     scale = (float(res), float(res), 0.0)
     tie = (0.0, 0.0, 0.0, float(xmin), float(ymax), 0.0)
@@ -788,7 +792,7 @@ def _write_stage_rasters(mosaic: dict) -> None:
         "filterung": "nach den drei Glättungen, vor der Querneigung, NaN außerhalb",
         "endzustand": "nach der Querneigung, NaN außerhalb",
         "resolution_m": RES_M,
-        "crs": "EPSG:31254",
+        "crs": resolved_working_crs(load_site()),
         "xmin": mosaic["xmin"],
         "ymin": mosaic["ymin"],
         "xmax": mosaic["xmax"],
@@ -819,7 +823,7 @@ def _write_strip_masks(proc: Path) -> None:
         xmin=float(index["xmin"]),
         ymax=float(index["ymax"]),
         res=float(index["resolution_m"]),
-        epsg=int(str(index.get("crs") or "EPSG:31254").split(":")[-1]),
+        epsg=int(str(index.get("crs") or resolved_working_crs(load_site())).split(":")[-1]),
     )
     old_dir = proc / "corridor50_mask"
     if old_dir.is_dir():

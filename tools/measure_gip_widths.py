@@ -1,6 +1,6 @@
 """Measure GIP carriageway width from Tirol Landnutzung traffic polygons.
 
-Along the full GIP polyline (EPSG:31254, not the site-clipped BeamNG piece)
+Along the full GIP polyline in the site working CRS (not the site-clipped BeamNG piece)
 sample start / mid / end. At each point walk left and right until the LN-V*
 polygon ends. Six values go into data/roads/gip_widths.json; the mean is what
 load_gip_road_segments applies.
@@ -70,16 +70,18 @@ _LN_PREF = {
 }
 
 
-def _ln_to_31254() -> Transformer:
-    """Landnutzung cache stays EPSG:4326 for now."""
-    return Transformer.from_crs("EPSG:4326", "EPSG:31254", always_xy=True)
+def _ln_to_working(site: dict) -> Transformer:
+    """Landnutzung cache stays EPSG:4326. Sample it in the site working CRS."""
+    from authorities import resolved_working_crs
+
+    return Transformer.from_crs("EPSG:4326", resolved_working_crs(site), always_xy=True)
 
 
-def _gip_to_31254(site: dict, data: dict) -> Transformer:
-    from authorities import gip_fc_crs, make_grid_transformer, same_crs
+def _gip_to_working(site: dict, data: dict) -> Transformer:
+    from authorities import gip_fc_crs, make_grid_transformer, resolved_working_crs, same_crs
 
     src = gip_fc_crs(data, site)
-    dest = "EPSG:31254"
+    dest = resolved_working_crs(site)
     if same_crs(src, dest):
         return Transformer.from_crs(src, dest, always_xy=True)
     return make_grid_transformer(src, dest, None)
@@ -335,8 +337,8 @@ def measure_site(site: dict, catalog: dict, *, force: bool) -> dict:
     print(f"GIP        {gip_path.name}")
     print(f"Landnutzung {ln_path.name}")
     data = json.loads(gip_path.read_text(encoding="utf-8"))
-    ln_tf = _ln_to_31254()
-    gip_tf = _gip_to_31254(site, data)
+    ln_tf = _ln_to_working(site)
+    gip_tf = _gip_to_working(site, data)
     geoms, codes = load_street_polygons(ln_path, ln_tf)
     print(f"Street polygons: {len(geoms)}")
     if not geoms:

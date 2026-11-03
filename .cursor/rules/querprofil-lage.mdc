@@ -1,0 +1,38 @@
+---
+description: Cross-profile placement is unsolved. Do not implement this rule.
+alwaysApply: true
+---
+
+# Stop
+
+The flat-sample procedure below is a rejected attempt, not a task. Read [docs/PFUNDS_CROSS_PROFILE.md](docs/PFUNDS_CROSS_PROFILE.md). Do not run a search, do not edit `tools/narrow_regional.py`, and do not write a new gpkg until the user has said what the cross profile is supposed to do.
+
+# Lage der Fahrbahn
+
+Die Regressionsgerade beschreibt das Querprofil. Sie ist nicht die Vorlage und nicht das Ziel der Lage. Dasselbe gilt für eine kubische Kurve. Die Suche minimiert weder den Rest zur Gerade noch den Rest zur kubischen Kurve.
+
+Die seitliche Lage entscheidet der Anteil der Samples auf der Fahrbahn, deren Gesamtneigung unter der axialen Steigung plus 15 Prozentpunkten liegt. Die Gesamtneigung ist der Betrag der Steigung des 0,5-m-Geländes. Die axiale Steigung ist der Höhenunterschied dieses Geländes entlang der Achse von einer Station zur nächsten, über 4 m. Diese eine Zahl gilt für alle Samples des Querprofils.
+
+Gezählt wird nur auf der Fahrbahnbreite. Jede Station wird in Schritten von 10 cm bis 2 m zu beiden Seiten geprüft. Gewonnen hat der höchste Anteil. Bei gleichem Anteil bleibt der kleinere Versatz.
+
+Eine Station, die in diesem Bereich keinen flachen Sample hat, nimmt die Strecke bis zu den nächsten Stationen mit flachen Samples heraus. Diese Strecke ist ein Bauwerk. Die Achse bleibt dort liegen. Die Fahrbahnfläche endet an der letzten Station mit einem flachen Sample. Bekannte Bauwerke aus dem GIP bleiben im Umkreis von 1 m von dieser Suche ausgenommen.
+
+Höhenunterschied der Ränder und Rauigkeit entscheiden diese Lage nicht. Sie sind die Bedingung der späteren Weiterführung. In der kann die Strecke auch glatter werden.
+
+# Verengung, nur regional
+
+Eine Kette wird nicht über ihre ganze Länge schmaler, weil eine Station eine Engstelle hat.
+
+Eine Verengung entsteht nur, wo mehr als zwei Stationen im selben Umfeld von derselben Verkleinerung profitieren, etwa 10 cm oder 20 cm. Dort gilt der Median dieser Verkleinerungen. Liegt der Median zwischen zwei Schritten, gilt der schwächere.
+
+Die verengte Strecke hat diese eine Breite. Die angrenzenden Strecken ohne Verengung gehen stetig auf diese Breite über. An der Grenze gibt es keinen Sprung in der Breite.
+
+Eine um 10 cm schmalere Breite wird zuerst geprüft, zusammen mit der seitlichen Suche. Sie gewinnt nur bei höherem Anteil flacher Samples. Bringt das keinen höheren Anteil, bleibt die Breite. Die Breite wird nicht größer.
+
+Der seitliche Versatz geht graduell in die unverschobene Achse über, höchstens 1 m auf 12 m, ohne Knick. Die Breite geht über 12 m in die unverengte Breite über.
+
+Wird eine Strecke schmaler als die Hälfte ihrer ursprünglichen Breite, stoppt die Verengung dort. Diese Strecke wird als Problemfall geschrieben.
+
+Die gespeicherte Breite gilt bis zum nächsten Bruch. Dazwischen wird sie nicht verteilt.
+
+Nach der Lage wird die Junction-Regel erneut ausgeführt. Die durchgehende Straße behält ihre Linie. Die Zufahrten enden auf dieser Linie. Eine niedrigere Klasse übernimmt diesen Punkt.

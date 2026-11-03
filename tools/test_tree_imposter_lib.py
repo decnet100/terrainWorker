@@ -295,7 +295,7 @@ def test_mid_views_face_their_cameras_and_keep_near_mesh() -> None:
     mid_uvs = [[(0.1, 0.2), (0.3, 0.2), (0.3, 0.8), (0.1, 0.8)]]
     out = patch_spruce_dae_xml(tiny, spruce_far_quads(), mid_quads=mid_quads, mid_uvs=mid_uvs)
     assert "tree_spruce_large_a1000-mesh" in out
-    assert 'id="tree_spruce_large_a80"' in out
+    assert 'id="tree_spruce_large_a150"' in out
     assert "double_sided" not in out.split('id="SpruceMid-effect"')[1].split("</effect>")[0]
 
 

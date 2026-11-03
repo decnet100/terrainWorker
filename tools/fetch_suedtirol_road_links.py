@@ -199,12 +199,19 @@ def span_objectids(site: dict | None = None) -> set[int]:
 def axis_is_structure_span(road: dict, site: dict | None = None) -> bool:
     """True for tunnel/bridge axis pieces that must not drape as normal road.
 
-    Uses Südtirol LinksSequences ``kunstbauten`` / ``location`` (and the same
-    fields if ever set on OSM/GIP rows). Galleries that are closed bores are
-    expected as Tunnel-like tags until a dedicated gallery feed exists.
-    Site ``beamng.roads.span_objectids`` forces omit (e.g. ground LOCATION that
-    still runs through a span and must not become asphalt mesh).
+    Only active on Südtirol Links sites (``sources.road_links``). Nordtirol /
+    GIP sites always get False so Imst/Fernpass keep their existing omit paths
+    (``gip_is_tunnel_bore`` etc.).
+
+    Uses LinksSequences ``kunstbauten`` / ``location``. Site
+    ``beamng.roads.span_objectids`` forces omit (e.g. ground LOCATION that still
+    runs through a span and must not become asphalt mesh).
     """
+    from site_coords import load_site
+
+    site = site or load_site()
+    if not uses_suedtirol_structures(site):
+        return False
     oid = road.get("objectid")
     if oid is not None:
         try:

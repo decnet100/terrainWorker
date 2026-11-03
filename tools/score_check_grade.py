@@ -46,9 +46,14 @@ With a valid interval on only one side, the allowed miss is twice that. The
 class allowance is the median of the two-sided misses plus three standard
 deviations.
 
-The terrain is the mixed DGM inside a 15 m buffer of every GIP link
-(``dgm_link15/dgm_link15.tif``). That grid is 1 m. Build it with
+The terrain is the 0.5 m DGM inside a 15 m buffer of every GIP link
+(``dgm_link15/dgm_link15.tif``), cut from the native 50 cm coverage.
+Heights are bilinear between cell centres. Build the grid with
 ``tools/mask_dgm_by_links.py`` when it is missing.
+
+Link geometry outside the terrain box, and geometry that is inside
+Switzerland and outside Austria, is removed first
+(``tools/clip_gip_swiss.py``). A crossing link keeps the part that remains.
 
     cd C:\\temp\\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/pfunds_spiess.yaml"; python tools\\score_check_grade.py
 """
@@ -75,9 +80,9 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 from build_link_surfaces import _code  # noqa: E402
 from fetch_bev_landcover import _raw_paths  # noqa: E402
-from gip_routing_load import gpkg_path  # noqa: E402
 from raster_tile_fetch import elevation_nodata_mask  # noqa: E402
 from score_link_surfaces import _z_at  # noqa: E402
+from clip_gip_swiss import exclude_swiss  # noqa: E402
 from site_coords import load_site, processed_dir, resolve_site_path  # noqa: E402
 
 STEP_M = 2.5
@@ -205,9 +210,9 @@ def _pct(value, default: float) -> float:
     return number
 
 
-def _structure_pcts(site: dict) -> dict[str, list[tuple[float, float]]]:
+def _structure_pcts(path: Path) -> dict[str, list[tuple[float, float]]]:
     """Station share of each bridge, tunnel or gallery, in percent of its link."""
-    refs = gpd.read_file(gpkg_path(site), layer="bridge_ref")
+    refs = gpd.read_file(path, layer="bridge_ref")
     ranges: dict[str, list[tuple[float, float]]] = defaultdict(list)
     for row in refs.itertuples(index=False):
         start = _pct(row.from_pct, 0.0)
@@ -468,6 +473,47 @@ def _change_fail(kind: str, value: float, limit: float | None) -> bool:
         return False
     cap = limit if kind == "triple" else 2.0 * limit
     return value > cap
+
+
+def _normal_grade(*lines: tuple[float, str, str]) -> tuple[float, int]:
+    """Median longitudinal grade of the check lines that passed.
+
+    Each line is ``(slope, grade reason, change reason)``. A line counts when
+    both reasons are empty. The three lines are the center and the two
+    ``SIDE_M`` offsets, the same samples ``_samples`` writes.
+    """
+    kept = [
+        float(slope)
+        for slope, reason, change in lines
+        if reason == "" and change == "" and np.isfinite(slope)
+    ]
+    if not kept:
+        return float("nan"), 0
+    return float(np.median(kept)), len(kept)
+
+
+def _normal_from_flags(frame: pd.DataFrame) -> pd.DataFrame:
+    """Same median as ``_normal_grade``, read from the interval columns."""
+    out = frame.copy()
+    normal = []
+    count = []
+    for row in out.itertuples(index=False):
+        kept = []
+        for slope, ok, change_ok in (
+            (row.slope_pct, row.center_ok, row.center_change_ok),
+            (row.slope_left_pct, row.left_ok, row.left_change_ok),
+            (row.slope_right_pct, row.right_ok, row.right_change_ok),
+        ):
+            if int(ok) != 1 or int(change_ok) == 0:
+                continue
+            if slope is None or not np.isfinite(slope):
+                continue
+            kept.append(float(slope))
+        count.append(len(kept))
+        normal.append(None if not kept else round(float(np.median(kept)), 2))
+    out["normal_pct"] = normal
+    out["n_line"] = count
+    return out
 
 
 def _interval_reason(*reasons: str) -> str:
@@ -897,6 +943,7 @@ def _recover(chains: list[list[tuple[str, bool]]], items: dict[str, dict], limit
 
 def main() -> None:
     site = load_site()
+    gip = exclude_swiss(site)
     proc = processed_dir(site)
     terrain_path = proc / "dgm_link15" / "dgm_link15.tif"
     if not terrain_path.is_file():
@@ -905,9 +952,9 @@ def main() -> None:
     elev, spec = _load_terrain(terrain_path)
     grid, swiss = _load_water(site)
     manual = _manual_bridges()
-    links = gpd.read_file(gpkg_path(site), layer="link")
-    nodes = gpd.read_file(gpkg_path(site), layer="node")
-    structure_pcts = _structure_pcts(site)
+    links = gpd.read_file(gip, layer="link")
+    nodes = gpd.read_file(gip, layer="node")
+    structure_pcts = _structure_pcts(gip)
     print(f"links {len(links)}", flush=True)
 
     items: dict[str, dict] = {}
@@ -1045,6 +1092,11 @@ def main() -> None:
                 n_left += 1
             if right_reason:
                 n_right += 1
+            normal_pct, n_line = _normal_grade(
+                (slope, center_reason, center_change),
+                (left, left_reason, left_change),
+                (right, right_reason, right_change),
+            )
             interval_rows.append(
                 {
                     "link_id": rec.link_id,
@@ -1085,6 +1137,8 @@ def main() -> None:
                     "change_right": None if not np.isfinite(right_value[i]) else round(float(right_value[i]), 3),
                     "change_right_kind": right_kind[i],
                     "right_change_ok": -1 if right_kind[i] == "" else (0 if right_change else 1),
+                    "normal_pct": None if n_line == 0 else round(normal_pct, 2),
+                    "n_line": n_line,
                     "geometry": LineString(
                         [(float(sampled["x"][i]), float(sampled["y"][i])), (float(sampled["x"][i + 1]), float(sampled["y"][i + 1]))]
                     ),

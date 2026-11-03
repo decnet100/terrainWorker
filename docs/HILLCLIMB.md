@@ -72,11 +72,10 @@ The first list is [`hillclimb_dry_run_vehicles.json`](hillclimb_dry_run_vehicles
 | Menu | `model` | `config` |
 |---|---|---|
 | ETK K-Series, Kc6 360 (M) | `etkc` | `kc6_360_M` |
-| ETK K-Series, Kc6 360 (A) | `etkc` | `kc6_360_A` |
 | Civetta Scintilla, GTs (DCT) | `scintilla` | `gts` |
 | Hirochi SBR4, Hillclimb - Asphalt (DCT) | `sbr` | `hillclimb` |
 
-"Kc6 360" is two factory configs, manual and automatic. The Kc6x is `kc6x_360_M` and `kc6x_360_A` (the model default is `kc6x_360_A`). The SBR4 rally car on asphalt is `rally_am_asphalt`, menu name "NGRC2 - Rally Asphalt (M)".
+The list keeps the manual Kc6 360. The automatic factory config is `kc6_360_A`. The Kc6x is `kc6x_360_M` and `kc6x_360_A` (the model default is `kc6x_360_A`). The SBR4 rally car on asphalt is `rally_am_asphalt`, menu name "NGRC2 - Rally Asphalt (M)".
 
 The loop has two phases.
 
