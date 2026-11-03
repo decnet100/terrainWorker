@@ -109,6 +109,27 @@ cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/reschen.yaml"; py
 
 Ausgabe: `galleries_centerlines.json`, DAE unter `art/shapes/galleries/`, TSStatics in der SimGroup `galleries`, Span-Schicht `span_gallery`. LocKarte nur anfassen, wenn sich Portale ändern — nicht nebenbei vergrößern.
 
+### Lochkarte (Holemap)
+
+Ein Pixel der Lochkarte ist ein **Eckpunkt** des Geländes, keine Zelle. Ein Loch am Eckpunkt (i, j) nimmt genau das
+Quadrat (i, j)–(i+1, j+1) weg, also das Quadrat nordöstlich davon (im Bild rechts oberhalb). So rechnen Darstellung und
+Kollision im Torque3D-Gelände (`terrFile.cpp` `_buildGridMap`, `terrCell.cpp`). Jedes Quadrat ist an einer festen
+Diagonalen geteilt: bei geradem i+j von Südwest nach Nordost, sonst von Südost nach Nordwest.
+
+Bis 2026-11 testeten `portal_hole` und `terrain_embed_portal_holes` die Pixelposition gegen die Öffnung und
+markierten das Pixel selbst. Die Löcher lagen dadurch ein halbes Quadrat nach Nordost verschoben, und auf der Süd- und
+Westseite ragte Gelände in die Einfahrt (Test: 7,4 von 73 m² der Öffnung blieben Gelände). Jetzt wird jedes Quadrat,
+das die Öffnung schneidet, ganz gelocht (`tools/terrain_holes.py`). Der Rand ist dafür eine Treppe in 1-m-Stufen
+außerhalb der Öffnung, die der Portalkragen abdecken muss.
+
+Nach dem Compose prüft `check_tube_intrusion` jedes Gelände-Dreieck gegen den Fahrraum der Röhre (Deckbreite ×
+`clear_height_m` über der Fahrbahn, Portal bis Portal). Ein Quadrat, halb auf Fahrbahnhöhe abgesenkt und halb an der
+Portalfläche hoch, fällt so auf, auch wenn keiner seiner Eckpunkte im Fahrraum liegt. Treffer bis
+`intrusion_fix_in_m` (Default 6 m) hinter einem Tagportal werden gelocht, dort liegt die Schale darüber. Treffer tiefer
+in der Röhre werden nur gemeldet: `galleries_meta.json` → `intrusion` (`before`, `holed`, `left`, je Röhre die Stellen).
+`left` > 0 heißt meist, dass das Gelände über der Röhre unter das Dach fällt, oder die Achse liegt falsch.
+Mit `--skip-holemap` wird nur gemeldet.
+
 ### Beleuchtung und Jet-Fans (nur geschlossene Röhren)
 
 Offene Galerien bleiben leer. Ein **geschlossener** Tunnel (`kind: tunnel` / `open_side: none`) mit Bohrloch länger als 100 m bekommt automatisch:

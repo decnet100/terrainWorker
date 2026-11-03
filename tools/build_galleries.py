@@ -39,6 +39,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 from site_coords import SiteCoords, load_site, processed_dir  # noqa: E402
 import build_bridges as bb  # noqa: E402
+import terrain_holes as th  # noqa: E402
 from road_width import default_carriageway_width_m  # noqa: E402
 
 USER_LEVELS = bb.USER_LEVELS
@@ -88,6 +89,7 @@ GALLERY_SCALAR_KEYS = (
     "hole_above_road_m",  # punch if DGM > axis Z + this (face lip)
     "hole_max_above_m",  # skip if DGM > axis Z + this (no sky-shaft through mountain)
     "hole_width_scale",  # 1.0 = full road width; <1 keeps mountain side out of strip
+    "intrusion_fix_in_m",  # hole terrain squares inside the clearance box this far from a daylight portal (0 = report)
     "portal_seat",  # bake 2 m apron + roof force + door hole at daylight portals
     "portal_apron_m",  # meters toward the exit: terrain → deck Z
     "portal_roof_force_m",  # meters inside the portal where roof Z is enforced
@@ -274,6 +276,9 @@ def default_gallery_cfg(bng: dict) -> tuple[dict, list]:
             raw["hole_width_scale"]
             if raw.get("hole_width_scale") is not None
             else 1.0
+        ),
+        "intrusion_fix_in_m": float(
+            raw["intrusion_fix_in_m"] if raw.get("intrusion_fix_in_m") is not None else 6.0
         ),
         "portal_seat": bool(raw.get("portal_seat", True)),
         "portal_apron_m": float(
@@ -4976,6 +4981,33 @@ def _extend_portal_apron_nodes(
     return out
 
 
+def _band_polygon(nodes: list[dict], half_m: float, *, s_lo: float | None = None, s_hi: float | None = None):
+    """Footprint of a centerline band (BeamNG metres): the axis between s_lo and s_hi, +/- half_m, flat ends."""
+    from shapely import LineString
+
+    pts = sorted(nodes, key=lambda n: float(n.get("s", 0.0)))
+    if s_lo is not None and s_hi is not None:
+        pts = [n for n in pts if s_lo - 1e-6 <= float(n.get("s", 0.0)) <= s_hi + 1e-6] or pts
+    xy = [(float(n["x"]), float(n["y"])) for n in pts]
+    if len(xy) >= 2 and s_lo is not None and s_hi is not None:
+        # the window's own nodes may stop short of s_lo / s_hi (one node step): run the ends on straight
+        for end, s_end, k0, k1 in ((0, s_lo, 0, 1), (-1, s_hi, -1, -2)):
+            short = abs(float(pts[end].get("s", s_end)) - s_end)
+            if short > 1e-3:
+                (x0, y0), (x1, y1) = xy[k0], xy[k1]
+                L = math.hypot(x0 - x1, y0 - y1) or 1.0
+                p = (x0 + (x0 - x1) / L * short, y0 + (y0 - y1) / L * short)
+                if end == 0:
+                    xy.insert(0, p)
+                else:
+                    xy.append(p)
+    if len(xy) == 1:
+        from shapely import Point
+
+        return Point(xy[0]).buffer(half_m)
+    return LineString(xy).buffer(half_m, cap_style="flat")
+
+
 def _raster_portal_band(
     elev: np.ndarray,
     hole: np.ndarray | None,
@@ -5002,6 +5034,14 @@ def _raster_portal_band(
     """
     if len(nodes) < 1:
         return 0, 0, 0.0
+    if mode == "hole":
+        # Hole whole terrain squares that overlap the band (terrain_holes: a pixel is a vertex
+        # and removes the square north-east of it), not the pixels whose position is inside.
+        if hole is None:
+            return 0, 0, 0.0
+        poly = _band_polygon(nodes, half_m + pad_m, s_lo=s_lo, s_hi=s_hi)
+        n_new = th.stamp_polygon(hole, poly, size=size, pitch=extent / size)
+        return n_new, n_new, 0.0
     tested = 0
     changed = 0
     max_abs = 0.0
@@ -6092,70 +6132,23 @@ def _stamp_embed_strip_holes(
     up_n: list[tuple[float, float, float, float, float]],
     inset_m: float = 0.0,
 ) -> int:
-    """Mark holemap cells whose *centers* lie strictly between lower/upper lips.
+    """Hole the terrain squares that overlap the strip between the lower and upper lips.
 
-    No expansion past the lips — ``inset_m`` shrinks the strip from both edges
-    so lip-touching neighbour cells stay solid (Stirn and open flank).
+    ``inset_m`` shrinks the strip from its edges first. A hole-map pixel is a vertex and removes the
+    square north-east of it (terrain_holes), so whole squares are tested, not pixel positions.
     """
     n = min(len(lo_n), len(up_n))
     if n < 2 or hole is None:
         return 0
-    inset = max(0.0, float(inset_m))
-    xs = [float(lo_n[i][0]) for i in range(n)] + [float(up_n[i][0]) for i in range(n)]
-    ys = [float(lo_n[i][1]) for i in range(n)] + [float(up_n[i][1]) for i in range(n)]
-    # Tight bbox — no pad (neighbour spill was the bug)
-    px0, py0 = _to_px_beamng(min(xs), max(ys), size, extent)
-    px1, py1 = _to_px_beamng(max(xs), min(ys), size, extent)
-    c0 = max(0, int(math.floor(min(px0, px1))))
-    c1 = min(size - 1, int(math.ceil(max(px0, px1))))
-    r0 = max(0, int(math.floor(min(py0, py1))))
-    r1 = min(size - 1, int(math.ceil(max(py0, py1))))
-    if c1 < c0 or r1 < r0:
-        return 0
+    from shapely import Polygon
 
-    before = int((hole > 0).sum())
-    for py in range(r0, r1 + 1):
-        for px in range(c0, c1 + 1):
-            if hole[py, px] > 0:
-                continue
-            bx, by = _from_px_beamng(float(px), float(py), size, extent)
-            inside = False
-            for i in range(n - 1):
-                lx0, ly0 = float(lo_n[i][0]), float(lo_n[i][1])
-                lx1, ly1 = float(lo_n[i + 1][0]), float(lo_n[i + 1][1])
-                ux0, uy0 = float(up_n[i][0]), float(up_n[i][1])
-                ux1, uy1 = float(up_n[i + 1][0]), float(up_n[i + 1][1])
-                mx0 = 0.5 * (lx0 + ux0)
-                my0 = 0.5 * (ly0 + uy0)
-                mx1 = 0.5 * (lx1 + ux1)
-                my1 = 0.5 * (ly1 + uy1)
-                mdx, mdy = mx1 - mx0, my1 - my0
-                mseg2 = mdx * mdx + mdy * mdy
-                if mseg2 < 1e-12:
-                    t = 0.0
-                    tb = 0.0
-                else:
-                    tb = ((bx - mx0) * mdx + (by - my0) * mdy) / mseg2
-                    if tb < -1e-3 or tb > 1.0 + 1e-3:
-                        continue
-                    t = max(0.0, min(1.0, tb))
-                lx = lx0 + t * (lx1 - lx0)
-                ly = ly0 + t * (ly1 - ly0)
-                ux = ux0 + t * (ux1 - ux0)
-                uy = uy0 + t * (uy1 - uy0)
-                sx, sy = lx - ux, ly - uy
-                sep = math.hypot(sx, sy)
-                if sep < 1e-6:
-                    continue
-                # Distance from upper lip toward lower along the connector
-                along = ((bx - ux) * sx + (by - uy) * sy) / sep
-                if along <= inset or along >= sep - inset:
-                    continue
-                inside = True
-                break
-            if inside:
-                hole[py, px] = 255
-    return int((hole > 0).sum()) - before
+    ring = [(float(lo_n[i][0]), float(lo_n[i][1])) for i in range(n)]
+    ring += [(float(up_n[i][0]), float(up_n[i][1])) for i in reversed(range(n))]
+    poly = Polygon(ring).buffer(0)
+    inset = max(0.0, float(inset_m))
+    if inset > 0:
+        poly = poly.buffer(-inset)
+    return th.stamp_polygon(hole, poly, size=size, pitch=extent / size)
 
 
 # Back-compat alias
@@ -6804,6 +6797,72 @@ def paint_gallery_holes(
     """Deprecated path: holemap punch. Prefer ``carve_gallery_clearance``."""
     _ = (galleries, span_infos, extent, defaults, z_terrain, slope_at)
     return np.zeros((size, size), dtype=np.uint8)
+
+
+def check_tube_intrusion(
+    centerlines: list[dict],
+    span_infos: list[dict],
+    *,
+    elev: np.ndarray,
+    hole: np.ndarray | None,
+    size: int,
+    extent: float,
+    defaults: dict,
+) -> dict:
+    """Find terrain triangles inside the clearance box of every tube; hole those near a daylight portal.
+
+    The box: deck width x clear_height_m over the road, from portal to portal. A terrain triangle is the
+    terrain's own (terrain_holes.square_triangles), so a square half at road level and half up the face
+    is found even when all four of its vertices lie outside the box. Squares within ``intrusion_fix_in_m``
+    (default 6 m) of a daylight portal are holed (the shell is there above them); the rest is reported.
+    """
+    pitch = extent / size
+    info_by_oid = {info.get("objectid"): info for info in span_infos}
+    per: list[dict] = []
+    tot = {"before": 0, "holed": 0, "left": 0}
+    for g in centerlines:
+        nodes = g.get("nodes") or []
+        info = info_by_oid.get(g.get("objectid")) or {}
+        portal_s = info.get("portal_s") or g.get("portal_s")
+        if len(nodes) < 2 or not portal_s or len(portal_s) < 2:
+            continue
+        s_p0, s_p1 = sorted(float(v) for v in portal_s)
+        clear_h = float(
+            g["clear_height_m"] if g.get("clear_height_m") is not None else defaults.get("clear_height_m") or 4.0
+        )
+        fix_in = float(_gallery_num(g, defaults, "intrusion_fix_in_m", 6.0))
+        found = th.intruding_squares(
+            elev, hole, nodes, size=size, pitch=pitch, s_lo=s_p0, s_hi=s_p1, clear_h=clear_h
+        )
+        doors = [float(sp["s"]) for sp in _daylight_portal_specs(g, info)]
+        holed, left = [], []
+        for q in found:
+            near = any(abs(q["s"] - sd) <= fix_in for sd in doors)
+            if near and hole is not None:
+                hole[q["py"], q["px"]] = 255
+                holed.append(q)
+            else:
+                left.append(q)
+        tot["before"] += len(found)
+        tot["holed"] += len(holed)
+        tot["left"] += len(left)
+        if found:
+            per.append(
+                {
+                    "objectid": g.get("objectid"),
+                    "name": g.get("name"),
+                    "before": len(found),
+                    "holed": len(holed),
+                    "left": [{k: q[k] for k in ("s", "into_m", "px", "py")} for q in left[:20]],
+                    "left_count": len(left),
+                    "max_into_m": max(q["into_m"] for q in found),
+                }
+            )
+        print(
+            f"intrusion {g.get('name') or g.get('objectid')}: {len(found)} squares into the clearance box, "
+            f"{len(holed)} holed at the portals, {len(left)} left"
+        )
+    return {**tot, "fix_in_m_default": float(defaults.get("intrusion_fix_in_m") or 6.0), "tubes": per}
 
 
 def write_terrain_clear_assets(
@@ -8288,6 +8347,9 @@ def main() -> None:
             else:
                 clear_embed_foundation_debug(level_name)
             embed_stats["debug_foundation_line_count"] = len(dbg_lines)
+            want_portal_holes = any(
+                _gallery_flag(g, defaults, "terrain_embed_portal_holes", False) for g in centerlines
+            )
             if hole is not None and want_portal_holes:
                 hole_path = write_hole_assets(proc, level_name, hole)
                 n_h = int((hole > 0).sum())
@@ -8323,6 +8385,19 @@ def main() -> None:
             )
             hml.compose(proc, size=size, max_h=max_h, level_name=level_name)
         clear_embed_foundation_debug(level_name)
+    intrusion = None
+    import heightmap_layers as hml_c
+
+    hml_composed = hml_c.composed_path(proc, size)
+    if hml_composed.is_file() and centerlines:
+        max_h_c = float(json.loads((proc / "heightmap_meta.json").read_text(encoding="utf-8"))["max_height_m"])
+        comp = np.asarray(Image.open(hml_composed), dtype=np.float64) / 65535.0 * max_h_c
+        n_before = None if hole is None else int((hole > 0).sum())
+        intrusion = check_tube_intrusion(
+            centerlines, span_infos, elev=comp, hole=hole, size=size, extent=extent, defaults=defaults
+        )
+        if hole is not None and int((hole > 0).sum()) != n_before:
+            hole_path = write_hole_assets(proc, level_name, hole)
     if hole is not None:
         coverage = float(hole.mean()) / 255.0 * 100.0
         print(f"Wrote {hole_path} coverage={coverage:.3f}% (manual/preserve workflow)")
@@ -8348,6 +8423,7 @@ def main() -> None:
         "approach_conform": conf_stats,
         "terrain_embed": embed_stats,
         "portal_seat": seat_stats,
+        "intrusion": intrusion,
         "note": (
             "portal_seat: deck apron toward the exit (default 8 m). "
             "Roof force and door hole stay off unless YAML sets them. "
