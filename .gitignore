@@ -20,5 +20,7 @@ Thumbs.db
 # Lokale Fremdcode-Notizen
 /notes/
 
-# 3D assets (trees, buildings): local only, too large for the repo
-data/assets/
+# tree packs made locally (70 MB): not in the repo; buildings, larch_Export and trees/spruce stay tracked
+data/assets/trees/larch/
+data/assets/trees/spruceb/
+data/assets/trees/sprucec/

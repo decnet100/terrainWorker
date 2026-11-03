@@ -1,0 +1,43 @@
+{
+  "species": "spruce",
+  "spec": {
+    "equator_steps": 16,
+    "polar_steps": 0,
+    "include_poles": false,
+    "polar_angle": 0.0,
+    "dimension": 256,
+    "detail_level": 2,
+    "size": 25,
+    "world_size_m": 32.0,
+    "dae_stem": "tree_spruce_large",
+    "blend": "fichte2.blend",
+    "bark_hints": [
+      "bark",
+      "rinde",
+      "stamm",
+      "trunk"
+    ],
+    "leaf_hints": [
+      "twig",
+      "leaf",
+      "nadel",
+      "foliage",
+      "needle"
+    ]
+  },
+  "pack": {
+    "cells": 16,
+    "atlas": [
+      1024,
+      1024
+    ],
+    "dimension": 256,
+    "dds_color": "C:\\temp\\beamng_autoroad\\data\\assets\\trees\\spruce\\tree_spruce_large.dae.imposter.dds",
+    "dds_normals": "C:\\temp\\beamng_autoroad\\data\\assets\\trees\\spruce\\tree_spruce_large.dae.imposter_normals.dds"
+  },
+  "cells_dir": "C:\\temp\\assets\\trees\\out\\spruce\\cells",
+  "atlas_wh": [
+    1024,
+    1024
+  ]
+}
