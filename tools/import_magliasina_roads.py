@@ -14,6 +14,9 @@ manifest.json (export_magliasina.py), and the site's heightmap_meta.json.
   Magliasina made to its DTM (carve under the meshes, deck caps, ground raised to the road edges); without it the
   carve and the caps only. Compose the
   heightmap afterwards (compose_heightmap.py) and re-import it.
+* Handover lines (data/processed/<site>/magliasina_handover.json, written by build_galleries): where a gallery or
+  tunnel deck takes over from a Magliasina road. The meshes are cut there (triangles split at the line) and dropped
+  beyond it, into the structure. So run build_galleries first, then this.
 Without the level folder (or with --no-inject) only data/processed/<site>/magliasina_import/ is written.
 
     cd C:\\temp\\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/pfunds_spiess.yaml"; python tools\\import_magliasina_roads.py --crop 612550 5198250 614050 5199750
@@ -32,6 +35,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 
 import build_corridor_mesh as bcm  # noqa: E402
+import magliasina_surface as mgs  # noqa: E402
 from heightmap_layers import load_dgm, write_replace_layer  # noqa: E402
 from site_coords import SiteCoords, load_site, processed_dir  # noqa: E402
 
@@ -54,12 +58,7 @@ NEW_MATERIALS = {
 UV_M = 6.0
 
 
-def to_beamng(sc: SiteCoords, e0: float, n0: float, k: float, z_min: float, v: np.ndarray) -> np.ndarray:
-    X = e0 + v[:, 0] * k
-    Y = n0 + v[:, 1] * k
-    bx = (X - sc.xmin) / sc.bw * sc.terrain_span
-    by = (Y - sc.ymin) / sc.bh * sc.terrain_span
-    return np.column_stack([bx, by, v[:, 2] - z_min])
+to_beamng = mgs.to_beamng
 
 
 def write_dae(path: Path, pos: np.ndarray, faces: np.ndarray, stem: str, material: str) -> None:
@@ -115,6 +114,12 @@ def main() -> None:
         f.unlink()
 
     # --- meshes -----------------------------------------------------------------------------------
+    # handover lines of build_galleries: the structure deck takes over there, Magliasina's mesh ends there
+    ho_path = proc / "magliasina_handover.json"
+    ho_lines = json.loads(ho_path.read_text(encoding="utf-8")).get("lines") or [] if ho_path.is_file() else []
+    if ho_lines:
+        print(f"cutting at {len(ho_lines)} handover line(s) from {ho_path.name}", flush=True)
+    n_cut = 0
     entries, counts, unknown = [], {}, set()
     for f in sorted(roads.glob("road_*.npz")):
         d = np.load(f)
@@ -139,6 +144,11 @@ def main() -> None:
             remap = np.full(len(pos), -1, np.int64)
             remap[used] = np.arange(len(used))
             pos, faces = pos[used], remap[faces]
+            if ho_lines:
+                pos, faces, c = mgs.cut_at_lines(pos, faces, ho_lines)
+                n_cut += c
+                if not len(faces):
+                    continue
             for j, (pp, ff) in enumerate(split(pos, faces, bcm.COLLADA_MAX_VERTS)):
                 stem = f"mng_{f.stem[5:]}_{g}_{j}".replace("+", "p").replace("-", "m")
                 write_dae(art / f"{stem}.dae", pp, ff, stem, g)
@@ -156,7 +166,8 @@ def main() -> None:
                       "persistentId": str(uuid.uuid5(uuid.NAMESPACE_URL, f"autoroad:{GROUP}:{name}")),
                       "Stages": [{"baseColorFactor": rgba, "roughnessFactor": 0.9}, {}, {}, {}]}
     (art / "main.materials.json").write_text(json.dumps(mats, indent=1), encoding="utf-8")
-    print(f"meshes: {len(entries)} DAE, triangles by material {counts}", flush=True)
+    print(f"meshes: {len(entries)} DAE, triangles by material {counts}"
+          + (f", {n_cut} cut or dropped at handover lines" if ho_lines else ""), flush=True)
     if unknown:
         print(f"materials not in MATERIAL_GROUP (drawn as {DEFAULT_GROUP}): {sorted(unknown)}", flush=True)
 

@@ -3265,18 +3265,14 @@ def make_gallery_deck_meshroad(
         ty = float(n.get("ty") or 0.0)
         x = float(n["x"])
         y = float(n["y"])
+        shift = 0.0  # lateral, left positive
         if "deck_w" in n:
             # chain deck: width and lateral shift per node (merge_chain_decks)
             w = float(n["deck_w"])
-            left_u, _right_u = bb.left_right_unit(tx, ty)
-            x += float(n.get("deck_shift") or 0.0) * left_u[0]
-            y += float(n.get("deck_shift") or 0.0) * left_u[1]
+            shift = float(n.get("deck_shift") or 0.0)
         elif open_extra > 1e-9 and side in ("left", "right"):
-            left_u, right_u = bb.left_right_unit(tx, ty)
-            u = left_u if side == "left" else right_u
             # shift so only the open edge grows
-            x += 0.5 * open_extra * u[0]
-            y += 0.5 * open_extra * u[1]
+            shift = 0.5 * open_extra * (1.0 if side == "left" else -1.0)
         s = float(n["s"])
         # Longitudinal pitch from neighbors (m per m along XY)
         if i + 1 < len(nodes):
@@ -3312,6 +3308,18 @@ def make_gallery_deck_meshroad(
             elif s_p0 is not None:
                 dist = (s_p0 - s) if s < s_p0 else (s - s_p1)
                 cf *= min(1.0, dist / ramp)
+        ho = n.get("ho")
+        if ho:
+            # handover to a Magliasina road (apply_magliasina_handover): its section at the line (t = 0),
+            # ours (level, own width and shift) at the portal (t = 1)
+            t = float(ho["t"])
+            w = float(ho["w"]) * (1.0 - t) + w * t
+            shift = float(ho["shift"]) * (1.0 - t) + shift * t
+            cf = float(ho["cf"]) * (1.0 - t)
+        if abs(shift) > 1e-9:
+            left_u, _right_u = bb.left_right_unit(tx, ty)
+            x += shift * left_u[0]
+            y += shift * left_u[1]
 
         nrm = bb.normal_from_pitch_crossfall(tx, ty, dz_ds, cf)
         # BeamNG MeshRoad node Z = driving surface (same as bridges node_z_is_top).
@@ -3341,6 +3349,121 @@ def make_gallery_deck_meshroad(
         "widthSubdivisions": 0,
         "nodes": mesh_nodes,
     }
+
+
+def _axis_at(nodes: list[dict], s: float) -> tuple[float, float, float, float]:
+    """(x, y, tx, ty) on the node polyline at chainage s; straight on past its ends."""
+    ns = sorted(nodes, key=lambda n: float(n["s"]))
+    if s <= float(ns[0]["s"]) or s >= float(ns[-1]["s"]):
+        a, b = (ns[0], ns[1]) if s <= float(ns[0]["s"]) else (ns[-2], ns[-1])
+    else:
+        k = next(i for i in range(1, len(ns)) if float(ns[i]["s"]) >= s)
+        a, b = ns[k - 1], ns[k]
+    ds = max(float(b["s"]) - float(a["s"]), 1e-6)
+    dx, dy = float(b["x"]) - float(a["x"]), float(b["y"]) - float(a["y"])
+    h = math.hypot(dx, dy) or 1.0
+    t = (s - float(a["s"])) / ds
+    return float(a["x"]) + t * dx, float(a["y"]) + t * dy, dx / h, dy / h
+
+
+def apply_magliasina_handover(
+    nodes: list[dict],
+    info: dict,
+    surf,
+    *,
+    handover_m: float,
+    search_m: float = 10.0,
+) -> list[dict]:
+    """Hand the deck over to the Magliasina road at a line ``handover_m`` outside each daylight portal.
+
+    Magliasina leaves galleries and tunnels out, but where its road ends is not where our portal is: at the Klammleck
+    chain its asphalt ran ~8 m into both galleries, banked 7-9 %, under our level deck (two surfaces cutting through
+    each other). Here the deck outside a portal is rebuilt: it starts at the handover line with Magliasina's section
+    there (middle height, width, crossfall, lateral offset of the middle, measured on the mesh) and goes linearly to
+    ours at the portal (level, own width and shift; node key ``ho``). The line is recorded in ``info["handover"]``;
+    import_magliasina_roads cuts Magliasina's mesh there (magliasina_handover.json). If the axis is not on asphalt at
+    the line, the line moves outward by up to ``search_m``; without asphalt there the end keeps its old deck.
+    """
+    if surf is None or len(nodes) < 2:
+        return nodes
+    specs = _daylight_portal_specs({"portal_s": info.get("portal_s")}, info)
+    out = sorted(nodes, key=lambda n: float(n["s"]))
+    lines = []
+    for sp in specs:
+        s_p, o = float(sp["s"]), float(sp["out"])
+        portal = min(out, key=lambda n: abs(float(n["s"]) - s_p))
+        z_p = float(portal["z_road"])
+        sec = None
+        d_h = handover_m
+        while d_h <= handover_m + search_m + 1e-6:
+            x, y, tx, ty = _axis_at(out, s_p + o * d_h)
+            near = min(out, key=lambda n: abs(float(n["s"]) - (s_p + o * d_h)))
+            sec = surf.section(x, y, tx, ty, ref=float(near["z_road"]))
+            if sec is not None and sec["width"] >= 3.0:
+                break
+            sec = None
+            d_h += 1.0
+        if sec is None:
+            print(f"handover {info.get('name')} {sp['end']}: no Magliasina asphalt {handover_m:.0f}-"
+                  f"{handover_m + search_m:.0f} m outside the portal, deck kept")
+            continue
+        s_h = s_p + o * d_h
+        keep = [n for n in out if (float(n["s"]) - s_p) * o <= 1e-6]
+        new = []
+        n_steps = max(2, int(math.ceil(d_h / 1.0)))
+        for i in range(1, n_steps + 1):
+            d = d_h * i / n_steps
+            s = s_p + o * d
+            x, y, tx, ty = _axis_at(out, s)
+            t = 1.0 - d / d_h  # 0 at the line, 1 at the portal
+            z = float(sec["z_mid"]) * (1.0 - t) + z_p * t
+            new.append({
+                "x": round(x, 3), "y": round(y, 3), "z_road": round(z, 3), "z_axis": round(z, 3),
+                "z_roof_inner": round(z + 4.0, 3), "z_roof_outer": round(z + 4.5, 3),
+                "width": portal.get("width"), "tx": round(tx, 5), "ty": round(ty, 5), "s": round(s, 2),
+                "deck_approach": True,
+                "ho": {"t": round(t, 4), "w": sec["width"], "shift": sec["mid_offset"], "cf": sec["crossfall"]},
+            })
+        out = sorted(keep + new, key=lambda n: float(n["s"]))
+        x, y, tx, ty = _axis_at(out, s_h)
+        lx, ly = -ty, tx
+        cx, cy = x + lx * float(sec["mid_offset"]), y + ly * float(sec["mid_offset"])
+        lines.append({
+            "objectid": info.get("objectid"), "name": info.get("name"), "end": sp["end"], "s": round(s_h, 2),
+            "x": round(cx, 3), "y": round(cy, 3), "nx": round(-o * tx, 5), "ny": round(-o * ty, 5),
+            "z": sec["z_mid"], "width": sec["width"], "crossfall": sec["crossfall"],
+            "half_m": round(0.5 * float(sec["width"]) + 2.0, 2), "depth_m": round(d_h + 40.0, 1),
+            "handover_m": round(d_h, 1),
+        })
+        print(
+            f"handover {info.get('name')} {sp['end']}: Magliasina line {d_h:.0f} m outside the portal, "
+            f"z {sec['z_mid']:.2f} (deck at portal {z_p:.2f}), width {sec['width']:.2f} m, "
+            f"crossfall {100 * sec['crossfall']:.1f} %, middle {sec['mid_offset']:+.2f} m off the axis"
+        )
+    if lines:
+        info["handover"] = lines
+        info["s0"] = round(float(out[0]["s"]), 2)
+        info["s1"] = round(float(out[-1]["s"]), 2)
+        info["span_len_m"] = round(float(out[-1]["s"]) - float(out[0]["s"]), 2)
+    return out
+
+
+def write_handover_lines(proc: Path, span_infos: list[dict], built_oids: set) -> Path:
+    """magliasina_handover.json: the cut lines for import_magliasina_roads; lines of structures not built in this
+    run are kept."""
+    path = proc / "magliasina_handover.json"
+    old = []
+    if path.is_file():
+        try:
+            old = json.loads(path.read_text(encoding="utf-8")).get("lines") or []
+        except (json.JSONDecodeError, OSError):
+            old = []
+    lines = [ln for ln in old if ln.get("objectid") not in built_oids]
+    for info in span_infos:
+        lines.extend(info.get("handover") or [])
+    path.write_text(json.dumps({"note": "cut lines for import_magliasina_roads (build_galleries)", "lines": lines},
+                               indent=1), encoding="utf-8")
+    return path
 
 
 def chain_deck_part(feat: dict, cfg: dict, info: dict, deck_nodes: list[dict], deck: dict, *, s_p0, s_p1) -> dict:
@@ -8171,6 +8294,20 @@ def main() -> None:
         road_cache[key] = (road, seed)
         return road
 
+    handover_m = float(gal_raw.get("magliasina_handover_m") or 10.0)
+    mgl_surf = None
+    if bool(gal_raw.get("magliasina_handover", True)) and feats:
+        import magliasina_surface as mgs
+
+        xs = [p[0] for f in feats for p in f["xy"]]
+        ys = [p[1] for f in feats for p in f["xy"]]
+        pad = 80.0
+        mgl_surf = mgs.load_surface(site, sc, proc, (min(xs) - pad, min(ys) - pad, max(xs) + pad, max(ys) + pad))
+        print(
+            "Magliasina handover: "
+            + (f"{len(mgl_surf)} asphalt triangles near the structures" if mgl_surf is not None else "no Magliasina roads")
+        )
+
     road_cache: dict = {}
     chain_plans: list[dict] = []
     chain_deck_parts: dict[int, list[dict]] = {}
@@ -8257,6 +8394,8 @@ def main() -> None:
             nodes = append_daylight_deck_approach(
                 nodes, info, cfg, z_terrain=z_terrain, z_road_at=z_road_at
             )
+            if mgl_surf is not None and not spline:
+                nodes = apply_magliasina_handover(nodes, info, mgl_surf, handover_m=handover_m)
         span_infos.append(info)
 
         oid = feat.get("objectid") or len(centerlines)
@@ -8376,6 +8515,11 @@ def main() -> None:
                         d0 = s_p0
                     if "s1" in (info.get("joint_ends") or []):
                         d1 = s_p1
+                    for ln in info.get("handover") or []:
+                        if ln["end"] == "s0":
+                            d0 = float(ln["s"])
+                        else:
+                            d1 = float(ln["s"])
                     if info.get("abutment_end_s") is not None:
                         s_ab = float(info["abutment_end_s"])
                         d0 = min(d0, s_ab)
@@ -8713,12 +8857,19 @@ def main() -> None:
             )
         )
 
+    if mgl_surf is not None:
+        ho_path = write_handover_lines(proc, span_infos, {i.get("objectid") for i in span_infos})
+        n_ho = sum(len(i.get("handover") or []) for i in span_infos)
+        print(f"Wrote {ho_path} ({n_ho} handover line(s) this run) - run import_magliasina_roads again to cut there")
+
     tr_cfg = {k: gal_raw.get(k, v) for k, v in TRANSITION_DEFAULTS.items()}
     transitions = None
     if str(tr_cfg["transition_check"]).lower() not in ("off", "false", "none"):
 
         def ground_z(x: float, y: float):
-            z = z_road_at(x, y) if z_road_at is not None else None
+            z = mgl_surf.z(x, y) if mgl_surf is not None else None
+            if z is None and z_road_at is not None:
+                z = z_road_at(x, y)
             if z is None and z_terrain is not None:
                 z = float(z_terrain(x, y))
             return z

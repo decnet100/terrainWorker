@@ -50,6 +50,7 @@ Nicht die ganze Pipeline neu fahren. Nur den betroffenen Schritt, dann Heightmap
 |------------------|--------|----------|
 | Brücke (`beamng.bridges`) | `python tools\build_bridges.py` | Heightmap neu importieren |
 | Galerie/Tunnel (`beamng.galleries`, `unify` für das Bohrloch, Seitenschnitt) | `python tools\build_galleries.py` | **BeamNG ganz beenden**, neu starten, Heightmap importieren |
+| Galerie/Tunnel an einer Magliasina-Straße | danach `python tools\import_magliasina_roads.py --crop ...` (schneidet an den Übergabelinien) | wie oben |
 | Nur Heightmap-Schichten neu mischen | `python tools\compose_heightmap.py` | Heightmap importieren |
 | Rampe-Z / Decal / Road-Bed (`follow_parent`, `decal_roads`) | `python tools\build_decal_roads.py` | Karte neu laden reicht für Decals; Heightmap importieren fürs Gelände |
 | Guardrails | `python tools\build_guardrails.py` | **BeamNG ganz beenden** (TSStatics) |
@@ -168,6 +169,33 @@ Portalsuche fand an seinen Enden den Sprung vom Galeriedach auf den Hang. Die R�
   (`--only`), bekommt ein Glied ohne gebauten Nachbarn sein eigenes Deck.
 
 Die Kette steht in `galleries_meta.json` → `chains` (Glieder, äußere Portale, Steigung, Fugenhöhen).
+
+### Übergabe an eine Magliasina-Straße
+
+Magliasina baut Galerien und Tunnel nicht (`SKIP` in magliasinaNG `network.py`), aber die Lücke im Export beginnt
+nicht an unserem Portal. An der Klammleck-Kette lief der Magliasina-Asphalt rund 8 m in beide Galerien hinein, mit
+7–9 % Querneigung, und unser waagrechtes Deck lag darüber. Zwei Fahrbahnen schnitten sich, im Spiel ein Flickwerk.
+
+Deshalb gibt es an jedem Tagportal mit Magliasina-Straße davor eine **Übergabelinie**, `magliasina_handover_m`
+(10 m) vor dem Portal:
+
+- `build_galleries` liest die Magliasina-Meshes direkt aus `magliasina/magliasina_work/work/roads_only`
+  (`tools/magliasina_surface.py`). An der Linie misst es den Querschnitt: Kanten, Mittelhöhe, Breite, Querneigung,
+  Versatz der Mitte zu unserer Achse. Liegt die Achse dort nicht auf Asphalt, rückt die Linie bis 10 m weiter nach
+  außen.
+- Das Deck beginnt genau an der Linie mit diesem Querschnitt. Bis zum Portal gehen Höhe, Breite, Querneigung und
+  Versatz linear auf unsere Werte über: waagrecht, eigene Breite, eigene Achse.
+- Die Linien stehen in `magliasina_handover.json`. Linien von Bauwerken, die im Lauf nicht gebaut werden, bleiben
+  erhalten. `import_magliasina_roads` schneidet die Meshes dort: Dreiecke werden an der Linie geteilt, der Teil zum
+  Bauwerk hin fällt weg (Breite + 2 m je Seite, bis 40 m hinter das Portal).
+- Die Übergangsprüfung misst Stufe und Knick am Deckende gegen die Magliasina-Oberfläche.
+
+Reihenfolge: **erst `build_galleries`, dann `import_magliasina_roads`**, danach `compose_heightmap`.
+`galleries.magliasina_handover: false` schaltet das ab.
+
+Sandbox, Klammleck-Kette: Linien 10 m vor beiden Portalen. Querschnitt dort: Stuiba 8,35 m breit, 1,7 %
+Querneigung; Lobloch 8,80 m, −0,3 %. Deckende gegen Magliasina an Mitte und beiden Kanten auf 0–8 mm gleich,
+Übergänge 4 von 4 ok.
 
 ### Übergangsprüfung (Messlatte)
 
