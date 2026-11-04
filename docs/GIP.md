@@ -385,7 +385,7 @@ Then: `build_galleries` (writes the flag into `galleries_centerlines.json`) → 
 | `roof_thickness_m` | roof thickness (for a later mesh) |
 | `extend_before_m` / `extend_after_m` | transition past GIP ends (axis) |
 | `trim_s0_m` / `trim_s1_m` | metres to cut at GIP start / end (portal s0 / s1) |
-| `open_side` | `left` \| `right` \| `both` \| `none` (tunnels default `none`) |
+| `open_side` | `auto` (default: valley side, the lower DGM side of the axis) \| `left` \| `right` \| `both` \| `none` (tunnels default `none`) |
 | `fitout` / `fitout_min_m` | ceiling lamps + jet fans in closed tubes (`auto` if bore ≥ 100 m); galleries stay empty |
 | `lamp_spacing_m` / `fan_spacing_m` | 12 m midline lamps; 50 m fans over each lane |
 | `one_ended` / `fake_end_drop_m` | one daylight portal; far end this many metres below portal Z |
@@ -411,7 +411,7 @@ Writes `galleries_meta.json` + `galleries_centerlines.json`, DAE under
 `art/shapes/galleries/`, TSStatics in SimGroup `galleries`, and  
 `import/theTerrain_holemap.png` (preset `holeMapPath`). Magenta debug: SimGroup `gallery_debug`.
 
-`open_side: left|right` = omit a wall (look out). Wrong way → flip in `items[]`.
+`open_side: left|right` = omit a wall (look out), relative to the road direction. Default `auto` takes the valley side from the DGM; set `left`/`right` only to override it.
 
 **Hole map:** a hole-map pixel is a terrain vertex and removes the square north-east of it; holes are set per
 square that overlaps the opening (`tools/terrain_holes.py`, details in [STRUCTURES.md](STRUCTURES.md#lochkarte-holemap)).

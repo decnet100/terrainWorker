@@ -95,7 +95,7 @@ beamng:
 
 | Ziel | Wichtige Schlüssel |
 |------|-------------------|
-| Offene Galerie | `open_side: left` oder `right` (falsche Seite → im Item umdrehen). Gelände über der Spanne bleibt unangetastet (`terrain_roof: none`) |
+| Offene Galerie | `open_side: auto` (Default): offen zur Talseite, also zur Seite, auf der das DGM 8–20 m neben der Achse tiefer liegt (Log `open_side auto`). `left` / `right` gelten zur Straßenrichtung und setzen die Seite fest. Gelände über der Spanne bleibt unangetastet (`terrain_roof: none`) |
 | Geschlossener Tunnel | `style.shell: tunnel`, `open_side: none`. Gleicher Default: kein Geländematerial zwischen den Portalen |
 | Dach/Straße oben erzwingen | nur explizit: `terrain_roof: rock` oder `keep_asphalt` (Unterführung) |
 | Runde Seitenwände | `wall_radius_m` (nur geschlossene Röhre). Boden und Dach bleiben flach, die Seiten wölben nach außen. Sehne = lichte Breite. An der **Röhrengröße** orientieren (Landecker 9,5 × 4 m → **4–5 m**). `2.0` bei 4 m Höhe = Halbkreis (stärkste Wölbung), größer = flacher. Weglassen oder `0` = Rechteck. `wall_arc_segments` (Default 10) |

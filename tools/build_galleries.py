@@ -12,7 +12,7 @@ heightmap cells to road Z. Re-import terrainPreset.json after build.
 Pipeline (bridge-style config):
   - XY on OSM road centerline + extend_before/after
   - Z straight line between the portal road heights; clear_height_m -> roof
-  - open_side left|right|both|none -> omit that wall (lookout)
+  - open_side auto|left|right|both|none -> omit that wall (lookout); auto = valley side from the DGM
   - Collada loft -> TSStatic under SimGroup galleries
 
 Usage:
@@ -221,7 +221,8 @@ def default_gallery_cfg(bng: dict) -> tuple[dict, list]:
         "extend_after_m": float(raw.get("extend_after_m") or 1.0),
         "step_m": float(raw.get("step_m") or 2.0),
         "crossfall_max": float(raw.get("crossfall_max") or 0.12),
-        "open_side": str(raw.get("open_side") or "left"),
+        # auto: toward the valley (the lower DGM side of the axis); left / right are relative to the road direction
+        "open_side": str(raw.get("open_side") or "auto"),
         # linear: straight Z between portals (approaches stay on DGM).
         # road / road_spline: follow the road axis.
         "z_profile": _gallery_z_profile(raw.get("z_profile")),
@@ -1691,6 +1692,53 @@ def apply_one_ended_portals(
         }
     )
     return p0, p1, meta
+
+
+def auto_open_side(
+    road: dict,
+    xy_gip: list[tuple[float, float]],
+    z_terrain,
+    *,
+    offsets_m: tuple[float, ...] = (8.0, 12.0, 16.0, 20.0),
+    min_diff_m: float = 1.0,
+) -> tuple[str, dict]:
+    """Open side of a gallery: the valley side, i.e. the side where the DGM beside the axis is lower.
+
+    The DGM is sampled at ``offsets_m`` left and right of the road axis along the GIP stretch (left / right relative
+    to the road direction, as the shell uses them). Returns ("left" | "right", stats); falls back to "left" when the
+    two sides differ by less than ``min_diff_m`` on average, or without terrain.
+    """
+    if z_terrain is None or len(xy_gip) < 2:
+        return "left", {"method": "fallback_no_terrain"}
+    s_a = float(bb.project_on_road(road, xy_gip[0][0], xy_gip[0][1])[0])
+    s_b = float(bb.project_on_road(road, xy_gip[-1][0], xy_gip[-1][1])[0])
+    s_lo, s_hi = min(s_a, s_b), max(s_a, s_b)
+    n = max(3, int((s_hi - s_lo) / 4.0))
+    left_z: list[float] = []
+    right_z: list[float] = []
+    for k in range(n + 1):
+        s = s_lo + (s_hi - s_lo) * k / n
+        x, y, _zr, tx, ty, _tz, w = bb.sample_road(road, s)
+        lu, ru = bb.left_right_unit(tx, ty)
+        for d in offsets_m:
+            dd = 0.5 * float(w or 7.5) + d
+            left_z.append(float(z_terrain(x + lu[0] * dd, y + lu[1] * dd)))
+            right_z.append(float(z_terrain(x + ru[0] * dd, y + ru[1] * dd)))
+    zl, zr = float(np.mean(left_z)), float(np.mean(right_z))
+    stats = {"left_mean_z": round(zl, 2), "right_mean_z": round(zr, 2)}
+    if abs(zl - zr) < min_diff_m:
+        return "left", {**stats, "method": "fallback_flat"}
+    return ("left" if zl < zr else "right"), {**stats, "method": "dgm_valley"}
+
+
+def _resolve_open_side(cfg: dict, feat: dict, road: dict, z_terrain) -> None:
+    """Replace ``open_side: auto`` by the valley side (cfg["open_side_auto"] keeps the evidence)."""
+    if str(cfg.get("open_side") or "").lower().strip() != "auto":
+        return
+    side, stats = auto_open_side(road, feat["xy"], z_terrain)
+    cfg["open_side"] = side
+    cfg["open_side_auto"] = {**stats, "side": side}
+    print(f"open_side auto {feat.get('name')!r}: {side} ({stats})")
 
 
 def _portal_search_kw(cfg: dict) -> dict:
@@ -8047,6 +8095,7 @@ def main() -> None:
                     road = load_gip_corridor_for_feature(feat, site, corridors=corridors)
                 else:
                     road = bb.load_strassennetz_road(proc)
+            _resolve_open_side(cfg, feat, road, z_terrain)
             nodes, strip_entries, info = build_gallery_road_spline(
                 feat, road, z_terrain, cfg
             )
@@ -8062,9 +8111,11 @@ def main() -> None:
             else:
                 road = road_of(feat, cfg)
                 seed = road_cache[tuple(sorted(_feat_objectids(feat))) or id(feat)][1]
+            _resolve_open_side(cfg, feat, road, z_terrain)
             nodes, info = build_gallery_centerline(
                 feat["xy"], road, cfg, z_terrain=z_terrain, fixed_ends=feat.get("chain_fixed")
             )
+            info["open_side_auto"] = cfg.get("open_side_auto")
             info["chain_id"] = feat.get("chain_id")
             info["seed_road_id"] = seed.get("id")
             info["chain_ids"] = road.get("chain_ids")

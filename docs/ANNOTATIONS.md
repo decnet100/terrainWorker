@@ -130,7 +130,7 @@ Fields `KUNSTBAUTEN` + `OBJEKT` / `OBJEKTBEZEICHNUNG` mark galleries and bridges
 | `id` | text | yes | stable (e.g. GIP OBJECTID) |
 | `kind` | text | yes | `gallery` \| `bridge` \| `tunnel` \| `culvert` |
 | `name` | text | no | from `KUNSTBAUTEN` |
-| `open_side` | text | no | `left` \| `right` \| `both` \| `none` (gallery) |
+| `open_side` | text | no | `auto` \| `left` \| `right` \| `both` \| `none` (gallery; default `auto` = valley side) |
 | `notes` | text | no | |
 
 Geometry starts as the GIP line segments; refine portals / cross-section later.
