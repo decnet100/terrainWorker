@@ -159,6 +159,13 @@ Portalsuche fand an seinen Enden den Sprung vom Galeriedach auf den Hang. Die R�
 - Mit `--only` wird die ganze Kette geplant, gebaut werden nur die gewählten Glieder. Ihre Fugen liegen trotzdem auf der
   Kettenlinie.
 - `galleries.chain: false` schaltet das ab.
+- **Ein Deck für die ganze Kette:** Statt einer MeshRoad je Glied gibt es eine durchgehende
+  (`gallery_deck_chain_<OIDs>`). Getrennte Decks stießen Stirn an Stirn: Eine Galerie verbreitert ihr Deck zur offenen
+  Seite (`deck_open_extra_m`, 0,8 m), ein Tunnel nicht; dazu Splitter-Segmente von wenigen Zentimetern am Portal und
+  ein Rundungsfehler, der den letzten Tunnelknoten wegfallen ließ (0,2 m Lücke). Jetzt läuft das Deck über die Fuge
+  durch. Breite und Seitenversatz gehen über `galleries.chain_deck_blend_m` (10 m) vom schmaleren Glied an der Fuge
+  linear in das breitere über, die geschlossene Kante bleibt dabei gerade. Werden nicht alle Glieder gebaut
+  (`--only`), bekommt ein Glied ohne gebauten Nachbarn sein eigenes Deck.
 
 Die Kette steht in `galleries_meta.json` → `chains` (Glieder, äußere Portale, Steigung, Fugenhöhen).
 

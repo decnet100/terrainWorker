@@ -2001,8 +2001,9 @@ def build_gallery_centerline(
         s_set.add(round(s, 6))
         s += step
     s_set.add(round(s1, 6))
-    s_set.add(round(s_p0, 6))
-    s_set.add(round(s_p1, 6))
+    # grid points closer than half a step to a portal would leave a sliver segment there (MeshRoad wobbles)
+    s_set = {v for v in s_set if min(abs(v - s_p0), abs(v - s_p1)) >= 0.5 * step}
+    s_set.update({round(s0, 6), round(s1, 6), round(s_p0, 6), round(s_p1, 6)})
     s_vals = sorted(v for v in s_set if s0 - 1e-9 <= v <= s1 + 1e-9)
 
     nodes: list[dict] = []
@@ -3264,7 +3265,13 @@ def make_gallery_deck_meshroad(
         ty = float(n.get("ty") or 0.0)
         x = float(n["x"])
         y = float(n["y"])
-        if open_extra > 1e-9 and side in ("left", "right"):
+        if "deck_w" in n:
+            # chain deck: width and lateral shift per node (merge_chain_decks)
+            w = float(n["deck_w"])
+            left_u, _right_u = bb.left_right_unit(tx, ty)
+            x += float(n.get("deck_shift") or 0.0) * left_u[0]
+            y += float(n.get("deck_shift") or 0.0) * left_u[1]
+        elif open_extra > 1e-9 and side in ("left", "right"):
             left_u, right_u = bb.left_right_unit(tx, ty)
             u = left_u if side == "left" else right_u
             # shift so only the open edge grows
@@ -3287,16 +3294,22 @@ def make_gallery_deck_meshroad(
 
         # Closed tube: no DGM crossfall. Portal hillside would tilt the
         # slab ~0.12 and leave a step against the flat bankett on one side.
-        if closed_tube or z_terrain is None:
-            cf = 0.0
-        elif s_p0 is not None and s_p0 - 1e-6 <= s <= s_p1 + 1e-6:
+        if "deck_inside" in n:
+            inside = bool(n["deck_inside"]) or bool(n.get("deck_level"))
+            dist_out = float(n.get("deck_out_m") or 0.0)
+        else:
+            inside = closed_tube or (s_p0 is not None and s_p0 - 1e-6 <= s <= s_p1 + 1e-6)
+            dist_out = None
+        if inside or z_terrain is None:
             cf = 0.0
         else:
             cf, _zl, _zc, _zr = bb.sample_crossfall(
                 z_terrain, float(n["x"]), float(n["y"]), tx, ty, 0.5 * w
             )
             cf = max(-cf_max, min(cf_max, cf))
-            if s_p0 is not None:
+            if dist_out is not None:
+                cf *= min(1.0, dist_out / ramp)
+            elif s_p0 is not None:
                 dist = (s_p0 - s) if s < s_p0 else (s - s_p1)
                 cf *= min(1.0, dist / ramp)
 
@@ -3328,6 +3341,134 @@ def make_gallery_deck_meshroad(
         "widthSubdivisions": 0,
         "nodes": mesh_nodes,
     }
+
+
+def chain_deck_part(feat: dict, cfg: dict, info: dict, deck_nodes: list[dict], deck: dict, *, s_p0, s_p1) -> dict:
+    """One member's share of a chain deck: its deck nodes with width, lateral shift and portal flags per node."""
+    side = str(cfg.get("open_side") or "").lower().strip()
+    closed = side in ("none", "off", "false", "0")
+    extra = 0.0 if closed else max(0.0, float(cfg.get("deck_open_extra_m") or 0.0))
+    sign = 1.0 if side == "left" else (-1.0 if side == "right" else 0.0)
+    w_extra = float(cfg.get("deck_width_extra_m") or 0.0)
+    lo, hi = sorted((float(s_p0), float(s_p1)))
+    out = []
+    for n in deck_nodes:
+        s = float(n["s"])
+        q = dict(n)
+        q["deck_w"] = float(n.get("width") or 7.5) + w_extra + extra
+        q["deck_shift"] = 0.5 * extra * sign if side in ("left", "right") else 0.0
+        q["deck_inside"] = lo - 0.01 <= s <= hi + 0.01
+        q["deck_out_m"] = 0.0 if q["deck_inside"] else min(abs(s - lo), abs(s - hi))
+        q["deck_level"] = closed
+        out.append(q)
+    return {"objectid": feat.get("objectid"), "name": feat.get("name"), "nodes": out, "deck": deck,
+            "cfg": cfg, "joint_ends": list(info.get("joint_ends") or [])}
+
+
+def merge_chain_decks(parts: list[dict], chain_id: int, *, z_terrain, blend_m: float, defaults: dict) -> list[dict]:
+    """One MeshRoad over the built members of a chain instead of one per member.
+
+    Separate decks meet end cap to end cap: any difference in width, lateral shift (a gallery widens its deck toward
+    the open side, a tunnel does not), end tangent or a sliver segment at the end shows as a step or gap. Here the
+    members' deck nodes are joined in road order (the shared joint node once), width and shift change linearly over
+    ``blend_m`` into the member that differs (from the narrower member's values at the joint), and nodes closer than
+    0.5 m to a joint are dropped. Members that do not touch (one not built) get their own deck.
+    """
+    if len(parts) == 1:
+        return [parts[0]["deck"]]
+    rem = list(parts)
+
+    def d(a, b) -> float:
+        return math.hypot(float(a["x"]) - float(b["x"]), float(a["y"]) - float(b["y"]))
+
+    # order and orient: grow a run from any part by attaching parts whose end meets the run's end
+    runs: list[tuple[list[list[dict]], list[dict]]] = []
+    while rem:
+        p = rem.pop(0)
+        run = [list(p["nodes"])]
+        names = [p]
+        grown = True
+        while grown:
+            grown = False
+            for k, q in enumerate(rem):
+                ns = q["nodes"]
+                for cand, at_end in ((ns, True), (ns[::-1], True), (ns[::-1], False), (ns, False)):
+                    if at_end and d(run[-1][-1], cand[0]) < 0.5:
+                        run.append(list(cand))
+                        names.append(q)
+                    elif not at_end and d(run[0][0], cand[-1]) < 0.5:
+                        run.insert(0, list(cand))
+                        names.insert(0, q)
+                    else:
+                        continue
+                    rem.pop(k)
+                    grown = True
+                    break
+                if grown:
+                    break
+        runs.append((run, names))
+    out: list[dict] = []
+    for run, members in runs:
+        if len(run) == 1:
+            out.append(members[0]["deck"])
+            continue
+        # join, the joint node once; remember joint positions
+        nodes: list[dict] = [dict(n) for n in run[0]]
+        joints: list[int] = []
+        for seg in run[1:]:
+            joints.append(len(nodes) - 1)
+            nodes.extend(dict(n) for n in seg[1:])
+        # chainage along the joined deck
+        acc = 0.0
+        for i, n in enumerate(nodes):
+            if i:
+                acc += d(nodes[i - 1], n)
+            n["_c"] = acc
+        # width / shift: from the narrower side's values at the joint to each node's own over blend_m
+        own = [(float(n["deck_w"]), float(n["deck_shift"])) for n in nodes]
+        for j in joints:
+            wa, sa = own[j]
+            wb, sb = own[j + 1]
+            tw, ts = (wa, sa) if wa <= wb else (wb, sb)
+            for i, n in enumerate(nodes):
+                dist = abs(n["_c"] - nodes[j]["_c"])
+                if dist >= blend_m:
+                    continue
+                t = dist / max(blend_m, 1e-6)
+                n["deck_w"] = tw + t * (own[i][0] - tw)
+                n["deck_shift"] = ts + t * (own[i][1] - ts)
+        # drop slivers next to joints
+        joint_ids = {id(nodes[j]) for j in joints}
+        keep: list[dict] = []
+        for n in nodes:
+            if keep and d(keep[-1], n) < 0.5:
+                if id(n) in joint_ids and id(keep[-1]) not in joint_ids and len(keep) > 1:
+                    keep[-1] = n
+                continue
+            keep.append(n)
+        for n in keep:
+            n["s"] = round(n.pop("_c"), 2)
+        cfg0 = members[0]["cfg"]
+        oids = "_".join(str(m["objectid"]) for m in members)
+        deck = make_gallery_deck_meshroad(
+            f"gallery_deck_chain_{oids}",
+            keep,
+            depth_m=float(cfg0.get("deck_depth_m") or defaults.get("deck_depth_m") or 0.5),
+            width_extra_m=0.0,
+            materials=cfg0.get("materials") or {},
+            z_terrain=z_terrain,
+            portal_s=None,
+            crossfall_max=float(cfg0.get("crossfall_max") or 0.12),
+            crossfall_ramp_m=float(cfg0.get("crossfall_ramp_m") or 10.0),
+            open_side=None,
+            open_extra_m=0.0,
+        )
+        out.append(deck)
+        print(
+            f"chain deck {' + '.join(str(m['name']) for m in members)}: one MeshRoad, {len(keep)} nodes, "
+            f"{len(joints)} joint(s), width/shift blended over {blend_m:.0f} m"
+        )
+    return out
 
 
 def _mat4_axis_angle(axis: tuple[float, float, float], deg: float) -> list[float]:
@@ -8032,6 +8173,7 @@ def main() -> None:
 
     road_cache: dict = {}
     chain_plans: list[dict] = []
+    chain_deck_parts: dict[int, list[dict]] = {}
     if bool(gal_raw.get("chain", True)):
         chains = sch.find_chains(all_feats, tol_m=float(gal_raw.get("chain_tol_m") or 5.0))
         if only_ids:
@@ -8241,7 +8383,7 @@ def main() -> None:
                     deck_nodes = [
                         n
                         for n in nodes
-                        if d0 - 1e-6 <= float(n["s"]) <= d1 + 1e-6
+                        if d0 - 0.01 <= float(n["s"]) <= d1 + 0.01
                     ]
                     if len(deck_nodes) < 2:
                         deck_nodes = mesh_nodes
@@ -8258,7 +8400,13 @@ def main() -> None:
                         open_side=str(cfg.get("open_side") or "left"),
                         open_extra_m=float(cfg.get("deck_open_extra_m") or 0.0),
                     )
-                    ts_entries.append(deck)
+                    if feat.get("chain_id") is not None:
+                        # one deck per chain, merged after the loop (merge_chain_decks)
+                        chain_deck_parts.setdefault(feat["chain_id"], []).append(
+                            chain_deck_part(feat, cfg, info, deck_nodes, deck, s_p0=s_p0, s_p1=s_p1)
+                        )
+                    else:
+                        ts_entries.append(deck)
 
             # --- Block portals at both ends ---
             portal_style = str(
@@ -8552,6 +8700,17 @@ def main() -> None:
                 else ""
             )
             + (f"tris={n_tris}" if not args.holes_only else "(holes-only)")
+        )
+
+    for cid, parts in chain_deck_parts.items():
+        ts_entries.extend(
+            merge_chain_decks(
+                parts,
+                cid,
+                z_terrain=z_terrain,
+                blend_m=float(gal_raw.get("chain_deck_blend_m") or 10.0),
+                defaults=defaults,
+            )
         )
 
     tr_cfg = {k: gal_raw.get(k, v) for k, v in TRANSITION_DEFAULTS.items()}
