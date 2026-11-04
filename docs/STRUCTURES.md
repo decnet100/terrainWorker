@@ -133,6 +133,51 @@ in der Röhre werden nur gemeldet: `galleries_meta.json` → `intrusion` (`befor
 `left` > 0 heißt meist, dass das Gelände über der Röhre unter das Dach fällt, oder die Achse liegt falsch.
 Mit `--skip-holemap` wird nur gemeldet.
 
+### Ketten: Galerie – Tunnel – Galerie
+
+Liegen Bauwerke Ende an Ende hintereinander (GIP-Enden näher als `galleries.chain_tol_m`, Default 5 m, Art und Name
+egal), baut `build_galleries` sie als **eine Kette** (`tools/structure_chains.py`). Grund: Im DGM sind Galeriedächer
+als Gelände geblieben, einige Meter über der Straße. Ein Tunnel zwischen zwei Galerien hat kein Tagportal, und die
+Portalsuche fand an seinen Enden den Sprung vom Galeriedach auf den Hang. Die Röhre lag dann auf dem Dach
+(Klammlecktunnel zwischen Lobloch- und Stuibagalerie: 345,5/346,5 m statt etwa 337,7/338,7 m).
+
+- Höhen gibt es nur an den beiden **äußeren Enden** der Kette, wo sie die offene Straße trifft. Dort wird das Portal wie
+  bei einem einzelnen Bauwerk gesucht (Neigungssprung im DGM).
+- Dazwischen läuft eine **gerade Linie**. Jede Fuge (`joint_ends` im Meta) nimmt ihre Höhe von dieser Linie, nie aus
+  dem DGM.
+- An einer Fuge gibt es kein Deck über das Bauwerk hinaus, keinen Portalsitz, keine Zufahrtsanpassung und keinen
+  Portalkragen. Ein Tunnel behält dort seinen Portalrahmen (er steht in der Galerie), eine Galerie hat dort keinen.
+  Die Lochprüfung behandelt die Fuge wie eine Portalfläche.
+- Ist ein Glied `one_ended`, `road_spline` oder ein Unify, wird die Kette nicht geplant (Meldung im Log).
+- Mit `--only` wird die ganze Kette geplant, gebaut werden nur die gewählten Glieder. Ihre Fugen liegen trotzdem auf der
+  Kettenlinie.
+- `galleries.chain: false` schaltet das ab.
+
+Die Kette steht in `galleries_meta.json` → `chains` (Glieder, äußere Portale, Steigung, Fugenhöhen).
+
+### Übergangsprüfung (Messlatte)
+
+Nach dem Bau prüft `check_structure_transitions` jeden Übergang. Kein Übergang darf einen unmöglichen Sprung haben.
+
+- **Tagportal:** Geprüft wird das Deck von 20 m innen über das Portal bis zu seinem Ende: der größte Neigungsknick
+  (Neigung über `transition_window_m` = 5 m vorher gegen nachher). Am Deckende wird außerdem die Stufe und der Knick
+  auf die Straße draußen geprüft (Straßenachse, sonst DGM).
+- **Fuge einer Kette:** Stufe und Knick zwischen den beiden Decks. Ist der Nachbar in diesem Lauf nicht gebaut, wird
+  gegen die Kettenlinie geprüft.
+
+Grenzen in `beamng.galleries`:
+
+| Schlüssel | Default | |
+|---|---|---|
+| `transition_step_max_m` | 0,10 | Höhenstufe, darüber unmöglich |
+| `transition_kink_warn` | 0,03 | Neigungsknick, darüber Warnung |
+| `transition_kink_max` | 0,08 | Neigungsknick, darüber unmöglich |
+| `transition_check` | `error` | `error` bricht den Bau ab, `warn` meldet nur, `off` |
+
+Ergebnis: `galleries_transitions.json` (jede Zeile mit `verdict` ok / warn / fail), Zusammenfassung im Meta.
+Gegenprobe Klammleck-Kette ohne Kettenlogik: 5 von 6 Übergängen unmöglich (Loblochgalerie stieg auf 372 m). Mit
+Kettenlogik: 4 geprüft, alle ok.
+
 ### Beleuchtung und Jet-Fans (nur geschlossene Röhren)
 
 Offene Galerien bleiben leer. Ein **geschlossener** Tunnel (`kind: tunnel` / `open_side: none`) mit Bohrloch länger als 100 m bekommt automatisch:

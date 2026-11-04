@@ -39,6 +39,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 from site_coords import SiteCoords, load_site, processed_dir  # noqa: E402
 import build_bridges as bb  # noqa: E402
+import structure_chains as sch  # noqa: E402
 import terrain_holes as th  # noqa: E402
 from road_width import default_carriageway_width_m  # noqa: E402
 
@@ -1692,17 +1693,145 @@ def apply_one_ended_portals(
     return p0, p1, meta
 
 
+def _portal_search_kw(cfg: dict) -> dict:
+    """find_secured_portal settings from a gallery item."""
+    return {
+        "search_out_m": float(cfg.get("portal_search_out_m") or 25.0),
+        "search_in_m": float(cfg.get("portal_search_in_m") or 15.0),
+        "step": float(cfg.get("portal_grade_step_m") or 1.0),
+        "jump_dp": float(cfg.get("portal_grade_jump") or 0.04),
+        "baseline_n": int(cfg.get("portal_grade_baseline_n") or 3),
+        "out_extra_m": float(cfg.get("portal_out_extra_m") or 2.0),
+        "grade_span_m": float(cfg.get("portal_grade_span_m") or 3.0),
+        "jump_min_grade": float(cfg.get("portal_jump_min_grade") or 0.12),
+    }
+
+
+def plan_chain_heights(feats: list[dict], chains: list[dict], *, cfg_of, road_of, z_terrain) -> list[dict]:
+    """Heights for chains of structures (structure_chains.find_chains): one straight line per chain.
+
+    Only the two outer ends meet the open road; there the portal is searched as for a single structure (DGM grade
+    jump). Between them the road runs at a constant grade; every joint takes its height from that line, never from
+    the DGM (at a joint the DGM is the roof of the neighbouring gallery). Each member gets ``feat["chain_fixed"]``
+    for build_gallery_centerline(fixed_ends=...). A chain with a one-ended, road_spline or unify member is left to
+    the single-structure logic (printed).
+    """
+    plans: list[dict] = []
+    for ci, ch in enumerate(chains):
+        mem = ch["members"]
+        fs = [feats[m["idx"]] for m in mem]
+        cfgs = [cfg_of(f) for f in fs]
+        names = [str(f.get("name")) for f in fs]
+        odd = [
+            str(f.get("name"))
+            for f, c in zip(fs, cfgs)
+            if c.get("enabled") is False or c.get("one_ended") or _gallery_uses_road_spline(c) or f.get("unify_id")
+        ]
+        if odd:
+            print(f"chain {' + '.join(names)}: not planned as one ({', '.join(odd)}: disabled, one_ended, "
+                  f"road_spline or unify)")
+            continue
+        xys = [sch.member_xy(f, m["rev"]) for f, m in zip(fs, mem)]
+        lens = [sch.poly_len(x) for x in xys]
+        total = sum(lens)
+        anchors = []
+        for end_pt, f, c in ((xys[0][0], fs[0], cfgs[0]), (xys[-1][-1], fs[-1], cfgs[-1])):
+            road = road_of(f, c)
+            s_e = float(bb.project_on_road(road, end_pt[0], end_pt[1])[0])
+            s_ends = [float(bb.project_on_road(road, p[0], p[1])[0]) for p in (f["xy"][0], f["xy"][-1])]
+            end = "s0" if abs(s_e - min(s_ends)) <= abs(s_e - max(s_ends)) else "s1"
+            a = find_secured_portal(road, s_e, end=end, z_terrain=z_terrain, **_portal_search_kw(c))
+            out_m = (s_e - float(a["s"])) if end == "s0" else (float(a["s"]) - s_e)
+            anchors.append((a, out_m))
+        c0, c1 = -anchors[0][1], total + anchors[1][1]
+        z0, z1 = float(anchors[0][0]["z"]), float(anchors[1][0]["z"])
+        grade = (z1 - z0) / max(c1 - c0, 1e-3)
+
+        def z_line(c: float) -> float:
+            return z0 + (c - c0) * grade
+
+        cum = [0.0]
+        for ln in lens:
+            cum.append(cum[-1] + ln)
+        joints = []
+        for k in range(1, len(fs)):
+            jx, jy = xys[k][0]
+            joints.append({"x": round(jx, 2), "y": round(jy, 2), "c": round(cum[k], 2), "z": round(z_line(cum[k]), 3),
+                           "between": [fs[k - 1].get("objectid"), fs[k].get("objectid")]})
+        for k, (f, m) in enumerate(zip(fs, mem)):
+            start_key, end_key = ("last", "first") if m["rev"] else ("first", "last")
+            fixed = {}
+            if k == 0:
+                a = anchors[0][0]
+                fixed[start_key] = {"x": a["x"], "y": a["y"], "z": z0, "role": "outer", "anchor": a}
+            else:
+                fixed[start_key] = {"x": joints[k - 1]["x"], "y": joints[k - 1]["y"], "z": joints[k - 1]["z"],
+                                    "role": "joint"}
+            if k == len(fs) - 1:
+                a = anchors[1][0]
+                fixed[end_key] = {"x": a["x"], "y": a["y"], "z": z1, "role": "outer", "anchor": a}
+            else:
+                fixed[end_key] = {"x": joints[k]["x"], "y": joints[k]["y"], "z": joints[k]["z"], "role": "joint"}
+            f["chain_fixed"] = fixed
+            f["chain_id"] = ci
+        plan = {
+            "id": ci,
+            "members": [{"objectid": f.get("objectid"), "name": f.get("name"), "kind": f.get("kind"),
+                         "length_m": round(ln, 2)} for f, ln in zip(fs, lens)],
+            "length_m": round(c1 - c0, 2),
+            "outer": [{k: a.get(k) for k in ("x", "y", "z", "method", "jump_s", "grade")} for a, _o in anchors],
+            "z": [round(z0, 3), round(z1, 3)],
+            "grade": round(grade, 5),
+            "joints": joints,
+        }
+        plans.append(plan)
+        print(
+            f"chain {' + '.join(names)}: outer portals z {z0:.2f} -> {z1:.2f} "
+            f"({anchors[0][0].get('method')}, {anchors[1][0].get('method')}) over {c1 - c0:.0f} m, "
+            f"grade {100 * grade:.2f} %, joints z " + ", ".join(f"{j['z']:.2f}" for j in joints)
+        )
+    return plans
+
+
+def _fixed_portal(road: dict, fix: dict) -> dict:
+    """Portal at a point given by the chain plan: position projected onto ``road``, height as given."""
+    s = float(bb.project_on_road(road, float(fix["x"]), float(fix["y"]))[0])
+    x, y, _zr, tx, ty, tz, w = bb.sample_road(road, s)
+    anchor = dict(fix.get("anchor") or {})
+    anchor.update(
+        {
+            "s": round(s, 3),
+            "z": round(float(fix["z"]), 3),
+            "x": round(x, 3),
+            "y": round(y, 3),
+            "width": round(w, 2),
+            "tx": round(tx, 5),
+            "ty": round(ty, 5),
+            "tz": round(tz, 5),
+            "method": "chain_" + str(fix.get("role") or "joint"),
+        }
+    )
+    if fix.get("role") == "joint":
+        anchor.update({"grade": 0.0, "jump_s": None, "jump_grade": None, "z_terr": None})
+    return anchor
+
+
 def build_gallery_centerline(
     xy_gip: list[tuple[float, float]],
     road: dict,
     cfg: dict,
     *,
     z_terrain=None,
+    fixed_ends: dict | None = None,
 ) -> tuple[list[dict], dict]:
     """XY on OSM road; Z = straight line between secured flat portals only.
 
     Portals: relative DGM grade jump outside→inside, then ``portal_out_extra_m``
     further out. No mid-gallery DGM knots (that is the roof).
+
+    ``fixed_ends`` (from ``plan_chain_heights``) replaces the search at an end of a structure that is part of a chain:
+    ``{"first"|"last": {"x", "y", "z", "role": "outer"|"joint", "anchor"}}`` for the first / last point of
+    ``xy_gip``. A joint end gets no deck past it (the next structure carries on there).
     """
     width_fallback = float(cfg["width_m"])
     width_from_road = bool(cfg.get("width_from_road", True))
@@ -1718,34 +1847,24 @@ def build_gallery_centerline(
     s_first = bb.project_on_road(road, xy_gip[0][0], xy_gip[0][1])[0]
     s_last = bb.project_on_road(road, xy_gip[-1][0], xy_gip[-1][1])[0]
     forward = s_last >= s_first
+    fe = fixed_ends or {}
+    fix0 = fe.get("first") if forward else fe.get("last")
+    fix1 = fe.get("last") if forward else fe.get("first")
+    joint_ends = [e for e, f in (("s0", fix0), ("s1", fix1)) if f and f.get("role") == "joint"]
 
-    p0 = find_secured_portal(
+    p0 = _fixed_portal(road, fix0) if fix0 else find_secured_portal(
         road,
         s_g0,
         end="s0",
         z_terrain=z_terrain,
-        search_out_m=float(cfg.get("portal_search_out_m") or 25.0),
-        search_in_m=float(cfg.get("portal_search_in_m") or 15.0),
-        step=float(cfg.get("portal_grade_step_m") or 1.0),
-        jump_dp=float(cfg.get("portal_grade_jump") or 0.04),
-        baseline_n=int(cfg.get("portal_grade_baseline_n") or 3),
-        out_extra_m=float(cfg.get("portal_out_extra_m") or 2.0),
-        grade_span_m=float(cfg.get("portal_grade_span_m") or 3.0),
-        jump_min_grade=float(cfg.get("portal_jump_min_grade") or 0.12),
+        **_portal_search_kw(cfg),
     )
-    p1 = find_secured_portal(
+    p1 = _fixed_portal(road, fix1) if fix1 else find_secured_portal(
         road,
         s_g1,
         end="s1",
         z_terrain=z_terrain,
-        search_out_m=float(cfg.get("portal_search_out_m") or 25.0),
-        search_in_m=float(cfg.get("portal_search_in_m") or 15.0),
-        step=float(cfg.get("portal_grade_step_m") or 1.0),
-        jump_dp=float(cfg.get("portal_grade_jump") or 0.04),
-        baseline_n=int(cfg.get("portal_grade_baseline_n") or 3),
-        out_extra_m=float(cfg.get("portal_out_extra_m") or 2.0),
-        grade_span_m=float(cfg.get("portal_grade_span_m") or 3.0),
-        jump_min_grade=float(cfg.get("portal_jump_min_grade") or 0.12),
+        **_portal_search_kw(cfg),
     )
 
     s_p0 = float(p0["s"])
@@ -1812,12 +1931,14 @@ def build_gallery_centerline(
             cover_in = 0.0
         elif one_meta.get("fake_end") == "s0":
             cover_out = 0.0
-    if forward:
-        s0 = max(0.0, s_p0 - cover_out)
-        s1 = min(s_max_r, s_p1 + cover_in)
-    else:
-        s0 = max(0.0, s_p0 - cover_in)
-        s1 = min(s_max_r, s_p1 + cover_out)
+    cover_lo, cover_hi = (cover_out, cover_in) if forward else (cover_in, cover_out)
+    # a joint: the next structure of the chain carries on, its deck is not ours (the DGM there is its roof)
+    if "s0" in joint_ends:
+        cover_lo = 0.0
+    if "s1" in joint_ends:
+        cover_hi = 0.0
+    s0 = max(0.0, s_p0 - cover_lo)
+    s1 = min(s_max_r, s_p1 + cover_hi)
     if s1 - s0 < step:
         s1 = min(s_max_r, s0 + step)
 
@@ -1893,6 +2014,7 @@ def build_gallery_centerline(
         "portal_s": [round(s_p0, 3), round(s_p1, 3)],
         "portal_width_m": [round(w0, 2), round(w1, 2)],
         "portal_anchors": {"s0": p0, "s1": p1},
+        "joint_ends": joint_ends,
         "one_ended": one_meta.get("one_ended"),
         "fake_end": one_meta.get("fake_end"),
         "fake_end_drop_m": one_meta.get("fake_end_drop_m"),
@@ -4538,8 +4660,13 @@ def conform_approach_heightmap(
     return out, stats
 
 
-def _daylight_portal_specs(g: dict, info: dict) -> list[dict]:
-    """Daylight portals only (skip the one_ended fake end)."""
+def _portal_face_specs(g: dict, info: dict) -> list[dict]:
+    """Every portal face of the tube: the daylight portals and the joints to the next structure of a chain."""
+    return _daylight_portal_specs(g, info, joints=True)
+
+
+def _daylight_portal_specs(g: dict, info: dict, *, joints: bool = False) -> list[dict]:
+    """Daylight portals only (skip the one_ended fake end and, unless ``joints``, the joints of a chain)."""
     portal_s = info.get("portal_s") or g.get("portal_s") or []
     if len(portal_s) < 2:
         return []
@@ -4552,10 +4679,11 @@ def _daylight_portal_specs(g: dict, info: dict) -> list[dict]:
         if info.get("one_ended") is not None
         else g.get("one_ended")
     )
+    joint = set() if joints else set(info.get("joint_ends") or g.get("joint_ends") or [])
     specs: list[dict] = []
-    if not (one and fake == "s0"):
+    if not (one and fake == "s0") and "s0" not in joint:
         specs.append({"end": "s0", "s": s0, "out": -1.0})
-    if not (one and fake == "s1"):
+    if not (one and fake == "s1") and "s1" not in joint:
         specs.append({"end": "s1", "s": s1, "out": 1.0})
     return specs
 
@@ -6597,6 +6725,9 @@ def _interior_portal_ends(
     """(objectid, 's0'|'s1') portals that abut another gallery on the same road."""
     interior: set[tuple[object, str]] = set()
     for a in span_infos:
+        for end in a.get("joint_ends") or []:
+            interior.add((a.get("objectid"), end))
+    for a in span_infos:
         for b in span_infos:
             if a.get("objectid") == b.get("objectid"):
                 continue
@@ -6803,6 +6934,81 @@ def paint_gallery_holes(
     return np.zeros((size, size), dtype=np.uint8)
 
 
+TRANSITION_DEFAULTS = {
+    "transition_check": "error",  # error: stop the build on an impossible transition; warn: report only; off
+    "transition_step_max_m": 0.10,  # height step deck -> road at the end of a deck, or between two decks at a joint
+    "transition_kink_warn": 0.03,  # grade break (dz/ds difference) reported as warning
+    "transition_kink_max": 0.08,  # grade break that counts as impossible
+    "transition_window_m": 5.0,  # grades are taken over this length on either side
+}
+
+
+def check_structure_transitions(
+    centerlines: list[dict],
+    span_infos: list[dict],
+    chain_plans: list[dict],
+    *,
+    ground_z,
+    settings: dict,
+) -> dict:
+    """Yardstick for every portal and every chain joint: no height step, no grade break above the limits.
+
+    Daylight portal: the deck from 20 m inside over the portal to its end (grade break along it), then the step and
+    grade break from the deck end onto the road outside (``ground_z``). Joint: the two decks where they meet
+    (step, grade break); a joint whose neighbour is not built this run is checked against the chain line.
+    """
+    win = float(settings["transition_window_m"])
+    lim = {
+        "step_max": float(settings["transition_step_max_m"]),
+        "kink_warn": float(settings["transition_kink_warn"]),
+        "kink_max": float(settings["transition_kink_max"]),
+    }
+    info_by_oid = {i.get("objectid"): i for i in span_infos}
+    by_oid = {g.get("objectid"): g for g in centerlines}
+    rows: list[dict] = []
+    for g in centerlines:
+        info = info_by_oid.get(g.get("objectid")) or {}
+        nodes = g.get("nodes") or []
+        if len(nodes) < 4:
+            continue
+        for sp in _daylight_portal_specs(g, info):
+            r = sch.check_portal(nodes, s_portal=float(sp["s"]), out=float(sp["out"]), ground_z=ground_z, window_m=win)
+            r.update({"type": "portal", "name": g.get("name"), "objectid": g.get("objectid"), "end": sp["end"]})
+            r["verdict"] = sch.judge(r, **lim)
+            rows.append(r)
+    for plan in chain_plans:
+        for j in plan["joints"]:
+            a, b = (by_oid.get(o) for o in j["between"])
+            if a is not None and b is not None:
+                r = sch.check_joint(a["nodes"], b["nodes"], (j["x"], j["y"]), window_m=win)
+                r["name"] = f"{a.get('name')} / {b.get('name')}"
+            else:
+                g = a if a is not None else b
+                if g is None:
+                    continue
+                s, z, pxy = sch._profile(g["nodes"])
+                k = int(np.argmin(np.hypot(pxy[:, 0] - j["x"], pxy[:, 1] - j["y"])))
+                r = {"x": j["x"], "y": j["y"], "z_a": round(float(z[k]), 3), "z_b": j["z"],
+                     "step_m": round(j["z"] - float(z[k]), 3), "kink": None, "name": f"{g.get('name')} / chain line"}
+            r.update({"type": "joint", "between": j["between"], "chain": plan["id"]})
+            r["verdict"] = sch.judge(r, **lim)
+            rows.append(r)
+    n_fail = sum(1 for r in rows if r["verdict"] == "fail")
+    n_warn = sum(1 for r in rows if r["verdict"] == "warn")
+    for r in rows:
+        if r["verdict"] == "ok":
+            continue
+        where = f"{r['name']} {r.get('end') or 'joint'}"
+        print(
+            f"transition {r['verdict'].upper()}: {where}: step {r.get('step_m')} m, grade break {r.get('kink')}"
+            + (f" at s {r.get('kink_s')}" if r.get("kink_s") is not None else "")
+            + (f", onto road {r.get('kink_end')}" if r.get("kink_end") is not None else "")
+        )
+    print(f"Transitions: {len(rows)} checked, {n_warn} warn, {n_fail} fail "
+          f"(step <= {lim['step_max']} m, grade break <= {lim['kink_max']:.0%}, warn > {lim['kink_warn']:.0%})")
+    return {"limits": lim, "window_m": win, "rows": rows, "warn": n_warn, "fail": n_fail}
+
+
 def check_tube_intrusion(
     centerlines: list[dict],
     span_infos: list[dict],
@@ -6845,7 +7051,7 @@ def check_tube_intrusion(
         # Face zone of each daylight portal: from the mesh portal inward to where the mountain closes over the
         # roof (the portal face and any cut in front of it), at least fix_in, at most fix_max.
         zones = []
-        for sp in _daylight_portal_specs(g, info):
+        for sp in _portal_face_specs(g, info):
             sd = float(sp["s"])
             inward = -float(sp["out"])
             s_in = th.buried_from(
@@ -7696,6 +7902,7 @@ def main() -> None:
     if not feats:
         raise SystemExit("No gallery/tunnel features after unify")
 
+    all_feats = feats
     if only_ids:
         feats = [
             f
@@ -7772,6 +7979,46 @@ def main() -> None:
     z_terrain, slope_at = load_terrain_z_slope(site)
     z_road_at = _surface_road_z_fn(site)
 
+    def road_of(feat: dict, cfg: dict) -> dict:
+        """Axis road of a structure (single, not road_spline / unify); kept so a chain and its members agree."""
+        key = tuple(sorted(_feat_objectids(feat))) or id(feat)
+        if key in road_cache:
+            return road_cache[key][0]
+        if use_gip_cl or str(cfg.get("centerline") or "").lower() in ("gip", "verkehrswege", "objectid", "oid"):
+            from gip_road_segments import load_gip_corridor_for_feature as _corridor
+
+            road = _corridor(feat, site, corridors=corridors)
+            seed = {"id": road.get("id")}
+        else:
+            if not roads:
+                raise SystemExit(
+                    f"Missing {proc / 'roads_beamng.json'} (needed for galleries on the OSM axis)"
+                )
+            seed = bb.pick_road(roads, feat["xy"], site)
+            pad = float(cfg.get("portal_search_out_m") or 25.0) + float(
+                cfg.get("portal_out_extra_m") or 2.0
+            ) + 5.0
+            road = extend_road_chain(roads, seed, tol_m=1.0, pad_m=pad)
+        road_cache[key] = (road, seed)
+        return road
+
+    road_cache: dict = {}
+    chain_plans: list[dict] = []
+    if bool(gal_raw.get("chain", True)):
+        chains = sch.find_chains(all_feats, tol_m=float(gal_raw.get("chain_tol_m") or 5.0))
+        if only_ids:
+            chains = [
+                c for c in chains
+                if any(_feat_objectids(all_feats[m["idx"]]) & only_ids for m in c["members"])
+            ]
+        chain_plans = plan_chain_heights(
+            all_feats,
+            chains,
+            cfg_of=lambda f: resolve_gallery_cfg(defaults, items, f),
+            road_of=road_of,
+            z_terrain=z_terrain,
+        )
+
     for feat in feats:
         cfg = resolve_gallery_cfg(defaults, items, feat)
         if cfg.get("enabled") is False:
@@ -7812,29 +8059,13 @@ def main() -> None:
             if unify_road is not None:
                 road = unify_road
                 seed = {"id": road.get("id")}
-            elif use_gip_cl or str(cfg.get("centerline") or "").lower() in (
-                "gip",
-                "verkehrswege",
-                "objectid",
-                "oid",
-            ):
-                road = load_gip_corridor_for_feature(
-                    feat, site, corridors=corridors
-                )
-                seed = {"id": road.get("id")}
             else:
-                if not roads:
-                    raise SystemExit(
-                        f"Missing {proc / 'roads_beamng.json'} (needed for galleries on the OSM axis)"
-                    )
-                seed = bb.pick_road(roads, feat["xy"], site)
-                pad = float(cfg.get("portal_search_out_m") or 25.0) + float(
-                    cfg.get("portal_out_extra_m") or 2.0
-                ) + 5.0
-                road = extend_road_chain(roads, seed, tol_m=1.0, pad_m=pad)
+                road = road_of(feat, cfg)
+                seed = road_cache[tuple(sorted(_feat_objectids(feat))) or id(feat)][1]
             nodes, info = build_gallery_centerline(
-                feat["xy"], road, cfg, z_terrain=z_terrain
+                feat["xy"], road, cfg, z_terrain=z_terrain, fixed_ends=feat.get("chain_fixed")
             )
+            info["chain_id"] = feat.get("chain_id")
             info["seed_road_id"] = seed.get("id")
             info["chain_ids"] = road.get("chain_ids")
             info["chain_len_m"] = round(float(road["length"]), 2)
@@ -7968,6 +8199,10 @@ def main() -> None:
                             d1 = s_p1
                         elif info.get("fake_end") == "s0":
                             d0 = s_p0
+                    if "s0" in (info.get("joint_ends") or []):
+                        d0 = s_p0
+                    if "s1" in (info.get("joint_ends") or []):
+                        d1 = s_p1
                     if info.get("abutment_end_s") is not None:
                         s_ab = float(info["abutment_end_s"])
                         d0 = min(d0, s_ab)
@@ -8017,6 +8252,10 @@ def main() -> None:
                 fake = info.get("fake_end")
                 if info.get("one_ended") and fake in ("s0", "s1"):
                     portal_ends = [e for e in portal_ends if e[0] != fake]
+                # chain joint: a tunnel keeps its portal face inside the gallery; a gallery has none there
+                joints = set(info.get("joint_ends") or [])
+                if feat.get("kind") != "tunnel":
+                    portal_ends = [e for e in portal_ends if e[0] not in joints]
                 for end_name, node, into_sign in portal_ends:
                     pv, pf, porig = loft_portal_frame(
                         node,
@@ -8065,7 +8304,7 @@ def main() -> None:
                             "isRenderEnabled": True,
                         }
                     )
-                    if cfg.get("portal_collar", True):
+                    if cfg.get("portal_collar", True) and end_name not in joints:
                         cv, cf, corig = loft_portal_collar(
                             node,
                             into_sign=into_sign,
@@ -8283,6 +8522,29 @@ def main() -> None:
             + (f"tris={n_tris}" if not args.holes_only else "(holes-only)")
         )
 
+    tr_cfg = {k: gal_raw.get(k, v) for k, v in TRANSITION_DEFAULTS.items()}
+    transitions = None
+    if str(tr_cfg["transition_check"]).lower() not in ("off", "false", "none"):
+
+        def ground_z(x: float, y: float):
+            z = z_road_at(x, y) if z_road_at is not None else None
+            if z is None and z_terrain is not None:
+                z = float(z_terrain(x, y))
+            return z
+
+        transitions = check_structure_transitions(
+            centerlines, span_infos, chain_plans, ground_z=ground_z, settings=tr_cfg
+        )
+        tr_path = proc / "galleries_transitions.json"
+        tr_path.write_text(
+            json.dumps({"chains": chain_plans, **transitions}, indent=2), encoding="utf-8"
+        )
+        if transitions["fail"] and str(tr_cfg["transition_check"]).lower() == "error":
+            raise SystemExit(
+                f"{transitions['fail']} impossible transition(s), see {tr_path} "
+                "(galleries.transition_check: warn to build anyway)"
+            )
+
     cl_path = proc / "galleries_centerlines.json"
     cl_path.write_text(
         json.dumps({"level": level_name, "galleries": centerlines}, indent=2),
@@ -8446,6 +8708,8 @@ def main() -> None:
         "terrain_embed": embed_stats,
         "portal_seat": seat_stats,
         "intrusion": intrusion,
+        "chains": chain_plans,
+        "transitions": None if transitions is None else {k: transitions[k] for k in ("limits", "warn", "fail")},
         "note": (
             "portal_seat: deck apron toward the exit (default 8 m). "
             "Roof force and door hole stay off unless YAML sets them. "

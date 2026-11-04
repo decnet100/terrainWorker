@@ -342,6 +342,8 @@ One-ended tunnels (only one portal on the map): `one_ended: true` plus `fake_end
 
 With a prescribed outer centerline (`append_unify: <id>`), Z from the daylight portal to the far end is a straight line to a target height (`abutment_z`, or A12 / `max(road, DGM)` when `abut_snap_z`). `append_m` keeps only that many metres from the portal (omit = full unify). The last `abut_run_m` (default 5) of that span is the abutment pad — same seating idea as a bridge. The closed tube stays on `portal_s`; only the deck runs portal → pad. Terrain on that plate uses the **bridge** heightmap cut (`approach_conform` + `force_deck_z`): high DGM under the MeshRoad is lowered to the deck. Do not mean-axis the bore with the approach: the approach unify stays `kind: road`.
 
+Structures of any kind that follow end to end (gallery – tunnel – gallery, GIP ends within `chain_tol_m`, default 5 m) are planned as one chain (`tools/structure_chains.py`): portal search only at the two outer ends, a straight line between them, every joint on that line. The DGM over a gallery is its roof, so a portal height taken there puts the next tube on the roof. Afterwards `check_structure_transitions` checks every daylight portal and joint for height steps and grade breaks (`transition_*` keys, `galleries_transitions.json`); by default an impossible transition stops the build. Details: [STRUCTURES.md](STRUCTURES.md).
+
 Parallel tubes that only share a mouth are **not** auto-merged (`merge_abutting` is end-to-end only). For a shared carriageway (Reschen: Landecker), name a mean axis under `beamng.roads.unify` and match it in galleries:
 
 ```yaml
