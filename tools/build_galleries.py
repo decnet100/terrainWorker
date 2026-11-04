@@ -58,6 +58,7 @@ GALLERY_SCALAR_KEYS = (
     "extend_after_m",
     "step_m",
     "crossfall_max",
+    "crossfall_ramp_m",  # deck crossfall outside a portal grows from 0 to the DGM's over this length (default 10)
     "open_side",
     "z_profile",  # linear (default) | road | road_spline
     "profile",  # alias: road_spline (bridges naming)
@@ -221,6 +222,7 @@ def default_gallery_cfg(bng: dict) -> tuple[dict, list]:
         "extend_after_m": float(raw.get("extend_after_m") or 1.0),
         "step_m": float(raw.get("step_m") or 2.0),
         "crossfall_max": float(raw.get("crossfall_max") or 0.12),
+        "crossfall_ramp_m": float(raw.get("crossfall_ramp_m") or 10.0),
         # auto: toward the valley (the lower DGM side of the axis); left / right are relative to the road direction
         "open_side": str(raw.get("open_side") or "auto"),
         # linear: straight Z between portals (approaches stay on DGM).
@@ -3229,12 +3231,15 @@ def make_gallery_deck_meshroad(
     crossfall_max: float = 0.12,
     open_side: str | None = None,
     open_extra_m: float = 0.0,
+    crossfall_ramp_m: float = 10.0,
 ) -> dict:
     """Asphalt MeshRoad with bridge-style pitch + Querneigung.
 
-    Crossfall is sampled from the heightmap at the portals (solid road),
-    then lerped along the gallery — mid-gallery DGM is roof/polluted and must
-    not drive banking. Approaches outside portals sample local heightmap CF.
+    No crossfall between the portals: the shell is lofted level across the road, so a banked deck leaves a gap at
+    one wall and runs into the other, and the DGM there is the roof (a gallery roof slopes toward the valley; at a
+    chain joint it is the roof of the next gallery), not the road. Galleries and tunnels alike. Outside the portals
+    the deck takes the local heightmap crossfall, ramped in from 0 at the portal over ``crossfall_ramp_m``; a closed
+    tube stays level there too.
 
     ``open_extra_m`` extends the deck only toward ``open_side`` (shift centerline
     + widen) so the closed edge stays put.
@@ -3246,36 +3251,11 @@ def make_gallery_deck_meshroad(
     side = (open_side or "").lower().strip()
     closed_tube = side in ("none", "off", "false", "0")
     s_p0 = s_p1 = None
-    cf0 = cf1 = 0.0
     if portal_s is not None and len(portal_s) >= 2:
         s_p0, s_p1 = float(portal_s[0]), float(portal_s[1])
         if s_p1 < s_p0:
             s_p0, s_p1 = s_p1, s_p0
-    if z_terrain is not None and s_p0 is not None and not closed_tube:
-        n0 = _node_nearest_s(nodes, s_p0)
-        n1 = _node_nearest_s(nodes, s_p1)
-        w0 = float(n0.get("width") or 7.5)
-        w1 = float(n1.get("width") or 7.5)
-        cf0, _zl0, _zc0, _zr0 = bb.sample_crossfall(
-            z_terrain,
-            float(n0["x"]),
-            float(n0["y"]),
-            float(n0.get("tx") or 1.0),
-            float(n0.get("ty") or 0.0),
-            0.5 * w0,
-        )
-        cf1, _zl1, _zc1, _zr1 = bb.sample_crossfall(
-            z_terrain,
-            float(n1["x"]),
-            float(n1["y"]),
-            float(n1.get("tx") or 1.0),
-            float(n1.get("ty") or 0.0),
-            0.5 * w1,
-        )
-        cf0 = max(-cf_max, min(cf_max, cf0))
-        cf1 = max(-cf_max, min(cf_max, cf1))
-
-    length_p = max((s_p1 - s_p0) if s_p0 is not None else 1.0, 1e-3)
+    ramp = max(float(crossfall_ramp_m), 1e-3)
     mesh_nodes = []
     for i, n in enumerate(nodes):
         z = float(n["z_road"])
@@ -3307,18 +3287,18 @@ def make_gallery_deck_meshroad(
 
         # Closed tube: no DGM crossfall. Portal hillside would tilt the
         # slab ~0.12 and leave a step against the flat bankett on one side.
-        if closed_tube:
+        if closed_tube or z_terrain is None:
             cf = 0.0
         elif s_p0 is not None and s_p0 - 1e-6 <= s <= s_p1 + 1e-6:
-            t = (s - s_p0) / length_p
-            cf = cf0 + t * (cf1 - cf0)
-        elif z_terrain is not None:
+            cf = 0.0
+        else:
             cf, _zl, _zc, _zr = bb.sample_crossfall(
                 z_terrain, float(n["x"]), float(n["y"]), tx, ty, 0.5 * w
             )
             cf = max(-cf_max, min(cf_max, cf))
-        else:
-            cf = 0.0
+            if s_p0 is not None:
+                dist = (s_p0 - s) if s < s_p0 else (s - s_p1)
+                cf *= min(1.0, dist / ramp)
 
         nrm = bb.normal_from_pitch_crossfall(tx, ty, dz_ds, cf)
         # BeamNG MeshRoad node Z = driving surface (same as bridges node_z_is_top).
@@ -8274,6 +8254,7 @@ def main() -> None:
                         z_terrain=z_terrain,
                         portal_s=(s_p0, s_p1),
                         crossfall_max=float(cfg.get("crossfall_max") or 0.12),
+                        crossfall_ramp_m=float(cfg.get("crossfall_ramp_m") or 10.0),
                         open_side=str(cfg.get("open_side") or "left"),
                         open_extra_m=float(cfg.get("deck_open_extra_m") or 0.0),
                     )

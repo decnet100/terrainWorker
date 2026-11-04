@@ -109,6 +109,13 @@ cd C:\temp\beamng_autoroad; $env:AUTOROAD_SITE = "config/sites/reschen.yaml"; py
 
 Ausgabe: `galleries_centerlines.json`, DAE unter `art/shapes/galleries/`, TSStatics in der SimGroup `galleries`, Span-Schicht `span_gallery`. LocKarte nur anfassen, wenn sich Portale ändern — nicht nebenbei vergrößern.
 
+**Querneigung:** Zwischen den Portalen liegt das Deck quer waagrecht, bei Galerien wie bei Tunneln. Die Schale ist
+quer waagrecht gebaut, ein geneigtes Deck ließe an einer Wand eine Lücke und liefe in die andere hinein. Bis 2026-11
+nahm eine Galerie die Querneigung aus dem DGM an ihren Portalen. Dort liegt aber oft das Galeriedach, das zum Tal
+abfällt, und an einer Kettenfuge das Dach der Nachbargalerie. Die Stuibagalerie kippte so durchgehend um etwa 12 %
+(`crossfall_max`), passte nicht an den waagrechten Klammlecktunnel und klaffte an der Wand. Außerhalb der Portale wächst
+die Querneigung des Decks über `crossfall_ramp_m` (10 m) von 0 auf die des Geländes.
+
 ### Lochkarte (Holemap)
 
 Ein Pixel der Lochkarte ist ein **Eckpunkt** des Geländes, keine Zelle. Ein Loch am Eckpunkt (i, j) nimmt genau das
