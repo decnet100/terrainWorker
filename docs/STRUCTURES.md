@@ -181,10 +181,17 @@ Deshalb gibt es an jedem Tagportal mit Magliasina-Straße davor eine **Übergabe
 
 - `build_galleries` liest die Magliasina-Meshes direkt aus `magliasina/magliasina_work/work/roads_only`
   (`tools/magliasina_surface.py`). An der Linie misst es den Querschnitt: Kanten, Mittelhöhe, Breite, Querneigung,
-  Versatz der Mitte zu unserer Achse. Liegt die Achse dort nicht auf Asphalt, rückt die Linie bis 10 m weiter nach
-  außen.
-- Das Deck beginnt genau an der Linie mit diesem Querschnitt. Bis zum Portal gehen Höhe, Breite, Querneigung und
-  Versatz linear auf unsere Werte über: waagrecht, eigene Breite, eigene Achse.
+  Versatz der Mitte zu unserer Achse. Die Kanten werden auf den Millimeter eingegabelt.
+- Die Linie braucht einen ruhigen Querschnitt: Über die nächsten 3 m nach außen darf jede Kante höchstens 3 cm von
+  einer Geraden abweichen. Eine gleichmäßige Aufweitung ist erlaubt, ein Sprung im Mesh-Rand nicht. An der Stuiba
+  sprang der Rand direkt an der 10-m-Linie um 29 cm, dort liegt die Linie jetzt bei 11 m. Ohne Asphalt oder ohne
+  ruhigen Querschnitt rückt die Linie in 0,5-m-Schritten bis 10 m weiter nach außen.
+- Das Deck beginnt genau an der Linie mit diesem Querschnitt und hält ihn über das erste Segment (1 m). Danach gehen
+  Höhe, Breite, Querneigung und Versatz linear auf unsere Werte am Portal über: waagrecht, eigene Breite, eigene
+  Achse. Die Endkante eines MeshRoads steht rechtwinklig zu seinem ersten Segment. Ändert sich der Versatz schon
+  dort, ist sie um 1–3° verdreht.
+- Geschnitten wird rechtwinklig zu diesem ersten Segment, also genau entlang der Endkante des Decks. Im Sandbox
+  passen Höhe und Kanten an beiden Galerien auf ±5 mm.
 - Die Linien stehen in `magliasina_handover.json`. Linien von Bauwerken, die im Lauf nicht gebaut werden, bleiben
   erhalten. `import_magliasina_roads` schneidet die Meshes dort: Dreiecke werden an der Linie geteilt, der Teil zum
   Bauwerk hin fällt weg (Breite + 2 m je Seite, bis 40 m hinter das Portal).

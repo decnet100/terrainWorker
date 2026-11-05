@@ -3373,6 +3373,8 @@ def apply_magliasina_handover(
     *,
     handover_m: float,
     search_m: float = 10.0,
+    stable_m: float = 3.0,
+    stable_tol_m: float = 0.03,
 ) -> list[dict]:
     """Hand the deck over to the Magliasina road at a line ``handover_m`` outside each daylight portal.
 
@@ -3382,7 +3384,9 @@ def apply_magliasina_handover(
     there (middle height, width, crossfall, lateral offset of the middle, measured on the mesh) and goes linearly to
     ours at the portal (level, own width and shift; node key ``ho``). The line is recorded in ``info["handover"]``;
     import_magliasina_roads cuts Magliasina's mesh there (magliasina_handover.json). If the axis is not on asphalt at
-    the line, the line moves outward by up to ``search_m``; without asphalt there the end keeps its old deck.
+    the line, or Magliasina's edges leave a straight line by more than ``stable_tol_m`` within ``stable_m`` beyond it
+    (a jag in the mesh edge; a steady widening is fine), the line moves
+    outward in 0.5 m steps by up to ``search_m``; without such a place the end keeps its old deck.
     """
     if surf is None or len(nodes) < 2:
         return nodes
@@ -3396,26 +3400,42 @@ def apply_magliasina_handover(
         sec = None
         d_h = handover_m
         while d_h <= handover_m + search_m + 1e-6:
-            x, y, tx, ty = _axis_at(out, s_p + o * d_h)
-            near = min(out, key=lambda n: abs(float(n["s"]) - (s_p + o * d_h)))
-            sec = surf.section(x, y, tx, ty, ref=float(near["z_road"]))
-            if sec is not None and sec["width"] >= 3.0:
-                break
+            secs = []
+            for u in np.arange(0.0, stable_m + 1e-6, 0.5):  # the line and the next metres outward
+                x, y, tx, ty = _axis_at(out, s_p + o * (d_h + u))
+                near = min(out, key=lambda n: abs(float(n["s"]) - (s_p + o * (d_h + u))))
+                secs.append(surf.section(x, y, tx, ty, ref=float(near["z_road"])))
+            sec = secs[0]
+            if all(c is not None and c["width"] >= 3.0 for c in secs):
+                # each edge must run straight over the next metres (a steady widening is fine): off a straight
+                # line by more than stable_tol_m means a jag in the mesh edge, and the deck end would match the
+                # line but not the road just beyond it
+                uu = np.arange(len(secs)) * 0.5
+                dev = 0.0
+                for key in ("left_m", "right_m"):
+                    e = np.array([c[key] for c in secs])
+                    fit = np.polyval(np.polyfit(uu, e, 1), uu)
+                    dev = max(dev, float(np.abs(e - fit).max()))
+                if dev <= stable_tol_m:
+                    break
             sec = None
-            d_h += 1.0
+            d_h += 0.5
         if sec is None:
-            print(f"handover {info.get('name')} {sp['end']}: no Magliasina asphalt {handover_m:.0f}-"
+            print(f"handover {info.get('name')} {sp['end']}: no steady Magliasina section {handover_m:.0f}-"
                   f"{handover_m + search_m:.0f} m outside the portal, deck kept")
             continue
         s_h = s_p + o * d_h
         keep = [n for n in out if (float(n["s"]) - s_p) * o <= 1e-6]
         new = []
         n_steps = max(2, int(math.ceil(d_h / 1.0)))
+        # the first segment from the line keeps Magliasina's section unchanged: the MeshRoad's end edge lies square
+        # to that segment, and with the lateral shift already changing there it was turned 1-3 deg against the cut
+        hold = d_h / n_steps
         for i in range(1, n_steps + 1):
             d = d_h * i / n_steps
             s = s_p + o * d
             x, y, tx, ty = _axis_at(out, s)
-            t = 1.0 - d / d_h  # 0 at the line, 1 at the portal
+            t = max(0.0, (d_h - d - hold) / max(d_h - hold, 1e-6))  # 0 at the line (and one node in), 1 at the portal
             z = float(sec["z_mid"]) * (1.0 - t) + z_p * t
             new.append({
                 "x": round(x, 3), "y": round(y, 3), "z_road": round(z, 3), "z_axis": round(z, 3),
@@ -3426,17 +3446,22 @@ def apply_magliasina_handover(
             })
         out = sorted(keep + new, key=lambda n: float(n["s"]))
         x, y, tx, ty = _axis_at(out, s_h)
+        # cut square to the deck's first segment (line node -> next node), the direction its end edge follows
+        x1, y1, _tx1, _ty1 = _axis_at(out, s_h - o * hold)
+        cnx, cny = x1 - x, y1 - y
+        cl = math.hypot(cnx, cny) or 1.0
+        cnx, cny = cnx / cl, cny / cl
         lx, ly = -ty, tx
         cx, cy = x + lx * float(sec["mid_offset"]), y + ly * float(sec["mid_offset"])
         lines.append({
             "objectid": info.get("objectid"), "name": info.get("name"), "end": sp["end"], "s": round(s_h, 2),
-            "x": round(cx, 3), "y": round(cy, 3), "nx": round(-o * tx, 5), "ny": round(-o * ty, 5),
+            "x": round(cx, 3), "y": round(cy, 3), "nx": round(cnx, 5), "ny": round(cny, 5),
             "z": sec["z_mid"], "width": sec["width"], "crossfall": sec["crossfall"],
             "half_m": round(0.5 * float(sec["width"]) + 2.0, 2), "depth_m": round(d_h + 40.0, 1),
             "handover_m": round(d_h, 1),
         })
         print(
-            f"handover {info.get('name')} {sp['end']}: Magliasina line {d_h:.0f} m outside the portal, "
+            f"handover {info.get('name')} {sp['end']}: Magliasina line {d_h:.1f} m outside the portal, "
             f"z {sec['z_mid']:.2f} (deck at portal {z_p:.2f}), width {sec['width']:.2f} m, "
             f"crossfall {100 * sec['crossfall']:.1f} %, middle {sec['mid_offset']:+.2f} m off the axis"
         )

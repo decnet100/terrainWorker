@@ -109,6 +109,20 @@ class Surface:
                     break
                 o += step
                 z_last = zz
+            # the edge lies between o and o + step: bisect it to the millimetre, so the deck's width matches
+            # (a whole step short on one side showed as a 5-10 cm offset at the handover)
+            a, b = o, o + step
+            for _ in range(8):
+                m = 0.5 * (a + b)
+                zz = self.z(x + lx * sign * m, y + ly * sign * m, z_last)
+                if zz is None or abs(zz - z_last) > 0.25:
+                    b = m
+                else:
+                    a = m
+            if a > o:
+                zz = self.z(x + lx * sign * a, y + ly * sign * a, z_last)
+                if zz is not None:
+                    o, z_last = a, zz
             return o, z_last
 
         ol, zl = walk(1.0)
