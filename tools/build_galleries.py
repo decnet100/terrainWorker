@@ -1418,7 +1418,7 @@ def build_gallery_road_spline(
                 "width": round(width_base + w_extra, 2),
                 "tx": round(tx, 5),
                 "ty": round(ty, 5),
-                "s": round(float(s), 2),
+                "s": round(float(s), 3),
             }
         )
 
@@ -2043,7 +2043,7 @@ def build_gallery_centerline(
                 "width": round(w, 2),
                 "tx": round(tx, 5),
                 "ty": round(ty, 5),
-                "s": round(s, 2),
+                "s": round(s, 3),  # as portal_s: a portal node rounded to 2 places fell 1 mm outside its own portal
             }
         )
 
@@ -3440,7 +3440,7 @@ def apply_magliasina_handover(
             new.append({
                 "x": round(x, 3), "y": round(y, 3), "z_road": round(z, 3), "z_axis": round(z, 3),
                 "z_roof_inner": round(z + 4.0, 3), "z_roof_outer": round(z + 4.5, 3),
-                "width": portal.get("width"), "tx": round(tx, 5), "ty": round(ty, 5), "s": round(s, 2),
+                "width": portal.get("width"), "tx": round(tx, 5), "ty": round(ty, 5), "s": round(s, 3),
                 "deck_approach": True,
                 "ho": {"t": round(t, 4), "w": sec["width"], "shift": sec["mid_offset"], "cf": sec["crossfall"]},
             })
