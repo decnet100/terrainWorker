@@ -197,6 +197,20 @@ Deshalb gibt es an jedem Tagportal mit Magliasina-Straße davor eine **Übergabe
   Bauwerk hin fällt weg (Breite + 2 m je Seite, bis 40 m hinter das Portal).
 - Die Übergangsprüfung misst Stufe und Knick am Deckende gegen die Magliasina-Oberfläche.
 
+Das Gelände neben dem Deck richtet sich nach dem Deck, wie es gebaut ist: Mitte samt Versatz, Breite und Querneigung
+(`conform_approach_heightmap` mit den Deck-MeshRoads). Auf der Übergabestrecke liegt das Deck versetzt und breiter
+als die Bauwerksachse. Früher wurde an der Achse angeglichen, und auf der Talseite stand die 0,5 m hohe Deckseite
+frei. An der Stuiba lag das Gelände 15–64 cm unter dem Rand. Jetzt gilt:
+
+- **Liegt das Gelände tiefer als der Deckrand,** wird bis an den Rand aufgefüllt. Daneben fällt eine Böschung 1:1,5
+  über die Ausblendbreite ab. Ein Punkt wird um höchstens `approach_conform_max_fill_m` (2,5 m) angehoben.
+- **Liegt es höher,** wird wie bisher nur bis `approach_conform_max_delta_m` abgetragen. Eine Bergflanke bleibt
+  stehen.
+- **Nur vor dem Portal:** Angepasst werden nur die Deckabschnitte vor dem Portal, in einer Röhre wird nichts
+  aufgeschüttet.
+
+Danach liegt das Gelände an beiden Galerien 0,3 m neben dem Rand 0–15 cm tiefer (Sandbox).
+
 Reihenfolge: **erst `build_galleries`, dann `import_magliasina_roads`**, danach `compose_heightmap`.
 `galleries.magliasina_handover: false` schaltet das ab.
 

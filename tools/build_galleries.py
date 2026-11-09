@@ -4762,6 +4762,52 @@ def _apply_bridge_conform_weights(
     return int(np.count_nonzero(np.abs(z_new - z0) >= 1e-4))
 
 
+def _deck_sections(meshroad: dict) -> dict:
+    """Cross-sections of a deck MeshRoad: centre (x, y, z), half width and the banked right vector, scaled so its
+    horizontal part is a unit vector (z part = height change per metre to the right)."""
+    nd = np.array(meshroad["nodes"], dtype=np.float64)
+    c = nd[:, :3]
+    up = nd[:, 5:8] / np.maximum(np.linalg.norm(nd[:, 5:8], axis=1, keepdims=True), 1e-9)
+    fwd = np.gradient(c, axis=0)
+    fwd /= np.maximum(np.linalg.norm(fwd, axis=1, keepdims=True), 1e-9)
+    right = np.cross(fwd, up)  # bb.normal_from_pitch_crossfall: up = fwd x right
+    right /= np.maximum(np.linalg.norm(right[:, :2], axis=1, keepdims=True), 1e-9)
+    return {"c": c, "half": 0.5 * nd[:, 3], "right": right}
+
+
+def _project_to_deck(bx: float, by: float, sec: dict) -> tuple[float, float, float] | None:
+    """(|lateral offset|, deck height at that offset - at the edge beyond it -, half width) of a point next to the
+    deck; None if it lies before the first or past the last section."""
+    c = sec["c"]
+    best = None
+    for k in range(len(c) - 1):
+        a, b = c[k, :2], c[k + 1, :2]
+        d = b - a
+        l2 = float(d @ d)
+        if l2 < 1e-12:
+            continue
+        t = float(((bx - a[0]) * d[0] + (by - a[1]) * d[1]) / l2)
+        # only past the deck's two ends is a point off the deck; beside a node on the outside of a bend it lies
+        # between the perpendiculars of both segments and belongs to the node
+        if (k == 0 and t < -1e-6) or (k == len(c) - 2 and t > 1 + 1e-6):
+            continue
+        t = min(1.0, max(0.0, t))
+        q = a + t * d
+        dist = math.hypot(bx - q[0], by - q[1])
+        if best is None or dist < best[0]:
+            best = (dist, k, t)
+    if best is None:
+        return None
+    _dist, k, t = best
+    cz = c[k, 2] + t * (c[k + 1, 2] - c[k, 2])
+    r = sec["right"][k] * (1 - t) + sec["right"][k + 1] * t
+    half = float(sec["half"][k] * (1 - t) + sec["half"][k + 1] * t)
+    a = c[k, :2] + t * (c[k + 1, :2] - c[k, :2])
+    off = (bx - a[0]) * r[0] + (by - a[1]) * r[1]  # metres to the right
+    off_c = max(-half, min(half, off))
+    return abs(off), float(cz + off_c * r[2]), half
+
+
 def conform_approach_heightmap(
     galleries: list[dict],
     span_infos: list[dict],
@@ -4770,13 +4816,22 @@ def conform_approach_heightmap(
     extent: float,
     defaults: dict,
     elev: np.ndarray,
+    decks: list[dict] | None = None,
 ) -> tuple[np.ndarray, dict]:
     """Bake heightmap to MeshRoad on portal approaches / outer tunnel decks.
 
     One-ended plates (portal → abutment) use the bridge deck-cut: high DGM
     under the slab is lowered to the driving surface. Other galleries keep
     the short approach ribbon. The buried bore is never touched.
+
+    With ``decks`` (the deck MeshRoads as built) the ribbon follows the deck itself: its centre (with the lateral
+    shift), width and crossfall, e.g. on a handover to a Magliasina road, where the deck is shifted and wider than
+    the structure's axis. Ground below the deck is filled (on the valley side the 0.5 m deck side stood free): up to
+    the edge, then an embankment 1:1.5 over the falloff width, each point by at most
+    ``approach_conform_max_fill_m`` (default 2.5 m). Ground above it is cut by at most
+    ``approach_conform_max_delta_m`` (never drag a mountain wall down).
     """
+    deck_secs = [_deck_sections(d) for d in (decks or []) if len(d.get("nodes") or []) >= 2]
     out = elev.astype(np.float64).copy()
     info_by_oid = {info.get("objectid"): info for info in span_infos}
     tested = 0
@@ -4893,6 +4948,11 @@ def conform_approach_heightmap(
             if g.get("deck_width_extra_m") is not None
             else defaults.get("deck_width_extra_m") or 0.0
         )
+        max_raise = float(
+            g["approach_conform_max_fill_m"]
+            if g.get("approach_conform_max_fill_m") is not None
+            else defaults.get("approach_conform_max_fill_m") or 2.5
+        )
         # Approach ribbons only (outside the portals)
         bands: list[list[dict]] = []
         lo = [
@@ -4926,6 +4986,24 @@ def conform_approach_heightmap(
             half_ref = 0.5 * max(float(n.get("width") or 7.5) for n in band) + 0.5 * width_extra
             xs = [float(n["x"]) for n in band]
             ys = [float(n["y"]) for n in band]
+            # the deck that carries this band: sections within reach of the band
+            sec = None
+            if deck_secs:
+                mx, my = float(np.mean(xs)), float(np.mean(ys))
+                bxy = np.column_stack([xs, ys])
+                for ds in deck_secs:
+                    if np.hypot(ds["c"][:, 0] - mx, ds["c"][:, 1] - my).min() > 0.5 * float(np.ptp(bxy, axis=0).sum()) + 5.0:
+                        continue
+                    # the deck sections of this band only (outside the portal; the deck runs on through the
+                    # structure, and nothing is filled in a tube)
+                    near = np.array([np.hypot(bxy[:, 0] - x, bxy[:, 1] - y).min() for x, y in ds["c"][:, :2]])
+                    keep = np.where(near <= 1.5)[0]
+                    if len(keep) < 2:
+                        continue
+                    k0, k1 = int(keep.min()), int(keep.max())
+                    sec = {key: v[k0: k1 + 1] for key, v in ds.items()}
+                    half_ref = max(half_ref, float(sec["half"].max()) + 1.0)
+                    break
             margin = half_ref + pad + falloff + 1.0
             px0, py0 = _to_px_beamng(min(xs) - margin, max(ys) + margin, size, extent)
             px1, py1 = _to_px_beamng(max(xs) + margin, min(ys) - margin, size, extent)
@@ -4937,17 +5015,35 @@ def conform_approach_heightmap(
             for py in range(r0, r1 + 1):
                 for px in range(c0, c1 + 1):
                     bx, by = _from_px_beamng(float(px), float(py), size, extent)
-                    proj = _project_point_to_nodes(bx, by, band, z_key="road")
-                    if proj is None:
-                        continue
-                    dist, z_road, hw = proj[0], proj[1], proj[2]
-                    half = hw + 0.5 * width_extra + pad
+                    if sec is not None:
+                        proj = _project_to_deck(bx, by, sec)
+                        if proj is None:
+                            continue
+                        dist, z_road, hw = proj
+                        half = hw + pad
+                    else:
+                        proj = _project_point_to_nodes(bx, by, band, z_key="road")
+                        if proj is None:
+                            continue
+                        dist, z_road, hw = proj[0], proj[1], proj[2]
+                        half = hw + 0.5 * width_extra + pad
                     outer = half + max(falloff, 1e-6)
                     if dist > outer:
                         continue
                     tested += 1
                     target = float(z_road) - sink
                     z0 = float(out[py, px])
+                    if sec is not None and z0 < target:
+                        # below the deck edge: fill (the 0.5 m deck side would stand free). At the deck the ground
+                        # goes up to the edge, beside it an embankment falls away 1:1.5 over the falloff width;
+                        # a fill of more than approach_conform_max_fill_m is left out (a drop, not a shoulder)
+                        emb = target - max(0.0, dist - half) / 1.5
+                        if z0 >= emb or emb - z0 > max_raise:
+                            continue
+                        out[py, px] = emb
+                        changed += 1
+                        max_abs = max(max_abs, emb - z0)
+                        continue
                     # Only fix small lips (2–20cm). Never drag mountain walls down.
                     if abs(z0 - target) > max_delta:
                         continue
@@ -8976,6 +9072,8 @@ def main() -> None:
                 extent=extent,
                 defaults=defaults,
                 elev=elev,
+                decks=[e for e in ts_entries
+                       if e.get("class") == "MeshRoad" and str(e.get("name", "")).startswith("gallery_deck_")],
             )
             print(f"approach_conform bake {time.perf_counter() - t0:.2f}s")
         if any_embed:
