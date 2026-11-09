@@ -51,7 +51,10 @@ import terrain_holes as th  # noqa: E402
 
 STEP = 0.1
 WINDOWS = (2.0, 5.0, 10.0)
-LIMITS = {"step_warn": 0.02, "step_max": 0.10, "kink_warn": 0.03, "kink_max": 0.08}
+LIMITS = {"step_warn": 0.02, "step_max": 0.10, "kink_warn": 0.03, "kink_max": 0.08,
+          "edge_step_warn": 0.02, "edge_step_max": 0.10, "edge_kink_warn": 0.05, "edge_kink_max": 0.15}
+EDGE_STEP = 0.25  # edge search every this many metres
+EDGE_MAX = 9.0  # no edge farther out than this from the axis
 NEAR_M = 1.5  # surfaces farther than this from the last height are another level (a roof, a road below)
 
 
@@ -222,6 +225,144 @@ def grade_breaks(z: np.ndarray, w: float) -> np.ndarray:
     return out
 
 
+def road_z(x: float, y: float, ref: float, deck, mgl) -> float | None:
+    """Height of the road surface (deck or Magliasina) at (x, y) near ``ref``; None off the road."""
+    best = None
+    for srf in (deck, mgl):
+        if srf is None:
+            continue
+        z = srf.z(x, y, ref)
+        if z is not None and abs(z - ref) <= 0.25 and (best is None or z > best):
+            best = z
+    return best
+
+
+def road_source(x: float, y: float, ref: float, deck, mgl) -> int:
+    for k, srf in ((1, deck), (2, mgl)):
+        if srf is not None:
+            z = srf.z(x, y, ref)
+            if z is not None and abs(z - ref) <= 0.25:
+                return k
+    return 0
+
+
+def find_edges(axis: np.ndarray, z_axis: np.ndarray, deck, mgl) -> dict:
+    """Left and right edge of the road (deck or Magliasina) every EDGE_STEP along ``axis``, as offsets from it.
+
+    The edge is where the road surface ends going out across the axis (no deck or Magliasina within 0.25 m of
+    the height at the axis), found to the millimetre. The search starts from the edge of the last station, so a
+    road crossing farther out is not taken for this road.
+    """
+    # across the direction over +-2 m: at a corner of the axis polyline (GIP vertices, up to 10 deg) a local
+    # tangent swings at once and the offsets jump by centimetres although the edge does not move
+    kk = int(round(2.0 / STEP))
+    ia = np.clip(np.arange(len(axis)) + kk, 0, len(axis) - 1)
+    ib = np.clip(np.arange(len(axis)) - kk, 0, len(axis) - 1)
+    t = axis[ia] - axis[ib]
+    t /= np.maximum(np.linalg.norm(t, axis=1, keepdims=True), 1e-9)
+    left = np.column_stack([-t[:, 1], t[:, 0]])
+    k_step = max(1, int(round(EDGE_STEP / STEP)))
+    idx = np.arange(0, len(axis), k_step)
+    out = {"idx": idx, "left": np.full(len(idx), np.nan), "right": np.full(len(idx), np.nan),
+           "src_left": np.zeros(len(idx), np.int8), "src_right": np.zeros(len(idx), np.int8)}
+    for side, sg in (("left", 1.0), ("right", -1.0)):
+        prev = None
+        for n, i in enumerate(idx):
+            ref = z_axis[i]
+            if not np.isfinite(ref):
+                prev = None
+                continue
+            p0, d = axis[i], left[i] * sg
+
+            def on(o, p0=p0, d=d, ref=ref):
+                q = p0 + d * o
+                return road_z(float(q[0]), float(q[1]), ref, deck, mgl) is not None
+
+            if not on(0.0):
+                prev = None
+                continue
+            # bracket the edge: from the last edge if there is one, else walk out from the axis
+            o = 0.0 if prev is None else max(0.0, prev - 0.3)
+            if not on(o):
+                o = 0.0
+            while o + 0.1 <= EDGE_MAX and on(o + 0.1):
+                o += 0.1
+            if o + 0.1 > EDGE_MAX:
+                prev = None
+                continue
+            a, b = o, o + 0.1
+            for _ in range(7):
+                m = 0.5 * (a + b)
+                if on(m):
+                    a = m
+                else:
+                    b = m
+            out[side][n] = a
+            q = p0 + d * max(a - 0.02, 0.0)
+            out[f"src_{side}"][n] = road_source(float(q[0]), float(q[1]), ref, deck, mgl)
+            prev = a
+    return out
+
+
+def edge_checks(e: np.ndarray) -> dict:
+    """Lateral step (jump between stations less the local trend) and edge kink (change of the edge's direction
+    against the axis, d offset / d u, over 2 and 5 m) of one edge."""
+    step = np.full(len(e), np.nan)
+    de = np.diff(e)
+    k = int(round(1.0 / EDGE_STEP))
+    for i in range(len(de)):
+        w = de[max(0, i - k): i + k + 1]
+        w = w[np.isfinite(w)]
+        if np.isfinite(de[i]) and len(w):
+            step[i] = de[i] - np.median(w)
+    res = {"step": np.r_[step[:-1], np.nan]}  # one per station: the jump to the next
+    for wm in (2.0, 5.0):
+        kw = int(round(wm / EDGE_STEP))
+        kk = np.full(len(e), np.nan)
+        for i in range(kw, len(e) - kw):
+            a, b, c = e[i - kw], e[i], e[i + kw]
+            if np.isfinite(a) and np.isfinite(b) and np.isfinite(c):
+                kk[i] = (c - b) / wm - (b - a) / wm
+        res[f"kink{int(wm)}"] = kk
+    return res
+
+
+def axis_corners(nodes: np.ndarray, min_deg: float = 3.0) -> list[tuple[float, float]]:
+    """Direction changes of the deck axis at single nodes: (u of the node, degrees), those over ``min_deg``.
+
+    The deck and the shell are built on these nodes; a corner there is a corner of the shell (lofted straight
+    from node to node), while BeamNG rounds the deck MeshRoad off with a spline: the road edge and the wall part
+    by a few centimetres. Near such a corner the edge offsets measured here jump as well.
+    """
+    xy = nodes[:, :2]
+    d = np.r_[0.0, np.cumsum(np.hypot(*np.diff(xy, axis=0).T))]
+    h = np.degrees(np.arctan2(np.diff(xy[:, 1]), np.diff(xy[:, 0])))
+    out = []
+    for i in range(1, len(h)):
+        a = (h[i] - h[i - 1] + 180.0) % 360.0 - 180.0
+        if abs(a) >= min_deg:
+            out.append((round(float(d[i]), 1), round(float(a), 1)))
+    return out
+
+
+OWN_PAD_M = 2.0  # findings this close to the deck (or on it) are ours; farther out they are Magliasina's own
+
+
+def dilate(mask: np.ndarray, k: int) -> np.ndarray:
+    out = mask.copy()
+    for d in range(1, k + 1):
+        out[d:] |= mask[:-d]
+        out[:-d] |= mask[d:]
+    return out
+
+
+def peak(arr: np.ndarray, mask: np.ndarray) -> int | None:
+    """Index of the largest |value| where ``mask`` holds; None if there is none."""
+    a = np.where(mask & np.isfinite(arr), np.abs(arr), -1.0)
+    i = int(np.argmax(a))
+    return i if a[i] >= 0 else None
+
+
 def judge(value: float, warn: float, fail: float) -> str:
     return "fail" if abs(value) > fail else ("warn" if abs(value) > warn else "ok")
 
@@ -261,18 +402,33 @@ COLORS = [(200, 30, 30), (230, 130, 0), (0, 0, 0), (0, 120, 200), (120, 0, 160)]
 SRC_COL = {1: (225, 235, 250), 2: (232, 245, 222), 3: (245, 232, 215)}
 
 
-def plot(path: Path, title: str, u: np.ndarray, res: dict, marks: list[tuple[float, str]], lim: dict) -> None:
+def plot(path: Path, title: str, u: np.ndarray, res: dict, marks: list[tuple[float, str]], lim: dict,
+         edges=None) -> None:
     zs = zones(u, marks)
-    col_w, H = 520, 860
+    col_w, H = 520, 1110
     W = 70 + col_w * len(zs) + 20
     img = Image.new("RGB", (W, H), "white")
     dr = ImageDraw.Draw(img)
     rows = [(50, 300, "u", "unevenness: height minus 10 m running mean [cm]"),
             (340, 570, "k", "grade break over 5 m [%]"),
-            (610, 820, "s", "step per 0.1 m [cm]")]
+            (610, 820, "s", "step per 0.1 m [cm]"),
+            (860, 1070, "e", "road edge: offset minus 10 m running mean [cm] (left red, right blue, width black)")]
     series = {}
     for o, r in res.items():
-        series[o] = {"u": unevenness(r["z"]) * 100, "k": r["kink5"] * 100, "s": np.r_[r["steps"], 0.0] * 100}
+        series[o] = {"u": unevenness(r["z"]) * 100, "k": r["kink5"] * 100, "s": r["steps"] * 100}
+    edge_series = {}
+    if edges is not None:
+        ue, ed, _er = edges
+        width = ed["left"] + ed["right"]
+        for key, arr in (("left", ed["left"]), ("right", ed["right"]), ("width", width)):
+            k = int(round(5.0 / EDGE_STEP))
+            dev = np.full(len(arr), np.nan)
+            for i in range(k, len(arr) - k):
+                w = arr[i - k: i + k + 1]
+                if np.isfinite(w).all():
+                    dev[i] = (arr[i] - w.mean()) * 100
+            edge_series[key] = np.interp(u, ue, np.where(np.isfinite(dev), dev, 0.0))
+            edge_series[key][~np.isfinite(np.interp(u, ue, dev))] = np.nan
     axis_track = res[min(res, key=abs)]
     dr.text((10, 8), title, fill="black")
     legend = "   ".join(f"{o:+.1f} m" for o in res)
@@ -282,12 +438,17 @@ def plot(path: Path, title: str, u: np.ndarray, res: dict, marks: list[tuple[flo
         dr.line([(10 + 60 * k + 600, 40), (10 + 60 * k + 620, 40)], fill=COLORS[k % 5], width=3)
     for top, bot, key, label in rows:
         dr.text((10, top - 14), label, fill=(60, 60, 60))
-        vals = np.concatenate([v[key][np.isfinite(v[key])] for v in series.values()] or [np.zeros(1)])
+        if key == "e":
+            vals = np.concatenate([v[np.isfinite(v)] for v in edge_series.values()] or [np.zeros(1)])
+        else:
+            vals = np.concatenate([v[key][np.isfinite(v[key])] for v in series.values()] or [np.zeros(1)])
         m = float(np.abs(vals).max()) if len(vals) else 1.0
         if key == "k":
             m = max(m, lim["kink_max"] * 100 * 1.15)
         elif key == "s":
             m = max(m, lim["step_warn"] * 100 * 1.5)
+        elif key == "e":
+            m = max(m, 3.0)
         else:
             m = max(m, 1.0)
         lo, hi = -m, m
@@ -317,24 +478,25 @@ def plot(path: Path, title: str, u: np.ndarray, res: dict, marks: list[tuple[flo
                         v = sg * lv * 100
                         if lo <= v <= hi:
                             dr.line([(L, Y(v)), (R, Y(v))], fill=cc)
-            for k, (o, sv) in enumerate(series.items()):
-                y = sv[key]
+            plot_series = ([(c, v) for c, v in zip(((200, 30, 30), (0, 90, 200), (0, 0, 0)), edge_series.values())]
+                           if key == "e" else [(COLORS[k % 5], sv[key]) for k, sv in enumerate(series.values())])
+            for col, y in plot_series:
                 pts = []
                 for i in sel:
                     if np.isfinite(y[i]):
                         pts.append((X(u[i]), Y(float(np.clip(y[i], lo, hi)))))
                         continue
                     if len(pts) > 1:
-                        dr.line(pts, fill=COLORS[k % 5], width=1)
+                        dr.line(pts, fill=col, width=1)
                     pts = []
                 if len(pts) > 1:
-                    dr.line(pts, fill=COLORS[k % 5], width=1)
+                    dr.line(pts, fill=col, width=1)
             for v, lab in marks:
                 if a <= v <= b:
                     dr.line([(X(v), top), (X(v), bot)], fill=(90, 90, 90))
-                    if key == "s":
+                    if key == "e":
                         dr.text((X(v) + 2, bot + 4), lab, fill="black")
-            if key == "s":
+            if key == "e":
                 step_t = 10 if b - a <= 120 else 50
                 for v in np.arange(math.ceil(a / step_t) * step_t, b + 1e-9, step_t):
                     dr.text((X(v) - 8, bot + 22), f"{v:.0f}", fill=(90, 90, 90))
@@ -441,30 +603,50 @@ def main() -> None:
             r = {}
             for key in fw:
                 r[key] = np.r_[bw[key][::-1], fw[key]] if bw is not None else fw[key]
-            r["steps"] = steps(r["z"])
+            r["steps"] = np.r_[steps(r["z"]), np.nan]  # one per sample: the jump to the next
             for w in WINDOWS:
                 r[f"kink{int(w)}"] = grade_breaks(r["z"], w)
             res[o] = r
+
+        z_axis = res[min(res, key=abs)]["z"]
+        edges = find_edges(axis, z_axis, deck, mgl)
+        ue = u[edges["idx"]]
+        edge_res = {}
+        for side in ("left", "right"):
+            edge_res[side] = edge_checks(edges[side])
+        width = edges["left"] + edges["right"]
+        edge_res["width"] = edge_checks(width)
 
         out = {"deck": name, "objectids": sorted(oids), "length_m": round(float(u[-1] - u[0]), 1),
                "outside_m": [round(float(len(before) * STEP), 1), round(float(len(after) * STEP), 1)], "tracks": []}
         worst = "ok"
         rank = {"ok": 0, "warn": 1, "fail": 2}
+        mgl_peaks: dict[str, dict] = {}
+
+        def keep_mgl(key, val, at, unit):
+            if val is not None and (key not in mgl_peaks or abs(val) > abs(mgl_peaks[key]["max"])):
+                mgl_peaks[key] = {"max": round(float(val), 4), "at_m": round(float(at), 1), "unit": unit}
+
         for o, r in res.items():
             tr = {"offset_m": o}
+            own = dilate(r["src"] == 1, int(round(OWN_PAD_M / STEP)))
             st = r["steps"]
-            i = int(np.nanargmax(np.abs(st))) if np.isfinite(st).any() else 0
-            tr["step"] = {"max_m": round(float(st[i]), 3), "at_m": round(float(u[i]), 1),
-                          "on": f"{names[int(r['src'][i])]}/{names[int(r['src'][min(i + 1, len(u) - 1)])]}",
-                          "n_over_warn": int((np.abs(st) > lim["step_warn"]).sum()),
-                          "judge": judge(float(st[i]), lim["step_warn"], lim["step_max"])}
+            i, j = peak(st, own), peak(st, ~own)
+            if i is not None:
+                tr["step"] = {"max_m": round(float(st[i]), 3), "at_m": round(float(u[i]), 1),
+                              "on": f"{names[int(r['src'][i])]}/{names[int(r['src'][min(i + 1, len(u) - 1)])]}",
+                              "judge": judge(float(st[i]), lim["step_warn"], lim["step_max"])}
+            if j is not None:
+                keep_mgl("step", st[j], u[j], "m")
             for w in WINDOWS:
                 kk = r[f"kink{int(w)}"]
-                if np.isfinite(kk).any():
-                    j = int(np.nanargmax(np.abs(kk)))
-                    tr[f"kink_{int(w)}m"] = {"max": round(float(kk[j]), 4), "at_m": round(float(u[j]), 1),
-                                             "on": names[int(r["src"][j])],
-                                             "judge": judge(float(kk[j]), lim["kink_warn"], lim["kink_max"])}
+                i, j = peak(kk, own), peak(kk, ~own)
+                if i is not None:
+                    tr[f"kink_{int(w)}m"] = {"max": round(float(kk[i]), 4), "at_m": round(float(u[i]), 1),
+                                             "on": names[int(r["src"][i])],
+                                             "judge": judge(float(kk[i]), lim["kink_warn"], lim["kink_max"])}
+                if j is not None:
+                    keep_mgl(f"break_{int(w)}m", kk[j], u[j], "grade")
             ov = r["overlap"]
             tr["overlap"] = {"max_m": round(float(ov.max()), 3), "m": round(float((ov > 0.01).sum() * STEP), 1),
                              "at_m": round(float(u[int(np.argmax(ov))]), 1)}
@@ -474,12 +656,54 @@ def main() -> None:
             tr["gap_m"] = round(float((r["src"] == 0).sum() * STEP), 1)
             tr["surface_m"] = {k: round(float((r["src"] == v).sum() * STEP), 1)
                                for k, v in (("deck", 1), ("magliasina", 2), ("terrain", 3))}
-            levels = [tr["step"]["judge"]] + [tr[k]["judge"] for k in tr if k.startswith("kink_")]
+            levels = [tr[k]["judge"] for k in tr if isinstance(tr[k], dict) and "judge" in tr[k]]
             if tr["overlap"]["m"] > 0 or tr["terrain_above"]["m"] > 0:
                 levels.append("warn")
-            tr["judge"] = max(levels, key=rank.get)
+            tr["judge"] = max(levels or ["ok"], key=rank.get)
             worst = max(worst, tr["judge"], key=rank.get)
             out["tracks"].append(tr)
+        corners = axis_corners(nodes)
+        out["axis_corners"] = [{"u_m": c[0], "deg": c[1]} for c in corners]
+        if corners:
+            worst = max(worst, "warn", key=rank.get)
+        out["edges"] = []
+        own_e = dilate((edges["src_left"] == 1) | (edges["src_right"] == 1), int(round(OWN_PAD_M / EDGE_STEP)))
+        for side in ("left", "right", "width"):
+            er = edge_res[side]
+            src = edges.get(f"src_{side}")
+            ed = {"edge": side}
+
+            def on_at(j, src=src):
+                return names[int(src[j])] if src is not None else "-"
+
+            st = er["step"]
+            i, j = peak(st, own_e), peak(st, ~own_e)
+            if i is not None:
+                ed["step"] = {"max_m": round(float(st[i]), 3), "at_m": round(float(ue[i]), 1),
+                              "on": f"{on_at(i)}/{on_at(min(i + 1, len(ue) - 1))}",
+                              "judge": judge(float(st[i]), lim["edge_step_warn"], lim["edge_step_max"])}
+            if j is not None:
+                keep_mgl(f"{side}_step", st[j], ue[j], "m")
+            for wm in (2, 5):
+                kk = er[f"kink{wm}"]
+                i, j = peak(kk, own_e), peak(kk, ~own_e)
+                if i is not None:
+                    ed[f"kink_{wm}m"] = {"max": round(float(kk[i]), 4), "at_m": round(float(ue[i]), 1),
+                                         "on": on_at(i),
+                                         "judge": judge(float(kk[i]), lim["edge_kink_warn"], lim["edge_kink_max"])}
+                if j is not None:
+                    keep_mgl(f"{side}_kink_{wm}m", kk[j], ue[j], "grade")
+            vals = [ed[k]["judge"] for k in ed if isinstance(ed[k], dict)]
+            ed["judge"] = max(vals or ["ok"], key=rank.get)
+            if side == "width":
+                # shown, not judged: a widening on both sides counts each edge's corner twice; the edges are
+                # what is seen and they are judged on their own
+                ed["judge"] = "info"
+            else:
+                ed["found_m"] = round(float(np.isfinite(edges[side]).sum() * EDGE_STEP), 1)
+                worst = max(worst, ed["judge"], key=rank.get)
+            out["edges"].append(ed)
+        out["magliasina_only"] = mgl_peaks  # not judged: Magliasina's own road, away from the deck
         out["judge"] = worst
         report["decks"].append(out)
 
@@ -508,15 +732,39 @@ def main() -> None:
             def kb(k):
                 v = tr.get(k)
                 return f"{100 * v['max']:+5.1f}% @{v['at_m']:6.1f} {v['on'][:4]:4s}" if v else " " * 20
-            print(f"  {tr['offset_m']:+5.1f}  {100 * tr['step']['max_m']:+5.1f}cm @{tr['step']['at_m']:6.1f}"
-                  f" {tr['step']['on']:18s}"
+            stp = tr.get("step")
+            stt = f"{100 * stp['max_m']:+5.1f}cm @{stp['at_m']:6.1f} {stp['on']:18s}" if stp else " " * 34
+            print(f"  {tr['offset_m']:+5.1f}  {stt}"
                   f"  {kb('kink_2m')}  {kb('kink_5m')}  {kb('kink_10m')}"
                   f"  {tr['overlap']['m']:5.1f} m  {tr['terrain_above']['m']:5.1f} m"
                   f"{'' if not tr['terrain_above']['m'] else ' @%.0f' % tr['terrain_above']['at_m']:>6s}  {tr['gap_m']:4.1f} m"
                   f"  {tr['judge']}")
+        if corners:
+            print("  deck axis corners over 3 deg at single nodes (shell has a corner, BeamNG rounds the deck): "
+                  + ", ".join(f"{c[1]:+.1f} deg @{c[0]:.1f}" for c in corners))
+        print("  edge   lateral step (on)                edge kink 2 m          edge kink 5 m")
+        for ed in out["edges"]:
+            def eb(k, ed=ed):
+                v = ed.get(k)
+                return f"{100 * v['max']:+5.1f}% @{v['at_m']:6.1f} {v['on'][:4]:4s}" if v else " " * 21
+            stp = ed.get("step")
+            st_txt = (f"{100 * stp['max_m']:+5.1f}cm @{stp['at_m']:6.1f} {stp['on']:18s}" if stp else " " * 36)
+            print(f"  {ed['edge']:5s}  {st_txt}  {eb('kink_2m')}  {eb('kink_5m')}  {ed['judge']}")
+        if mgl_peaks:
+            def mp(k):
+                v = mgl_peaks.get(k)
+                if not v:
+                    return None
+                val = f"{100 * v['max']:+.1f} cm" if v["unit"] == "m" else f"{100 * v['max']:+.1f} %"
+                return f"{k.replace('_', ' ')} {val} @{v['at_m']:.0f}"
+            parts = [mp(k) for k in ("step", "break_2m", "break_5m", "left_step", "right_step", "width_step",
+                                     "left_kink_2m", "right_kink_2m", "width_kink_2m")]
+            print("  on Magliasina itself, more than 2 m from the deck (not judged): "
+                  + ", ".join(p for p in parts if p))
         if not args.no_plot:
             png = proc / f"profile_check_{name}.png"
-            plot(png, f"{name}: u = m from the deck start (-u: Magliasina before it)", u, res, marks, lim)
+            plot(png, f"{name}: u = m from the deck start (-u: Magliasina before it)", u, res, marks, lim,
+                 edges=(ue, edges, edge_res))
             out["plot"] = png.name
             print(f"  plot {png}")
 
@@ -524,7 +772,9 @@ def main() -> None:
     path.write_text(json.dumps(report, indent=1), encoding="utf-8")
     print(f"\nwrote {path}")
     print(f"limits: step warn {100 * lim['step_warn']:.0f} cm / fail {100 * lim['step_max']:.0f} cm; grade break "
-          f"warn {100 * lim['kink_warn']:.0f} % / fail {100 * lim['kink_max']:.0f} %")
+          f"warn {100 * lim['kink_warn']:.0f} % / fail {100 * lim['kink_max']:.0f} %; edge step warn "
+          f"{100 * lim['edge_step_warn']:.0f} cm / fail {100 * lim['edge_step_max']:.0f} cm; edge kink warn "
+          f"{100 * lim['edge_kink_warn']:.0f} % / fail {100 * lim['edge_kink_max']:.0f} %")
 
 
 if __name__ == "__main__":

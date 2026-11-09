@@ -249,18 +249,36 @@ gibt das Werkzeug aus:
 | Überlappung | Deck und Magliasina beide da und mehr als 1 cm auseinander | Warnung |
 | Gelände über der Straße | 2 cm bis 1,5 m über der Fahrfläche | Warnung |
 | Lücke | keine Fläche | – |
+| Randsprung | Sprung des Fahrbahnrands quer zur Achse von Station zu Station (alle 0,25 m), abzüglich des örtlichen Verlaufs | 2 cm / 10 cm |
+| Randknick 2, 5 m | Richtungsänderung des Rands gegen die Achse (Versatz je Meter danach minus davor) | 5 % / 15 % |
+| Achsecke | Richtungsänderung der Deckachse an einem einzelnen Knoten über 3° | Warnung |
+
+Der Fahrbahnrand ist die Stelle, an der quer zur Achse weder Deck noch Magliasina-Asphalt mehr da ist. Er wird auf
+den Millimeter gesucht, links und rechts getrennt; die Breite wird nur angezeigt. Quer heißt hier: quer zur Richtung
+über ±2 m. An einer Achsecke würde eine örtliche Querrichtung sofort umschwenken, und der Rand schiene um Zentimeter
+zu springen, ohne dass er sich bewegt.
+
+Eine **Achsecke** ist ein Knick der Knotenlinie selbst. Die Klammleck-Achse folgt den Eckpunkten der GIP-Linie und
+knickt an einzelnen Knoten um bis zu 10°. Die Schale wird von Knoten zu Knoten gerade gelofted und hat dort eine
+Ecke, das Deck rundet BeamNG mit einem Spline ab. Rand und Wand laufen an solchen Stellen um einige Zentimeter
+auseinander.
+
+Befunde zählen nur auf dem Deck und bis 2 m davor oder dahinter. Was weiter draußen auf Magliasina liegt, steht in
+einer eigenen Zeile („not judged“) und in `magliasina_only`. So kippt das Urteil nicht wegen Magliasinas eigener
+Straße.
 
 Zu jedem Höchstwert steht die Stelle (u = m ab Deckanfang, negativ davor) und die Fläche, auf der er liegt. Ein Knick
 in Magliasinas eigener Straße ist so von einem an unserer Übergabe zu unterscheiden. Ergebnis:
 `profile_check.json` und je Deck `profile_check_<deck>.png`. Das Bild zeigt je Übergang (Deckende, Portal, Fuge)
-einen vergrößerten Ausschnitt mit drei Bahnen: Unebenheit (Höhe minus gleitendes 10-m-Mittel), Knick über 5 m und
-Stufe. Der Hintergrund zeigt die Fläche: Deck blau, Magliasina grün, Gelände braun.
+einen vergrößerten Ausschnitt mit vier Bahnen: Unebenheit (Höhe minus gleitendes 10-m-Mittel), Knick über 5 m,
+Stufe und Fahrbahnrand (Versatz minus gleitendes 10-m-Mittel; links rot, rechts blau, Breite schwarz). Der Hintergrund zeigt die Fläche: Deck blau, Magliasina grün, Gelände braun.
 
 Reihenfolge: nach `build_galleries`, `import_magliasina_roads` und `compose_heightmap`.
 
     $env:AUTOROAD_SITE = "config/sites/pfunds_spiess.yaml"; python tools\profile_check.py --only 3125,3127,3128
 
-Klammleck-Kette im Sandbox: keine Stufe über 1,1 cm, kein Knick über 1,4 % auf 5 m. Die größten Werte sind:
+Klammleck-Kette im Sandbox: keine Stufe über 1,1 cm, kein Knick über 1,4 % auf 5 m, kein Randsprung über 0,2 cm.
+Die größten Werte sind:
 
 - 1,1 cm an der Lobloch-Übergabelinie auf der äußeren Radspur. Magliasinas Querschnitt ist dort nicht ganz eben,
   unser Deck schon.
@@ -268,6 +286,10 @@ Klammleck-Kette im Sandbox: keine Stufe über 1,1 cm, kein Knick über 1,4 % auf
 - ein Sägezahn von ±0,3 cm je Knoten auf der Übergabestrecke. Die Querneigung ändert sich dort von Knoten zu Knoten,
   und jedes Viereck des MeshRoads knickt an seiner Diagonale.
 - bis 4 % Knick auf 2 m auf Magliasina selbst, 35 m hinter der Stuiba.
+- Randknicke von 3,1–3,3 % je Seite an den Fugen und am Stuiba-Deckende. Das sind die Ecken der Breiten- und
+  Achsangleichung über 10 m: Galerie gegen Tunnel, Deck gegen Magliasina.
+- 21 Achsecken von 3,7–10,4°.
+- auf Magliasina selbst, 25–40 m hinter der Stuiba: der Rand franst aus, ±2 cm Sprung, bis 30 % Knick auf 2 m.
 
 ### Beleuchtung und Jet-Fans (nur geschlossene Röhren)
 
