@@ -45,6 +45,7 @@ LAYER_SPECS: dict[str, dict] = {
     "corridor_dgm": {"mode": "replace", "priority": 45},
     "magliasina_carve": {"mode": "replace", "priority": 50},  # import_magliasina_roads.py: ground under the Magliasina road meshes
     "span": {"mode": "replace", "priority": 55},
+    "portal_snap": {"mode": "replace", "priority": 60},  # portal_passages.py: terrain snapped clear of a tube's deck / roof
 }
 SPAN_PARTS = ("bridge", "gallery")
 

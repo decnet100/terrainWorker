@@ -40,6 +40,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 from site_coords import SiteCoords, load_site, processed_dir  # noqa: E402
 import build_bridges as bb  # noqa: E402
 import structure_chains as sch  # noqa: E402
+import portal_passages as pp  # noqa: E402
 import terrain_holes as th  # noqa: E402
 from road_width import default_carriageway_width_m  # noqa: E402
 
@@ -93,6 +94,12 @@ GALLERY_SCALAR_KEYS = (
     "hole_width_scale",  # 1.0 = full road width; <1 keeps mountain side out of strip
     "intrusion_fix_in_m",  # hole terrain squares inside the clearance box at least this far from a daylight portal
     "intrusion_fix_max_m",  # ... and up to where the mountain closes over the roof, at most this far (default 80)
+    "portal_hole_method",  # "passage" (portal_passages.py: snap, then hole the transit) or "intrusion" (old face zone)
+    "passage_band_px",  # passage test band: half deck width + this many terrain pixels (closed sides)
+    "passage_snap_down_m",  # passage vertex at most this far above the deck underside: set just below it
+    "passage_snap_up_m",  # ... at most this far under the roof top: set just above it (not on the open side)
+    "passage_snap_clear_m",  # clearance of a snapped vertex from deck underside / roof top
+    "passage_ring_px",  # rings of neighbour squares holed around the passage squares
     "portal_seat",  # bake 2 m apron + roof force + door hole at daylight portals
     "portal_apron_m",  # meters toward the exit: terrain → deck Z
     "portal_roof_force_m",  # meters inside the portal where roof Z is enforced
@@ -288,6 +295,8 @@ def default_gallery_cfg(bng: dict) -> tuple[dict, list]:
         "intrusion_fix_max_m": float(
             raw["intrusion_fix_max_m"] if raw.get("intrusion_fix_max_m") is not None else 80.0
         ),
+        "portal_hole_method": str(raw.get("portal_hole_method") or "passage").strip().lower(),
+        **{k: type(v)(raw[k]) if raw.get(k) is not None else v for k, v in pp.DEFAULTS.items()},
         "portal_seat": bool(raw.get("portal_seat", True)),
         "portal_apron_m": float(
             raw["portal_apron_m"] if raw.get("portal_apron_m") is not None else 8.0
@@ -7431,6 +7440,7 @@ def check_tube_intrusion(
     size: int,
     extent: float,
     defaults: dict,
+    fix: bool = True,
 ) -> dict:
     """Find terrain triangles inside the clearance box of every tube; hole those near a daylight portal.
 
@@ -7440,6 +7450,7 @@ def check_tube_intrusion(
     portal are holed (the shell is there above them): from the mesh portal inward to where the terrain stands
     over the roof across the whole tube (terrain_holes.buried_from), at least ``intrusion_fix_in_m`` (6 m), at
     most ``intrusion_fix_max_m`` (80 m). The rest (terrain dipping into the bore further in) is reported.
+    ``fix=False`` holes nothing and reports every square as left (the check after portal_passages).
     """
     pitch = extent / size
     info_by_oid = {info.get("objectid"): info for info in span_infos}
@@ -7477,7 +7488,7 @@ def check_tube_intrusion(
         holed, left = [], []
         for q in found:
             near = any(z["lo"] - 1e-6 <= q["s"] <= z["hi"] + 1e-6 for z in zones)
-            if near and hole is not None:
+            if fix and near and hole is not None:
                 hole[q["py"], q["px"]] = 255
                 holed.append(q)
             else:
@@ -9045,6 +9056,9 @@ def main() -> None:
     conf_stats = None
     embed_stats = None
     seat_stats = None
+    import heightmap_layers as hml_s
+
+    hml_s.drop_layer(proc, pp.LAYER)  # snapped from this run's terrain again below
     if (any_seat or any_conform or any_embed) and centerlines:
         hm_path = proc / f"heightmap_{size}.png"
         meta_hm = json.loads((proc / "heightmap_meta.json").read_text(encoding="utf-8"))
@@ -9135,6 +9149,7 @@ def main() -> None:
             hml.compose(proc, size=size, max_h=max_h, level_name=level_name)
         clear_embed_foundation_debug(level_name)
     intrusion = None
+    passages = None
     import heightmap_layers as hml_c
 
     hml_composed = hml_c.composed_path(proc, size)
@@ -9142,8 +9157,18 @@ def main() -> None:
         max_h_c = float(json.loads((proc / "heightmap_meta.json").read_text(encoding="utf-8"))["max_height_m"])
         comp = np.asarray(Image.open(hml_composed), dtype=np.float64) / 65535.0 * max_h_c
         n_before = None if hole is None else int((hole > 0).sum())
+        method = str(defaults.get("portal_hole_method") or "passage")
+        if method == "passage" and hole is not None:
+            passages = pp.run(
+                proc, centerlines, span_infos, elev=comp, hole=hole, size=size, extent=extent,
+                defaults=defaults, max_h=max_h_c, level_name=level_name,
+                decks=[e for e in ts_entries
+                       if e.get("class") == "MeshRoad" and str(e.get("name", "")).startswith("gallery_deck_")],
+            )
+            comp = np.asarray(Image.open(hml_composed), dtype=np.float64) / 65535.0 * max_h_c
         intrusion = check_tube_intrusion(
-            centerlines, span_infos, elev=comp, hole=hole, size=size, extent=extent, defaults=defaults
+            centerlines, span_infos, elev=comp, hole=hole, size=size, extent=extent, defaults=defaults,
+            fix=method != "passage",
         )
         if hole is not None and int((hole > 0).sum()) != n_before:
             hole_path = write_hole_assets(proc, level_name, hole)
@@ -9173,6 +9198,7 @@ def main() -> None:
         "terrain_embed": embed_stats,
         "portal_seat": seat_stats,
         "intrusion": intrusion,
+        "portal_passages": passages,
         "chains": chain_plans,
         "transitions": None if transitions is None else {k: transitions[k] for k in ("limits", "warn", "fail")},
         "note": (

@@ -130,6 +130,45 @@ Westseite ragte Gelände in die Einfahrt (Test: 7,4 von 73 m² der Öffnung blie
 das die Öffnung schneidet, ganz gelocht (`tools/terrain_holes.py`). Der Rand ist dafür eine Treppe in 1-m-Stufen
 außerhalb der Öffnung, die der Portalkragen abdecken muss.
 
+#### Durchgänge einrasten und lochen (`portal_passages.py`, Standard)
+
+`portal_hole_method: passage` (Standard) lässt nach dem Compose `tools/portal_passages.py` laufen:
+
+1. **Prüfraum** je Röhre, Portal bis Portal: quer halbe Deckbreite + `passage_band_px` (1,5) Geländepixel, auf der
+   offenen Seite einer Galerie nur bis zur Deckkante; in der Höhe von der Deck-Unterkante bis zur Dach-Oberkante
+   (`z_roof_outer`). Deckoberfläche und Unterkante folgen der Querneigung des gebauten Deck-MeshRoads.
+   Im Grundriss des Decks verdecken Deckplatte (Unterkante bis Fahrbahn) und Dachplatte (Dach-Unterseite bis
+   -Oberkante) das Gelände; dort bleibt es, wie es ist.
+2. **Einrasten**: Ein Geländepunkt im Prüfraum, der höchstens `passage_snap_down_m` (1 m) über der Fahrbahn (im
+   Deck-Grundriss) bzw. über der Deck-Unterkante (daneben) liegt, kommt knapp darunter; einer höchstens
+   `passage_snap_up_m` (1 m) unter der Dach-Oberkante knapp darüber, außer auf der offenen Seite. Abstand
+   `passage_snap_clear_m` (5 cm). Die Höhen gehen in die Heightmap-Ebene `portal_snap` (Priorität 60, über allen).
+3. **Lochen**: jedes Quadrat, von dessen Dreiecken (die des Geländes, Split45) danach noch etwas im Prüfraum liegt:
+   `transit` (das Gelände läuft von unter dem Deck nach über das Dach) und `inside` (um einen Punkt, der zu tief
+   drin war). Dazu `passage_ring_px` (1) Ring Nachbarn (`ring`) und Gelände-Inseln, die das Loch ganz umschließt
+   (`island`).
+
+Ausgabe im Prozessordner: `portal_passages.json` (je Röhre Zahlen, jeder geänderte Punkt mit px/py, x/y, s,
+Seitenabstand, Höhe vorher/nachher, Deck-Unterkante, Dach-Oberkante; jedes Loch mit Grund), `portal_passages.csv`
+(dasselbe als Tabelle) und je Portal eine Karte `portal_passages_<Name>_<id>_<n>.png` (blau eingerastet nach unten,
+rot nach oben, orange drin geblieben; schwarz/lila/grau/hellblau gelocht als transit/inside/ring/island). Nach
+`import_magliasina_roads` + `compose_heightmap` lässt es sich allein neu rechnen: `python tools/portal_passages.py`
+(`--dry-run` nur Bericht). Danach meldet `check_tube_intrusion` nur noch, was im Fahrraum übrig ist (`left`).
+
+Sandbox Stuiba–Klammleck–Lobloch (1-m-Raster): 69 Punkte nach unten, 4 nach oben, 21 bleiben drin; 286 Quadrate
+gelocht, davon 164 Ring. Die alte Portalzonen-Lochung lochte 104. Am Talportal Stuiba und am Portal Lobloch liegt
+Gelände bis 3 m im Lichtraum; mit `passage_snap_down_m: 3` bleibt nichts drin (93 transit + 163 Ring + 3 Insel).
+
+| `passage_snap_down_m` | Ring | nach unten | drin | transit | inside | Ring | Insel | gelocht |
+|---|---|---|---|---|---|---|---|---|
+| 1 m | 1 | 69 | 21 | 61 | 55 | 164 | 6 | 286 |
+| 1 m | 0 | 69 | 21 | 61 | 55 | 0 | 26 | 142 |
+| 2 m | 1 | 81 | 9 | 76 | 29 | 165 | 6 | 276 |
+| 3 m | 1 | 90 | 0 | 93 | 0 | 163 | 3 | 259 |
+| 3 m | 0 | 90 | 0 | 93 | 0 | 0 | 3 | 96 |
+
+#### Alte Portalzonen-Lochung (`portal_hole_method: intrusion`)
+
 Nach dem Compose prüft `check_tube_intrusion` jedes Gelände-Dreieck gegen den Fahrraum der Röhre (Deckbreite ×
 `clear_height_m` über der Fahrbahn, Portal bis Portal). Ein Quadrat, halb auf Fahrbahnhöhe abgesenkt und halb an der
 Portalfläche hoch, fällt so auf, auch wenn keiner seiner Eckpunkte im Fahrraum liegt. Gelocht wird in der
