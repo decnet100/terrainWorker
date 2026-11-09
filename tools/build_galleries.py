@@ -100,6 +100,7 @@ GALLERY_SCALAR_KEYS = (
     "passage_snap_up_m",  # ... at most this far under the roof top: set just above it (not on the open side)
     "passage_snap_clear_m",  # clearance of a snapped vertex from deck underside / roof top
     "passage_ring_px",  # rings of neighbour squares holed around the passage squares
+    "passage_majority",  # a passage vertex goes down / up when this many of its 8 neighbours lie under the deck / over the roof
     "portal_seat",  # bake 2 m apron + roof force + door hole at daylight portals
     "portal_apron_m",  # meters toward the exit: terrain → deck Z
     "portal_roof_force_m",  # meters inside the portal where roof Z is enforced
