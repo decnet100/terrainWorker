@@ -227,6 +227,48 @@ Ergebnis: `galleries_transitions.json` (jede Zeile mit `verdict` ok / warn / fai
 Gegenprobe Klammleck-Kette ohne Kettenlogik: 5 von 6 Übergängen unmöglich (Loblochgalerie stieg auf 372 m). Mit
 Kettenlogik: 4 geprüft, alle ok.
 
+### Längsprofil prüfen (`profile_check.py`)
+
+Die Übergangsprüfung misst nur an Portalen und Fugen. `tools/profile_check.py` prüft den ganzen Weg: durch das Deck
+und je 50 m (`--outside`) auf der Magliasina-Straße davor und dahinter. Es misst so, wie die Flächen im Level
+liegen:
+
+- das Deck-MeshRoad aus `galleries_items.level.json`, aus den Knoten nachgebaut. Zwischen den Knoten ist es gerade;
+  BeamNG legt dort einen Spline;
+- Magliasinas Straßenmesh, an den Übergabelinien geschnitten wie beim Import;
+- das Gelände (zusammengesetztes Heightmap, in BeamNGs eigenen Dreiecken), ohne die Löcher der Hole Map.
+
+Abgetastet wird alle 0,1 m auf fünf Spuren: Achse sowie ±0,9 m und ±2,6 m, das sind die Radspuren zweier 3,5-m-Spuren
+(`--offsets`). Gefahren wird auf der höchsten Straßenfläche nahe der letzten Höhe, ohne Straße auf dem Gelände. Je Spur
+gibt das Werkzeug aus:
+
+| Größe | was | Grenzen (warn / fail) |
+|---|---|---|
+| Stufe | Höhensprung von Probe zu Probe abzüglich der örtlichen Steigung | 2 cm / `transition_step_max_m` (10 cm) |
+| Knick 2, 5, 10 m | Steigung danach minus Steigung davor | `transition_kink_warn` / `transition_kink_max` (3 % / 8 %) |
+| Überlappung | Deck und Magliasina beide da und mehr als 1 cm auseinander | Warnung |
+| Gelände über der Straße | 2 cm bis 1,5 m über der Fahrfläche | Warnung |
+| Lücke | keine Fläche | – |
+
+Zu jedem Höchstwert steht die Stelle (u = m ab Deckanfang, negativ davor) und die Fläche, auf der er liegt. Ein Knick
+in Magliasinas eigener Straße ist so von einem an unserer Übergabe zu unterscheiden. Ergebnis:
+`profile_check.json` und je Deck `profile_check_<deck>.png`. Das Bild zeigt je Übergang (Deckende, Portal, Fuge)
+einen vergrößerten Ausschnitt mit drei Bahnen: Unebenheit (Höhe minus gleitendes 10-m-Mittel), Knick über 5 m und
+Stufe. Der Hintergrund zeigt die Fläche: Deck blau, Magliasina grün, Gelände braun.
+
+Reihenfolge: nach `build_galleries`, `import_magliasina_roads` und `compose_heightmap`.
+
+    $env:AUTOROAD_SITE = "config/sites/pfunds_spiess.yaml"; python tools\profile_check.py --only 3125,3127,3128
+
+Klammleck-Kette im Sandbox: keine Stufe über 1,1 cm, kein Knick über 1,4 % auf 5 m. Die größten Werte sind:
+
+- 1,1 cm an der Lobloch-Übergabelinie auf der äußeren Radspur. Magliasinas Querschnitt ist dort nicht ganz eben,
+  unser Deck schon.
+- 1,7 % Knick am Stuiba-Portal. Dort wechselt die Steigung der Kette (−0,5 %) in die Übergabe zur Magliasina-Höhe.
+- ein Sägezahn von ±0,3 cm je Knoten auf der Übergabestrecke. Die Querneigung ändert sich dort von Knoten zu Knoten,
+  und jedes Viereck des MeshRoads knickt an seiner Diagonale.
+- bis 4 % Knick auf 2 m auf Magliasina selbst, 35 m hinter der Stuiba.
+
 ### Beleuchtung und Jet-Fans (nur geschlossene Röhren)
 
 Offene Galerien bleiben leer. Ein **geschlossener** Tunnel (`kind: tunnel` / `open_side: none`) mit Bohrloch länger als 100 m bekommt automatisch:
