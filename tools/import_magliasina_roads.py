@@ -211,6 +211,21 @@ def main() -> None:
         win[hit_k] = np.minimum(win[hit_k], cap[hit_k] - z_min)
         hit = hit_c | hit_k
         source = "terrain_override (carve only)"
+    # beyond a handover line the structure takes over: no Magliasina carve there either (it runs into the gallery
+    # and ends in a rounded cap, which would otherwise set where the ground passes the tube)
+    n_ho = 0
+    if ho_lines:
+        bx = (X - sc.xmin) / sc.bw * sc.terrain_span
+        by = (Y - sc.ymin) / sc.bh * sc.terrain_span
+        for ln in ho_lines:
+            nx, ny = float(ln["nx"]), float(ln["ny"])
+            ax_ = (bx - float(ln["x"])) * nx + (by - float(ln["y"])) * ny
+            sd = (bx - float(ln["x"])) * -ny + (by - float(ln["y"])) * nx
+            drop = hit & (np.abs(sd) <= float(ln["half_m"])) & (ax_ > 0) & (ax_ <= float(ln["depth_m"]))
+            n_ho += int(drop.sum())
+            hit &= ~drop
+        win[~hit] = dgm[r0:r1 + 1, c0:c1 + 1][~hit]
+        print(f"terrain: {n_ho} carve px beyond the handover lines left to the structure", flush=True)
     w[r0:r1 + 1, c0:c1 + 1] = hit.astype(np.float64)
     write_replace_layer(proc, "magliasina_carve", target, w, max_h=max_h, size=size)
     d = (target - dgm)[w > 0]

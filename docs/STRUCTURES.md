@@ -163,11 +163,17 @@ Tabelle) und je Portal eine Karte `portal_passages_<Name>_<id>_<n>.png`. Nach `i
 `compose_heightmap` lässt es sich allein neu rechnen: `python tools/portal_passages.py` (`--dry-run` nur Bericht).
 Danach meldet `check_tube_intrusion` nur noch, was im Fahrraum übrig ist (`left`).
 
-Sandbox Stuiba–Klammleck–Lobloch (1-m-Raster): 72 Punkte nach unten (20 davon per Mehrheit, Spitzen bis 4,9 m),
-1 nach oben, 6 bleiben drin; 131 Quadrate gelocht (27 transit, 6 inside, 98 Ring), `check_tube_intrusion` 0 übrig.
-Die alte Portalzonen-Lochung lochte 104 und ließ 2 übrig. Was gelocht bleibt: die Stelle, an der der Berg über das
-Dach schließt (Stuiba-Talportal ~10 m innen, Lobloch ~9 m innen), am Lobloch-Portal der Hangfuß, der sich auf der
-Bergseite durch die Wandlinie schiebt, und bei Lobloch s 7526 Fels, der über die offene Kante hängt.
+`portal_passages.py` allein startet wie `build_galleries` mit leerer Lochkarte (oder `theTerrain_holemap_manual.png`),
+damit keine Löcher einer früheren Methode stehen bleiben.
+
+`import_magliasina_roads.py` schneidet an den Übergabelinien nicht nur die Meshes, sondern auch die Gelände-Ebene
+`magliasina_carve`: Magliasinas Einschnitt läuft bei Stuiba und Lobloch ~10 m in die Galerie und endet rund. Ungeschnitten
+legte dieses runde Ende fest, wo das Gelände die Röhre kreuzt, nicht die echte Portalfläche.
+
+Sandbox Stuiba–Klammleck–Lobloch (1-m-Raster), mit geschnittener Ebene: 42 Punkte nach unten, 18 bleiben drin
+(die Böschung vom Portal-Sitz auf Fahrbahnhöhe zum Berg über dem Dach); 126 Quadrate gelocht (1 transit, 41
+inside, 84 Ring) als schmaler Streifen entlang der Portalfläche, 2–5 m innen. Mit ungeschnittener Ebene waren es
+131, davon 27 transit am runden Einschnitt-Ende ~10 m innen. Die alte Portalzonen-Lochung lochte 104.
 
 #### Alte Portalzonen-Lochung (`portal_hole_method: intrusion`)
 

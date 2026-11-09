@@ -546,17 +546,6 @@ def run(
     }
 
 
-def previous_holes(proc: Path) -> list[tuple[int, int]]:
-    p = proc / "portal_passages.json"
-    if not p.is_file():
-        return []
-    try:
-        data = json.loads(p.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return []
-    return [(h["py"], h["px"]) for t in data.get("tubes") or [] for h in t.get("holes") or [] if not h.get("already")]
-
-
 def main() -> None:
     import heightmap_layers as hml
     from PIL import Image
@@ -588,21 +577,14 @@ def main() -> None:
             hml.drop_layer(proc, LAYER)
             hml.compose(proc, size=size, max_h=max_h, level_name=None, sync_import=False)
         comp, _mh, _src = hml.load_composed_or_dgm(proc, size)
-    hole_path = proc / "theTerrain_holemap.png"
+    # start like build_galleries: from the manual hole map or empty, so no hole of an earlier method stays
     hole = np.zeros((size, size), np.uint8)
-    if hole_path.is_file():
-        hole = np.asarray(Image.open(hole_path), dtype=np.uint8).copy()
+    manual = proc / "theTerrain_holemap_manual.png"
+    if manual.is_file():
+        hole = np.asarray(Image.open(manual), dtype=np.uint8).copy()
         if hole.ndim == 3:
             hole = hole[..., 0].copy()
-    manual = proc / "theTerrain_holemap_manual.png"
-    keep = np.asarray(Image.open(manual), dtype=np.uint8) if manual.is_file() else None
-    n_old = 0
-    for py, px in previous_holes(proc):
-        if keep is None or keep[py, px] == 0:
-            n_old += int(hole[py, px] > 0)
-            hole[py, px] = 0
-    if n_old:
-        print(f"cleared {n_old} hole pixels of the last passage run")
+        print(f"holes start from the manual map ({int((hole > 0).sum())} px)")
     decks = []
     items = proc / "galleries_items.level.json"
     if items.is_file():
