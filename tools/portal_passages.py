@@ -14,11 +14,10 @@ roof slab and wall are solid, so terrain inside them is hidden.
    ``passage_majority`` (5) times under it goes down too, however high it is (a spike the carving missed); one
    under the roof underside with 5 neighbours over it goes up (not on the open side). Three passes: a straight or
    diagonal mountain front has at most 3 neighbours on the other side and stays.
-4. Open side of a gallery, before 2 and 3: ground within ``passage_open_band_m`` (2 m) beyond the open deck edge
-   that lies between deck underside and roof top, with ground at roof height on the open side beyond the deck edge
-   within those 2 m (a terrain edge, not a terrace), goes under the deck underside or over the roof top, whichever is nearer (``open_down`` /
-   ``open_up``). Squares there that then run from under the deck to over the roof are holed (``open``), with
-   ``passage_open_ring_px`` (0) rings of neighbours.
+4. Open side of a gallery, before 2 and 3: from the open deck edge ``passage_open_in_m`` (1.5 m) inward the ground
+   may not stand over the roof top (it goes just under it, into the roof slab: ``open_roof``), and
+   ``passage_open_out_m`` (1.5 m) outward not over the deck underside (``open_down``). Squares there that then run
+   from under the deck to the roof are holed (``open``), with ``passage_open_ring_px`` (0) rings of neighbours.
 5. Hole every terrain square with a triangle (the terrain's own, terrain_holes.square_triangles) still in the clear
    space: ``transit`` where the ground runs from under the deck to over the roof, ``inside`` around a vertex that
    stayed in. Plus ``passage_ring_px`` (1) ring of neighbours and any square the hole encloses (``island``).
@@ -53,7 +52,8 @@ DEFAULTS = {
     "passage_snap_clear_m": 0.05,
     "passage_ring_px": 1,
     "passage_majority": 5,
-    "passage_open_band_m": 2.0,
+    "passage_open_in_m": 1.5,
+    "passage_open_out_m": 1.5,
     "passage_open_ring_px": 0,
 }
 SIDE_MARGIN_M = 0.15  # clear space beyond the deck edge on an open side, as terrain_holes.intruding_squares
@@ -189,7 +189,11 @@ def tube_passages(
     surf = z_road + np.clip(off, -hw, hw) * bank  # deck surface with its crossfall, held level beyond the edge
     lo = lo + np.clip(off, -hw, hw) * bank  # deck underside likewise
     opn = _open_mask(off, open_side)
-    in_band = (s >= s0) & (s <= s1) & (np.abs(off) <= hw + band)
+    # a point before the first or past the last node projects onto that end (s exactly there): it lies beyond the
+    # axis, in the next structure of a chain, and is not this tube's
+    a_lo, a_hi = ax[0, 2] + 1e-3, ax[-1, 2] - 1e-3
+    along = (s >= s0) & (s <= s1) & (s > a_lo) & (s < a_hi)
+    in_band = along & (np.abs(off) <= hw + band)
     z = work[size - 1 - J, I].copy()  # before
     zc = z.copy()  # current
     W = shape[1]
@@ -217,7 +221,7 @@ def tube_passages(
         # edge + 15 cm on an open side
         popn = _open_mask(poff, open_side)
         plim = np.where(popn, phw + SIDE_MARGIN_M, np.maximum(phw, 0.5 * clear_w))
-        pin = (ps >= s0) & (ps <= s1) & (np.abs(poff) <= plim)
+        pin = (ps >= s0) & (ps <= s1) & (ps > a_lo) & (ps < a_hi) & (np.abs(poff) <= plim)
 
     def hits(zv: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         Z = np.einsum("bk,tk->tb", th._BARY, zv[C]).reshape(-1)
@@ -227,26 +231,20 @@ def tube_passages(
 
     action = np.full(len(z), "", dtype=object)
     need = int(cfg["passage_majority"])
-    # open side of a gallery: where the terrain edge (ground at roof height) comes within passage_open_band_m of the
-    # open deck edge, the ground in between goes to the deck underside or over the roof top, whichever is nearer.
-    # One pass on the heights as they were, so a slope is not pulled up step by step.
-    ob = float(cfg["passage_open_band_m"])
-    open_zone = opn & (s >= s0) & (s <= s1) & (np.abs(off) > hw) & (np.abs(off) <= hw + ob)
-    if open_zone.any():
-        from scipy.ndimage import maximum_filter
-
-        rad = int(np.ceil(ob / pitch))
-        # the edge lies outside: ground at roof height on the open side beyond the deck edge (not the DGM over the
-        # gallery's own roof)
-        src = (z >= roof_in - 1e-3) & opn & (np.abs(off) > hw)
-        high = maximum_filter(src.reshape(shape), size=2 * rad + 1).ravel()
-        mid = open_zone & high & (z > lo + 1e-3) & (z < hi - 1e-3)
-        o_dn = mid & (z - lo <= hi - z)
-        o_up = mid & ~o_dn
-        zc[o_dn] = lo[o_dn] - eps
-        zc[o_up] = hi[o_up] + eps
-        action[o_dn] = "open_down"
-        action[o_up] = "open_up"
+    # open side of a gallery: from the open edge passage_open_in_m inward the ground may not stand over the roof top
+    # (it goes just under it, into the roof slab); passage_open_out_m outward not over the deck underside. The squares
+    # between the two strips then run from under the deck to the roof and are holed (below).
+    rel = np.abs(off) - hw
+    in_s = along & opn
+    strip_in = in_s & (rel <= 0) & (rel >= -cfg["passage_open_in_m"])
+    strip_out = in_s & (rel > 0) & (rel <= cfg["passage_open_out_m"])
+    open_zone = strip_in | strip_out
+    o_roof = strip_in & (z > hi - eps)
+    o_dn = strip_out & (z > lo - eps)
+    zc[o_roof] = hi[o_roof] - eps
+    zc[o_dn] = lo[o_dn] - eps
+    action[o_roof] = "open_roof"
+    action[o_dn] = "open_down"
     for _ in range(4 if len(C) else 0):
         hit_sq, _d = hits(zc)
         if not hit_sq.any():
@@ -299,7 +297,7 @@ def tube_passages(
         kept = np.zeros(len(z), bool)
     go_down = np.isin(action, ["snap_down"])
     go_up = np.isin(action, ["snap_up"])
-    ch = np.isin(action, ["snap_down", "snap_up", "snap_down_majority", "snap_up_majority", "open_down", "open_up"])
+    ch = np.isin(action, ["snap_down", "snap_up", "snap_down_majority", "snap_up_majority", "open_down", "open_roof"])
     work[size - 1 - J[ch], I[ch]] = zc[ch]
     z_new = zc
     inside = in_band & (z > surf + 1e-3) & (z < roof_in - 1e-3)
@@ -317,7 +315,8 @@ def tube_passages(
     vertices = [vrec(k) for k in np.flatnonzero(action != "")]
     kept2 = kept.reshape(shape)
     sq_set = {(int(i), int(j)) for i, j, h in zip(SI, SJ, hit_sq) if h}
-    # open side: squares that still run from under the deck to over the roof (a corner in the open zone)
+    # open side: squares that run from under the deck to the roof with a corner in the open strips; labelled open (no
+    # ring) even when the clear-space test found them too
     open_sq: set[tuple[int, int]] = set()
     if open_zone.any():
         bel = (zc <= surf + 1e-3).reshape(shape)
@@ -329,9 +328,7 @@ def tube_passages(
 
         span = quad(bel).any(0) & quad(abv).any(0) & quad(oz).any(0)
         for lj, li in zip(*np.nonzero(span)):
-            q = (int(li + i0), int(lj + j0))
-            if q not in sq_set:
-                open_sq.add(q)
+            open_sq.add((int(li + i0), int(lj + j0)))
         sq_set |= open_sq
     kept_corner = set()
     for (i, j) in sq_set:
@@ -407,7 +404,7 @@ def tube_passages(
         "holes_island": sum(1 for h in holes if h["reason"] == "island"),
         "holes_open": sum(1 for h in holes if h["reason"] == "open"),
         "open_down": sum(1 for v in vertices if v["action"] == "open_down"),
-        "open_up": sum(1 for v in vertices if v["action"] == "open_up"),
+        "open_roof": sum(1 for v in vertices if v["action"] == "open_roof"),
         "vertices": vertices,
         "holes": holes,
         "_axis": ax,
@@ -423,7 +420,7 @@ def summary_line(r: dict) -> str:
         f"(max {r['max_up_m']:+.2f} m), "
         f"{r['kept_inside']} left inside; holed {r['holes_transit']} transit + {r['holes_inside']} inside "
         f"+ {r['holes_ring']} ring + {r['holes_island']} island squares; open side: {r['open_down']} down, "
-        f"{r['open_up']} up, {r['holes_open']} squares holed"
+        f"{r['open_roof']} down to the roof, {r['holes_open']} squares holed"
     )
 
 
@@ -495,7 +492,7 @@ def plot(r: dict, path_stem: Path, *, pitch: float, scale: int = 16, margin_px: 
                 continue
             c = {"snap_down": (30, 90, 255), "snap_up": (230, 40, 30), "kept_inside": (255, 160, 0),
                  "snap_down_majority": (0, 200, 220), "snap_up_majority": (230, 0, 200),
-                 "open_down": (0, 120, 60), "open_up": (150, 60, 0)}[v["action"]]
+                 "open_down": (0, 120, 60), "open_roof": (150, 60, 0)}[v["action"]]
             p = xy(v["x"] / pitch, v["y"] / pitch)
             rr = scale * 0.28
             dr.ellipse([p[0] - rr, p[1] - rr, p[0] + rr, p[1] + rr], fill=c, outline=(0, 0, 0))
@@ -507,7 +504,7 @@ def plot(r: dict, path_stem: Path, *, pitch: float, scale: int = 16, margin_px: 
                  ("down by majority", (0, 200, 220)), ("up by majority", (230, 0, 200)), ("left inside", (255, 160, 0)),
                  ("hole: transit", (25, 25, 25)), ("hole: around left inside", (120, 0, 120)),
                  ("hole: ring", (165, 165, 165)), ("hole: island", (90, 160, 200)),
-                 ("open side: down", (0, 120, 60)), ("open side: up", (150, 60, 0)), ("hole: open side", (200, 110, 0)),
+                 ("open side: under deck", (0, 120, 60)), ("open side: to roof", (150, 60, 0)), ("hole: open side", (200, 110, 0)),
                  ("axis / portal", (0, 150, 0)),
                  ("test band (grey dots)", (150, 150, 150))]
         for n, (txt, c) in enumerate(items):
@@ -579,7 +576,7 @@ def run(
             plot(r, proc / f"portal_passages_{slug}_{r['objectid']}", pitch=pitch)
     keys = ("band_vertices", "inside_before", "snap_down", "snap_up", "snap_down_majority", "snap_up_majority",
             "kept_inside",
-            "holes_transit", "holes_inside", "holes_ring", "holes_island", "open_down", "open_up", "holes_open")
+            "holes_transit", "holes_inside", "holes_ring", "holes_island", "open_down", "open_roof", "holes_open")
     out = {
         "layer": LAYER,
         "changed_vertices": int(changed.sum()),
@@ -592,7 +589,7 @@ def run(
         f"portal passages: {t['snap_down'] + t['snap_down_majority']} vertices snapped down "
         f"({t['snap_down_majority']} by majority), {t['snap_up'] + t['snap_up_majority']} up "
         f"({t['snap_up_majority']} by majority), {t['kept_inside']} left inside; open side {t['open_down']} down, "
-        f"{t['open_up']} up; "
+        f"{t['open_roof']} to the roof; "
         f"{t['holes_transit'] + t['holes_inside'] + t['holes_ring'] + t['holes_island'] + t['holes_open']} squares holed "
         f"-> {proc / 'portal_passages.json'}, portal_passages.csv, portal_passages_*.png"
     )

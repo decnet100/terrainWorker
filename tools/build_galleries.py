@@ -100,7 +100,8 @@ GALLERY_SCALAR_KEYS = (
     "passage_snap_up_m",  # ... at most this far under the roof top: set just above it (not on the open side)
     "passage_snap_clear_m",  # clearance of a snapped vertex from deck underside / roof top
     "passage_ring_px",  # rings of neighbour squares holed around the passage squares
-    "passage_open_band_m",  # open side of a gallery: snap a terrain edge this close to the open deck edge, hole its transit
+    "passage_open_in_m",  # open side of a gallery: from the open edge this far inward ground not over the roof top
+    "passage_open_out_m",  # ... and this far outward not over the deck underside; the transit between is holed
     "passage_open_ring_px",  # rings of neighbours around the open-side transit squares (default 0)
     "passage_majority",  # a passage vertex goes down / up when this many of its 8 neighbours lie under the deck / over the roof
     "portal_seat",  # bake 2 m apron + roof force + door hole at daylight portals

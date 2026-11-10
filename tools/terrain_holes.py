@@ -181,7 +181,10 @@ def intruding_squares(
     s, off, z_road, hw = _project(pts, ax)
     lo = z_road + floor_eps
     hi = z_road + clear_h
-    hit = (s >= s_lo) & (s <= s_hi) & (np.abs(off) <= hw + side_margin) & (zs > lo) & (zs < hi)
+    # a point before the first or past the last node projects onto that end: it lies beyond the axis (in the next
+    # structure of a chain), not in this tube
+    beside = (s > ax[0, 2] + 1e-3) & (s < ax[-1, 2] - 1e-3)
+    hit = beside & (s >= s_lo) & (s <= s_hi) & (np.abs(off) <= hw + side_margin) & (zs > lo) & (zs < hi)
     if not hit.any():
         return out
     depth = np.minimum(zs - lo, hi - zs)

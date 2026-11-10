@@ -175,19 +175,24 @@ Sandbox Stuiba–Klammleck–Lobloch (1-m-Raster), mit geschnittener Ebene: 42 P
 inside, 84 Ring) als schmaler Streifen entlang der Portalfläche, 2–5 m innen. Mit ungeschnittener Ebene waren es
 131, davon 27 transit am runden Einschnitt-Ende ~10 m innen. Die alte Portalzonen-Lochung lochte 104.
 
-**Offene Seite einer Galerie** (vor den Runden oben): Gelände bis `passage_open_band_m` (2 m) außerhalb der offenen
-Deckkante, das zwischen Deck-Unterkante und Dach-Oberkante liegt, kommt unter die Unterkante oder über die
-Oberkante, je nachdem, was näher ist (`open_down` / `open_up`). Das gilt nur, wenn innerhalb dieser 2 m draußen auf
-der offenen Seite Gelände auf Dachhöhe steht (eine Geländekante, keine Terrasse). Ein Durchgang über das Dach der
-Galerie selbst zählt dafür nicht. Gelocht werden die Quadrate dort, die danach von unter dem Deck nach über das Dach
-laufen (`open`), ohne Ring (`passage_open_ring_px`: 0). Ergebnis ist eine ein Quadrat breite Lochlinie neben der
-Öffnung.
+**Offene Seite einer Galerie** (vor den Runden oben), über die ganze Länge von Portal zu Portal:
 
-Bei Stuiba und Lobloch liegt das DGM über der ganzen Galeriebreite 6,5–7 m über der Fahrbahn. Es enthält die echte
-Galerie mit Dach und Polsterschicht. Unser Dach endet bei 3,5 m (`clear_height_m` 3,0 + 0,5). Auf der offenen Seite
-fällt dieses Gelände innerhalb von 1–2 m auf Talniveau ab und deckte so die Öffnung über die ganze Länge zu.
-Sandbox: 63 Punkte nach unten, 105 nach oben, 224 Quadrate `open` (145 Stuiba, 79 Lobloch); insgesamt 340
-gelocht, `check_tube_intrusion` 0 übrig.
+- von der offenen Deckkante `passage_open_in_m` (1,5 m) nach innen darf das Gelände nicht über der Dach-Oberkante
+  stehen. Es kommt knapp darunter, also in die Dachplatte (`open_roof`).
+- `passage_open_out_m` (1,5 m) nach außen darf es nicht über der Deck-Unterkante stehen (`open_down`).
+- Gelocht werden die Quadrate mit einer Ecke in diesen Streifen, die danach von unter dem Deck bis zum Dach reichen
+  (`open`), ohne Ring (`passage_open_ring_px`: 0). Das ergibt eine Lochlinie neben der Öffnung.
+
+Grund: Bei Stuiba und Lobloch liegt das DGM über der ganzen Galeriebreite 6,5–7 m über der Fahrbahn. Es enthält die
+echte Galerie mit Dach und Polsterschicht, unser Dach endet aber bei 3,5 m. Auf der offenen Seite fällt dieses
+Gelände innerhalb von 1–2 m auf Talniveau ab und deckte die Öffnung zu.
+
+Ein Punkt vor dem ersten oder hinter dem letzten Achsknoten fällt bei der Projektion genau auf das Achsende. Er liegt
+im nächsten Bauwerk einer Kette und zählt für diese Röhre nicht, weder beim Einrasten noch in `check_tube_intrusion`.
+Sonst senkte der Dachstreifen der Stuiba das Gelände an der Fuge in den höheren Klammlecktunnel.
+
+Sandbox: offene Seite 471 Punkte unter das Deck, 461 auf das Dach, 620 Quadrate `open` (Stuiba 496, Lobloch 124);
+insgesamt 734 gelocht, `check_tube_intrusion` 0 übrig.
 
 Zum Ansehen der Löcher ohne Felskragen: `portal_collar: false` im `galleries:`-Block der Site-YAML.
 
