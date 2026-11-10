@@ -14,7 +14,8 @@ roof slab and wall are solid, so terrain inside them is hidden.
    ``passage_majority`` (5) times under it goes down too, however high it is (a spike the carving missed); one
    under the roof underside with 5 neighbours over it goes up (not on the open side). Three passes: a straight or
    diagonal mountain front has at most 3 neighbours on the other side and stays.
-4. Open side of a gallery, before 2 and 3: from the open deck edge ``passage_open_in_m`` (1.5 m) inward the ground
+4. Open side of a gallery, before 2 and 3: from the open edge (outer roof edge, ``open_edge_m`` of the centerline
+   record) ``passage_open_in_m`` (1.5 m) inward the ground
    may not stand over the roof top (it goes just under it, into the roof slab: ``open_roof``), and
    ``passage_open_out_m`` (1.5 m) outward not over the deck underside (``open_down``). Squares there that then run
    from under the deck to the roof are holed (``open``), with ``passage_open_ring_px`` (0) rings of neighbours.
@@ -234,7 +235,8 @@ def tube_passages(
     # open side of a gallery: from the open edge passage_open_in_m inward the ground may not stand over the roof top
     # (it goes just under it, into the roof slab); passage_open_out_m outward not over the deck underside. The squares
     # between the two strips then run from under the deck to the roof and are holed (below).
-    rel = np.abs(off) - hw
+    # the gallery's open edge: outer roof edge past the road edge (build_galleries.gallery_open_edge_m)
+    rel = np.abs(off) - hw - float(g.get("open_edge_m") or 0.0)
     in_s = along & opn
     strip_in = in_s & (rel <= 0) & (rel >= -cfg["passage_open_in_m"])
     strip_out = in_s & (rel > 0) & (rel <= cfg["passage_open_out_m"])

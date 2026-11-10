@@ -177,7 +177,7 @@ inside, 84 Ring) als schmaler Streifen entlang der Portalfläche, 2–5 m innen.
 
 **Offene Seite einer Galerie** (vor den Runden oben), über die ganze Länge von Portal zu Portal:
 
-- von der offenen Deckkante `passage_open_in_m` (1,5 m) nach innen darf das Gelände nicht über der Dach-Oberkante
+- vom offenen Rand (äußere Dachkante, `open_edge_m` im Centerline-Eintrag) `passage_open_in_m` (1,5 m) nach innen darf das Gelände nicht über der Dach-Oberkante
   stehen. Es kommt knapp darunter, also in die Dachplatte (`open_roof`).
 - `passage_open_out_m` (1,5 m) nach außen darf es nicht über der Deck-Unterkante stehen (`open_down`).
 - Gelocht werden die Quadrate mit einer Ecke in diesen Streifen, die danach von unter dem Deck bis zum Dach reichen
@@ -193,6 +193,14 @@ Sonst senkte der Dachstreifen der Stuiba das Gelände an der Fuge in den höhere
 
 Sandbox: offene Seite 471 Punkte unter das Deck, 461 auf das Dach, 620 Quadrate `open` (Stuiba 496, Lobloch 124);
 insgesamt 734 gelocht, `check_tube_intrusion` 0 übrig.
+
+**Dickere Galerie** (`outer_extra_m`, Standard 0): Wände, Brüstung und Pfeiler werden um diesen Wert dicker, nur
+nach außen. Fahrbahn, Wand-Innenseite und Pfeiler-Innenseite bleiben. Technisch: `wall_thickness_m`, `parapet_out_m`,
+`column_lat_m` und `portal_overhang_m` (Portalpfeiler und Sturz) jeweils + `outer_extra_m`, nur für Galerien, nicht
+für Tunnel. Das Dach wächst mit, weil `loft_gallery_shell` seine Kante aus Brüstung + halber Pfeilerbreite rechnet.
+Mit 1 m wandert die Dachkante auf der offenen Seite von 1,23 auf 2,73 m außerhalb der Fahrbahnkante. Die offene
+Lochlinie folgt ihr. Sandbox mit `outer_extra_m: 1.0`: offene Seite 235 Punkte unter das Deck, 143 auf das Dach, 204
+Quadrate `open`, insgesamt 331 gelocht, `check_tube_intrusion` 0 übrig.
 
 Zum Ansehen der Löcher ohne Felskragen: `portal_collar: false` im `galleries:`-Block der Site-YAML.
 

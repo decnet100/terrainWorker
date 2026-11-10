@@ -124,6 +124,7 @@ GALLERY_SCALAR_KEYS = (
     "parapet_height_m",
     "parapet_thickness_m",
     "parapet_out_m",  # grow parapet outward past open deck edge (keep inner face)
+    "outer_extra_m",  # galleries: walls, parapet and columns this much thicker, outward only (road width unchanged)
     "column_spacing_m",
     "column_along_m",
     "column_lat_m",
@@ -348,6 +349,7 @@ def default_gallery_cfg(bng: dict) -> tuple[dict, list]:
         "column_spacing_m": float(raw.get("column_spacing_m") or 4.0),
         "column_along_m": float(raw.get("column_along_m") or 0.4),
         "column_lat_m": float(raw.get("column_lat_m") or 0.35),
+        "outer_extra_m": float(raw.get("outer_extra_m") or 0.0),
         # >0 = further toward parapet outer edge (from midline); 0 = centered on parapet
         "column_out_m": float(
             raw["column_out_m"] if raw.get("column_out_m") is not None else 0.0
@@ -625,7 +627,26 @@ def resolve_gallery_cfg(defaults: dict, items: list, feat: dict) -> dict:
             mats = {**mats, **(matched.get("materials") or {})}
         cfg["match_id"] = matched.get("id") or matched.get("match")
     cfg["materials"] = mats
+    # galleries: thicker outward. Wall inner face, parapet inner face and column inner face stay; the column centre
+    # moves out with the parapet midline, so its inner face is kept without changing column_out_m
+    extra = float(cfg.get("outer_extra_m") or 0.0)
+    if extra > 0 and str(cfg.get("open_side") or "auto").lower() not in ("none", "off", "false", "0"):
+        cfg["wall_thickness_m"] = float(cfg.get("wall_thickness_m") or 0.4) + extra
+        cfg["parapet_out_m"] = (
+            float(cfg["parapet_out_m"] if cfg.get("parapet_out_m") is not None else 0.25) + extra
+        )
+        cfg["column_lat_m"] = float(cfg.get("column_lat_m") or 0.35) + extra
+        cfg["portal_overhang_m"] = float(cfg.get("portal_overhang_m") or 0.8) + extra  # portal pier and lintel
     return cfg
+
+
+def gallery_open_edge_m(cfg: dict) -> float:
+    """Lateral distance of a gallery's outer roof edge on the open side past the road edge (as loft_gallery_shell)."""
+    open_extra = max(0.0, float(cfg.get("deck_open_extra_m") or 0.8))
+    p_out = max(0.0, float(cfg["parapet_out_m"] if cfg.get("parapet_out_m") is not None else 0.25))
+    col_lat = max(0.15, float(cfg.get("column_lat_m") or 0.35))
+    col_out = float(cfg["column_out_m"] if cfg.get("column_out_m") is not None else 0.0)
+    return max(float(cfg.get("overhang_m") or 0.6), open_extra + p_out, open_extra + p_out + max(0.0, col_out) + 0.5 * col_lat)
 
 
 def _trim_polyline_m(
@@ -8943,6 +8964,10 @@ def main() -> None:
                 "wall_radius_m": cfg.get("wall_radius_m"),
                 "overhang_m": cfg.get("overhang_m"),
                 "deck_open_extra_m": cfg.get("deck_open_extra_m"),
+                "parapet_out_m": cfg.get("parapet_out_m"),
+                "column_lat_m": cfg.get("column_lat_m"),
+                "outer_extra_m": cfg.get("outer_extra_m"),
+                "open_edge_m": round(gallery_open_edge_m(cfg), 3),
                 "roof_thickness_m": cfg.get("roof_thickness_m"),
                 "profile": info.get("profile") or info.get("z_profile"),
                 "shape": shape_vfs,
