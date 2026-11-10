@@ -102,6 +102,7 @@ GALLERY_SCALAR_KEYS = (
     "passage_ring_px",  # rings of neighbour squares holed around the passage squares
     "passage_open_in_m",  # open side of a gallery: from the open edge this far inward ground not over the roof top
     "passage_open_out_m",  # ... and this far outward not over the deck underside; the transit between is holed
+    "passage_open_fix_m",  # ... and within this distance of the edge the heights are set exactly (raised too)
     "passage_open_ring_px",  # rings of neighbours around the open-side transit squares (default 0)
     "passage_majority",  # a passage vertex goes down / up when this many of its 8 neighbours lie under the deck / over the roof
     "portal_seat",  # bake 2 m apron + roof force + door hole at daylight portals

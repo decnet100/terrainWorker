@@ -15,10 +15,12 @@ roof slab and wall are solid, so terrain inside them is hidden.
    under the roof underside with 5 neighbours over it goes up (not on the open side). Three passes: a straight or
    diagonal mountain front has at most 3 neighbours on the other side and stays.
 4. Open side of a gallery, before 2 and 3: from the open edge (outer roof edge, ``open_edge_m`` of the centerline
-   record) ``passage_open_in_m`` (1.5 m) inward the ground
-   may not stand over the roof top (it goes just under it, into the roof slab: ``open_roof``), and
-   ``passage_open_out_m`` (1.5 m) outward not over the deck underside (``open_down``). Squares there that then run
-   from under the deck to the roof are holed (``open``), with ``passage_open_ring_px`` (0) rings of neighbours.
+   record) ``passage_open_in_m`` (1.5 m) inward the ground may not stand over the roof top (it goes just under it,
+   into the roof slab: ``open_roof``), and ``passage_open_out_m`` (2.5 m) outward not over the deck underside
+   (``open_down``). Within ``passage_open_fix_m`` (1 m) of the edge the heights are set to exactly that, raised too,
+   so roof edge and underside run as two clean lines - only where there is a transition (ground at roof height in
+   the inner strip within 1.5 m); where the gallery stands free over low ground nothing is raised. Squares there that then run from under the deck to the roof
+   are holed (``open``), with ``passage_open_ring_px`` (0) rings of neighbours.
 5. Hole every terrain square with a triangle (the terrain's own, terrain_holes.square_triangles) still in the clear
    space: ``transit`` where the ground runs from under the deck to over the roof, ``inside`` around a vertex that
    stayed in. Plus ``passage_ring_px`` (1) ring of neighbours and any square the hole encloses (``island``).
@@ -54,7 +56,8 @@ DEFAULTS = {
     "passage_ring_px": 1,
     "passage_majority": 5,
     "passage_open_in_m": 1.5,
-    "passage_open_out_m": 1.5,
+    "passage_open_out_m": 2.5,
+    "passage_open_fix_m": 1.0,
     "passage_open_ring_px": 0,
 }
 SIDE_MARGIN_M = 0.15  # clear space beyond the deck edge on an open side, as terrain_holes.intruding_squares
@@ -241,8 +244,22 @@ def tube_passages(
     strip_in = in_s & (rel <= 0) & (rel >= -cfg["passage_open_in_m"])
     strip_out = in_s & (rel > 0) & (rel <= cfg["passage_open_out_m"])
     open_zone = strip_in | strip_out
-    o_roof = strip_in & (z > hi - eps)
-    o_dn = strip_out & (z > lo - eps)
+    # within passage_open_fix_m of the edge the heights are fixed (raised too), so roof edge and deck underside run
+    # as two clean lines; further out only what stands too high comes down
+    # Only where there is a transition: ground at roof height in the inner strip within passage_open_in_m along the
+    # edge. Where the ground under the edge lies low (the gallery stands free) nothing is raised.
+    fix = cfg["passage_open_fix_m"]
+    trans = np.zeros(len(z), bool)
+    high = strip_in & (z >= roof_in - 1e-3)
+    if high.any():
+        from scipy.ndimage import maximum_filter
+
+        rad = int(np.ceil(cfg["passage_open_in_m"] / pitch))
+        trans = maximum_filter(high.reshape(shape), size=2 * rad + 1).ravel()
+    fix_in = strip_in & (rel >= -fix) & trans
+    fix_out = strip_out & (rel <= fix) & trans
+    o_roof = fix_in | (strip_in & (z > hi - eps))
+    o_dn = fix_out | (strip_out & (z > lo - eps))
     zc[o_roof] = hi[o_roof] - eps
     zc[o_dn] = lo[o_dn] - eps
     action[o_roof] = "open_roof"
@@ -407,6 +424,7 @@ def tube_passages(
         "holes_open": sum(1 for h in holes if h["reason"] == "open"),
         "open_down": sum(1 for v in vertices if v["action"] == "open_down"),
         "open_roof": sum(1 for v in vertices if v["action"] == "open_roof"),
+        "open_raised": sum(1 for v in vertices if v["action"].startswith("open_") and v["dz"] > 1e-3),
         "vertices": vertices,
         "holes": holes,
         "_axis": ax,
@@ -422,7 +440,7 @@ def summary_line(r: dict) -> str:
         f"(max {r['max_up_m']:+.2f} m), "
         f"{r['kept_inside']} left inside; holed {r['holes_transit']} transit + {r['holes_inside']} inside "
         f"+ {r['holes_ring']} ring + {r['holes_island']} island squares; open side: {r['open_down']} down, "
-        f"{r['open_roof']} down to the roof, {r['holes_open']} squares holed"
+        f"{r['open_roof']} to the roof ({r['open_raised']} of them raised), {r['holes_open']} squares holed"
     )
 
 
@@ -578,7 +596,7 @@ def run(
             plot(r, proc / f"portal_passages_{slug}_{r['objectid']}", pitch=pitch)
     keys = ("band_vertices", "inside_before", "snap_down", "snap_up", "snap_down_majority", "snap_up_majority",
             "kept_inside",
-            "holes_transit", "holes_inside", "holes_ring", "holes_island", "open_down", "open_roof", "holes_open")
+            "holes_transit", "holes_inside", "holes_ring", "holes_island", "open_down", "open_roof", "open_raised", "holes_open")
     out = {
         "layer": LAYER,
         "changed_vertices": int(changed.sum()),

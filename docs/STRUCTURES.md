@@ -180,13 +180,22 @@ Sandbox Stuiba–Klammleck–Lobloch (1-m-Raster), mit geschnittener Ebene: 42 P
 inside, 84 Ring) als schmaler Streifen entlang der Portalfläche, 2–5 m innen. Mit ungeschnittener Ebene waren es
 131, davon 27 transit am runden Einschnitt-Ende ~10 m innen. Die alte Portalzonen-Lochung lochte 104.
 
-**Offene Seite einer Galerie** (vor den Runden oben), über die ganze Länge von Portal zu Portal:
+**Offene Seite einer Galerie** (vor den Runden oben), über die ganze Länge von Portal zu Portal, gemessen vom offenen
+Rand (äußere Dachkante, `open_edge_m` im Centerline-Eintrag):
 
-- vom offenen Rand (äußere Dachkante, `open_edge_m` im Centerline-Eintrag) `passage_open_in_m` (1,5 m) nach innen darf das Gelände nicht über der Dach-Oberkante
-  stehen. Es kommt knapp darunter, also in die Dachplatte (`open_roof`).
-- `passage_open_out_m` (1,5 m) nach außen darf es nicht über der Deck-Unterkante stehen (`open_down`).
+- `passage_open_in_m` (1,5 m) nach innen darf das Gelände nicht über der Dach-Oberkante stehen; es kommt knapp
+  darunter, in die Dachplatte (`open_roof`).
+- `passage_open_out_m` (2,5 m) nach außen darf es nicht über der Deck-Unterkante stehen (`open_down`).
+- Innerhalb `passage_open_fix_m` (1 m) vom Rand werden die Höhen fest gesetzt, auch angehoben: innen auf die
+  Dach-Oberkante, außen auf die Deck-Unterkante. So laufen Ober- und Unterkante als zwei glatte Linien. Das gilt nur,
+  wo ein Übergang ist, also wo im inneren Streifen in 1,5 m Umkreis Gelände auf Dachhöhe steht. Steht die Galerie
+  frei über tiefem Gelände, wird nichts angehoben.
 - Gelocht werden die Quadrate mit einer Ecke in diesen Streifen, die danach von unter dem Deck bis zum Dach reichen
-  (`open`), ohne Ring (`passage_open_ring_px`: 0). Das ergibt eine Lochlinie neben der Öffnung.
+  (`open`), ohne Ring (`passage_open_ring_px`: 0).
+
+Sandbox (Stuiba, Lobloch, mit `outer_extra_m: 1.0`): 445 Punkte unter das Deck, 329 auf das Dach, davon 288
+angehoben (median +0,4 m bei Stuiba, bis +4,5 m, wo das Gelände unter der Dachkante steil abfällt); 366 Quadrate
+`open`, insgesamt 489 gelocht.
 
 Grund: Bei Stuiba und Lobloch liegt das DGM über der ganzen Galeriebreite 6,5–7 m über der Fahrbahn. Es enthält die
 echte Galerie mit Dach und Polsterschicht, unser Dach endet aber bei 3,5 m. Auf der offenen Seite fällt dieses
