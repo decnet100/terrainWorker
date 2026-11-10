@@ -175,6 +175,22 @@ Sandbox Stuiba–Klammleck–Lobloch (1-m-Raster), mit geschnittener Ebene: 42 P
 inside, 84 Ring) als schmaler Streifen entlang der Portalfläche, 2–5 m innen. Mit ungeschnittener Ebene waren es
 131, davon 27 transit am runden Einschnitt-Ende ~10 m innen. Die alte Portalzonen-Lochung lochte 104.
 
+**Offene Seite einer Galerie** (vor den Runden oben): Gelände bis `passage_open_band_m` (2 m) außerhalb der offenen
+Deckkante, das zwischen Deck-Unterkante und Dach-Oberkante liegt, kommt unter die Unterkante oder über die
+Oberkante, je nachdem, was näher ist (`open_down` / `open_up`). Das gilt nur, wenn innerhalb dieser 2 m draußen auf
+der offenen Seite Gelände auf Dachhöhe steht (eine Geländekante, keine Terrasse). Ein Durchgang über das Dach der
+Galerie selbst zählt dafür nicht. Gelocht werden die Quadrate dort, die danach von unter dem Deck nach über das Dach
+laufen (`open`), ohne Ring (`passage_open_ring_px`: 0). Ergebnis ist eine ein Quadrat breite Lochlinie neben der
+Öffnung.
+
+Bei Stuiba und Lobloch liegt das DGM über der ganzen Galeriebreite 6,5–7 m über der Fahrbahn. Es enthält die echte
+Galerie mit Dach und Polsterschicht. Unser Dach endet bei 3,5 m (`clear_height_m` 3,0 + 0,5). Auf der offenen Seite
+fällt dieses Gelände innerhalb von 1–2 m auf Talniveau ab und deckte so die Öffnung über die ganze Länge zu.
+Sandbox: 63 Punkte nach unten, 105 nach oben, 224 Quadrate `open` (145 Stuiba, 79 Lobloch); insgesamt 340
+gelocht, `check_tube_intrusion` 0 übrig.
+
+Zum Ansehen der Löcher ohne Felskragen: `portal_collar: false` im `galleries:`-Block der Site-YAML.
+
 #### Alte Portalzonen-Lochung (`portal_hole_method: intrusion`)
 
 Nach dem Compose prüft `check_tube_intrusion` jedes Gelände-Dreieck gegen den Fahrraum der Röhre (Deckbreite ×
