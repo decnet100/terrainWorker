@@ -8351,6 +8351,14 @@ def main() -> None:
     if not feats:
         raise SystemExit("No gallery/tunnel features after unify")
 
+    # galleries.build_only: the site has only these structures (by OBJECTID). Unlike --only, which rebuilds them and
+    # keeps the rest of the level, everything else is left out: level objects, DAEs, heightmap, holes
+    build_only = {int(x) for x in (gal_raw.get("build_only") or [])}
+    if build_only:
+        feats = [f for f in feats if _feat_objectids(f) & build_only]
+        print(f"galleries.build_only: {len(feats)} structure(s) for objectids {sorted(build_only)}, the rest not built")
+        if not feats:
+            raise SystemExit(f"galleries.build_only {sorted(build_only)} matches no structure")
     all_feats = feats
     if only_ids:
         feats = [

@@ -92,6 +92,11 @@ beamng:
 
 ## Galerie oder geschlossener Tunnel
 
+**Nur bestimmte Bauwerke bauen:** `galleries: build_only: [3125, 3127, 3128]` (OBJECTIDs) in der Site-YAML. Alle
+anderen Galerien und Tunnel werden gar nicht gebaut: Sie fehlen in der Objektliste des Levels, ihre DAEs werden
+entfernt, und sie tragen nichts zu Heightmap, Lochkarte und Übergabelinien bei. Anders `--only`: Das baut die
+genannten Bauwerke neu und lässt den Rest des Levels stehen.
+
 `beamng.galleries.defaults` plus `items[]` mit `match: { objectid: … }` oder `match: { unify: <id> }`.
 
 | Ziel | Wichtige Schlüssel |
